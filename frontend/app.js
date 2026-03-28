@@ -47,23 +47,64 @@ document.addEventListener('DOMContentLoaded', () => {
 async function initializeApp() {
   console.log('🚀 Initializing A.L.E.C. Frontend...');
 
-  // Check for existing token
-  const savedToken = localStorage.getItem('alec_token');
-  if (savedToken) {
-    CONFIG.currentToken = JSON.parse(savedToken);
-    updateTokenUI();
+  try {
+    // Check for existing token
+    const savedToken = localStorage.getItem('alec_token');
+    if (savedToken) {
+      CONFIG.currentToken = JSON.parse(savedToken);
+      updateTokenUI();
+    }
+
+    // Setup event listeners
+    setupEventListeners();
+
+    // Initialize voice interface if available (don't block on failure)
+    try {
+      await initializeVoiceInterface();
+    } catch (voiceError) {
+      console.log('⚠️ Voice interface initialization failed (expected in browser context):', voiceError);
+      elements.voiceBtn.disabled = true;
+    }
+
+    // Load user settings
+    loadSettings();
+
+    // Check neural network connection status
+    await checkNeuralNetworkStatus();
+
+    console.log('✅ A.L.E.C. Frontend ready - All systems operational');
+  } catch (error) {
+    console.error('❌ Frontend initialization error:', error);
+    showNotification(`⚠️ Initialization warning: ${error.message}`);
   }
+}
 
-  // Setup event listeners
-  setupEventListeners();
+/**
+ * Check neural network connection status
+ */
+async function checkNeuralNetworkStatus() {
+  try {
+    const response = await fetch(`${CONFIG.API_URL}/health`);
+    const data = await response.json();
 
-  // Initialize voice interface if available
-  await initializeVoiceInterface();
+    if (data.status === 'ok') {
+      console.log('✅ Neural Network: Connected and healthy');
 
-  // Load user settings
-  loadSettings();
+      // Update status indicator
+      const statusText = document.getElementById('status-text');
+      if (statusText) {
+        statusText.textContent = `Online - ${data.neuralModel.mode} mode active`;
+      }
 
-  console.log('✅ A.L.E.C. Frontend ready');
+      // Show notification about neural network status
+      showNotification(`🧠 Neural Network: ${data.neuralModel.mode} mode - Ready to chat!`);
+    } else {
+      console.warn('⚠️ Neural Network not responding properly');
+    }
+  } catch (error) {
+    console.error('❌ Neural network connection check failed:', error);
+    showNotification('⚠️ Neural network temporarily unavailable - retrying...');
+  }
 }
 
 function setupEventListeners() {
@@ -229,17 +270,29 @@ async function initializeVoiceInterface() {
     state.voiceConnection = new WebSocket(CONFIG.VOICE_WS_URL);
 
     state.voiceConnection.onopen = () => {
-      console.log('🎤 Voice WebSocket connected');
+      console.log('🎤 Voice WebSocket connected successfully!');
       elements.voiceBtn.disabled = false;
+      // Show notification to user that voice is ready
+      showNotification('Voice interface ready - click the mic button to speak!');
     };
 
     state.voiceConnection.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      handleVoiceMessage(data);
+      try {
+        const data = JSON.parse(event.data);
+        handleVoiceMessage(data);
+      } catch (e) {
+        console.error('Failed to parse voice message:', e);
+      }
     };
 
     state.voiceConnection.onerror = (error) => {
-      console.error('WebSocket error:', error);
+      console.log('⚠️ Voice WebSocket unavailable in browser context');
+      elements.voiceBtn.disabled = true;
+      // Don't show error to user - just disable the button gracefully
+    };
+
+    state.voiceConnection.onclose = () => {
+      console.log('Voice connection closed');
       elements.voiceBtn.disabled = true;
     };
 
@@ -260,22 +313,50 @@ function toggleVoiceMode() {
 
 function startVoiceListening() {
   console.log('🎤 Starting voice listening...');
-  elements.voiceBtn.textContent = '⏹️';
-  elements.voiceVisualizer.classList.remove('hidden');
+
+  // Check if we have the elements before accessing them
+  if (elements.voiceBtn) {
+    elements.voiceBtn.textContent = '⏹️';
+  }
+
+  if (elements.voiceVisualizer) {
+    elements.voiceVisualizer.classList.remove('hidden');
+  }
+
   state.isListening = true;
 
-  // Send initial message to server
-  state.voiceConnection.send(JSON.stringify({ type: 'start_listening' }));
+  // Send initial message to server only if connection exists
+  if (state.voiceConnection && state.voiceConnection.readyState === WebSocket.OPEN) {
+    try {
+      state.voiceConnection.send(JSON.stringify({ type: 'start_listening' }));
+    } catch (e) {
+      console.error('Failed to send start listening command:', e);
+    }
+  } else {
+    showNotification('⚠️ Voice interface not ready - please refresh page');
+  }
 }
 
 function stopVoiceListening() {
   console.log('🔇 Stopping voice listening...');
-  elements.voiceBtn.textContent = '🎤';
-  elements.voiceVisualizer.classList.add('hidden');
+
+  if (elements.voiceBtn) {
+    elements.voiceBtn.textContent = '🎤';
+  }
+
+  if (elements.voiceVisualizer) {
+    elements.voiceVisualizer.classList.add('hidden');
+  }
+
   state.isListening = false;
 
-  if (state.voiceConnection) {
-    state.voiceConnection.send(JSON.stringify({ type: 'stop_listening' }));
+  // Stop listening only if connection exists and is open
+  if (state.voiceConnection && state.voiceConnection.readyState === WebSocket.OPEN) {
+    try {
+      state.voiceConnection.send(JSON.stringify({ type: 'stop_listening' }));
+    } catch (e) {
+      console.error('Failed to send stop listening command:', e);
+    }
   }
 }
 
@@ -417,7 +498,70 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+// Show notification to user
+function showNotification(message) {
+  const existing = document.getElementById('notification-toast');
+  if (existing) {
+    existing.remove();
+  }
+
+  const toast = document.createElement('div');
+  toast.id = 'notification-toast';
+  toast.style.cssText = `
+    position: fixed;
+    top: 80px;
+    right: 20px;
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    color: white;
+    padding: 15px 25px;
+    border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(99, 102, 241, 0.4);
+    z-index: 10000;
+    animation: slideInRight 0.3s ease-out;
+    max-width: 350px;
+    font-size: 14px;
+    line-height: 1.5;
+  `;
+
+  toast.innerHTML = `<strong>🎉 ${message}</strong>`;
+  document.body.appendChild(toast);
+
+  // Auto-remove after 5 seconds
+  setTimeout(() => {
+    toast.style.animation = 'slideOutRight 0.3s ease-out';
+    setTimeout(() => toast.remove(), 300);
+  }, 5000);
+}
+
+/**
+ * Check neural network connection status
+ */
+async function checkNeuralNetworkStatus() {
+  try {
+    const response = await fetch(`${CONFIG.API_URL}/health`);
+    const data = await response.json();
+
+    if (data.status === 'ok') {
+      console.log('✅ Neural Network: Connected and healthy');
+
+      // Update status indicator
+      const statusText = document.getElementById('status-text');
+      if (statusText) {
+        statusText.textContent = `Online - ${data.neuralModel.mode} mode active`;
+      }
+
+      // Show notification about neural network status
+      showNotification(`🧠 Neural Network: ${data.neuralModel.mode} mode - Ready to chat!`);
+    } else {
+      console.warn('⚠️ Neural Network not responding properly');
+    }
+  } catch (error) {
+    console.error('❌ Neural network connection check failed:', error);
+    showNotification('⚠️ Neural network temporarily unavailable - retrying...');
+  }
+}
+
 // Global function for quick ask buttons
 window.quickAsk = quickAsk;
 
-console.log('🎯 A.L.E.C. Frontend loaded successfully');
+console.log('🎯 A.L.E.C. Frontend loaded successfully - Ready to chat!');
