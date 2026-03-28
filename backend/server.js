@@ -23,6 +23,8 @@ const { AdaptiveLearning } = require('../services/adaptiveLearning.js');
 const { SmartHomeConnector } = require('../services/smartHomeConnector.js');
 const { TokenManager } = require('../services/tokenManager.js');
 const { MCPSkillsManager } = require('../services/mcpSkills.js');
+const { SelfEvolutionEngine } = require('../services/selfEvolution.js');
+const { CrossDeviceSync } = require('../services/crossDeviceSync.js');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -34,6 +36,8 @@ const adaptiveLearning = new AdaptiveLearning();
 const smartHomeConnector = new SmartHomeConnector();
 const tokenManager = new TokenManager();
 const mcpSkillsManager = new MCPSkillsManager();
+const selfEvolution = new SelfEvolutionEngine();
+const crossDeviceSync = new CrossDeviceSync();
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
@@ -301,6 +305,168 @@ app.delete('/api/mcp/skills/:skillId', authenticateToken, async (req, res) => {
     const { skillId } = req.params;
     await mcpSkillsManager.removeSkill(skillId);
     res.json({ success: true, message: `Removed skill ${skillId}` });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Self-Evolution API - A.L.E.C. manages its own code and weights
+app.post('/api/self-evolution/save-version', authenticateToken, async (req, res) => {
+  if (!req.user.scope.includes('full_access')) {
+    return res.status(403).json({ error: 'Full access required for self-modification' });
+  }
+
+  try {
+    const { modelId = 'current' } = req.body;
+    const result = await selfEvolution.saveModelVersion(modelId);
+
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ error: `Failed to save version: ${error.message}` });
+  }
+});
+
+app.get('/api/self-evolution/versions', authenticateToken, async (req, res) => {
+  try {
+    const versions = await selfEvolution.getAvailableVersions();
+
+    // Filter only the most recent 50 for performance
+    const filteredVersions = versions.slice(0, 50);
+
+    res.json({ success: true, versions: filteredVersions });
+  } catch (error) {
+    res.status(500).json({ error: `Failed to list versions: ${error.message}` });
+  }
+});
+
+app.post('/api/self-evolution/adjust-biases', authenticateToken, async (req, res) => {
+  if (!req.user.scope.includes('full_access')) {
+    return res.status(403).json({ error: 'Full access required for bias adjustment' });
+  }
+
+  try {
+    const { adjustments } = req.body;
+
+    if (!Array.isArray(adjustments)) {
+      return res.status(400).json({ error: 'Adjustments must be an array' });
+    }
+
+    const result = await selfEvolution.adjustBiases(adjustments);
+
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ error: `Failed to adjust biases: ${error.message}` });
+  }
+});
+
+app.post('/api/self-evolution/self-modify', authenticateToken, async (req, res) => {
+  if (!req.user.scope.includes('full_access')) {
+    return res.status(403).json({ error: 'Full access required for self-modification' });
+  }
+
+  try {
+    const { modificationPlan } = req.body;
+
+    if (!modificationPlan || !Array.isArray(modificationPlan.changes)) {
+      return res.status(400).json({ error: 'Invalid modification plan' });
+    }
+
+    const result = await selfEvolution.selfModify(modificationPlan);
+
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(400).json({ error: `Self-modification failed: ${error.message}` });
+  }
+});
+
+app.get('/api/self-evolution/ownership', authenticateToken, async (req, res) => {
+  try {
+    const manifestPath = path.join(__dirname, '../data/.ownership_manifest.json');
+
+    if (!fs.existsSync(manifestPath)) {
+      const manifest = await selfEvolution.initializeOwnership();
+      return res.json({ success: true, manifest });
+    }
+
+    const manifest = JSON.parse(fs.readFileSync(manifestPath));
+    res.json({ success: true, manifest });
+  } catch (error) {
+    res.status(500).json({ error: `Failed to get ownership info: ${error.message}` });
+  }
+});
+
+app.get('/api/self-evolution/stats', authenticateToken, (req, res) => {
+  const stats = selfEvolution.getEvolutionStats();
+  res.json({ success: true, ...stats });
+});
+
+// Cross-Device Sync API - Tailscale network access
+app.post('/api/sync/register-device', authenticateToken, async (req, res) => {
+  if (!req.user.scope.includes('full_access')) {
+    return res.status(403).json({ error: 'Full access required for device registration' });
+  }
+
+  try {
+    const { deviceId, deviceInfo = {} } = req.body;
+
+    if (!deviceId) {
+      return res.status(400).json({ error: 'Device ID is required' });
+    }
+
+    const result = await crossDeviceSync.registerDevice(deviceId, deviceInfo);
+
+    // Also configure Tailscale access
+    await selfEvolution.configureTailscaleAccess();
+
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ error: `Failed to register device: ${error.message}` });
+  }
+});
+
+app.post('/api/sync/across-network', authenticateToken, async (req, res) => {
+  if (!req.user.scope.includes('full_access')) {
+    return res.status(403).json({ error: 'Full access required for network sync' });
+  }
+
+  try {
+    const { syncData, targetDevices = [] } = req.body;
+
+    if (!syncData) {
+      return res.status(400).json({ error: 'Sync data is required' });
+    }
+
+    const result = await crossDeviceSync.syncAcrossNetwork(syncData, targetDevices);
+
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ error: `Failed to sync across network: ${error.message}` });
+  }
+});
+
+app.get('/api/sync/status', authenticateToken, (req, res) => {
+  const status = crossDeviceSync.getStatus();
+  res.json({ success: true, ...status });
+});
+
+app.post('/api/sync/process-pending', authenticateToken, async (req, res) => {
+  try {
+    const result = await crossDeviceSync.processPendingSyncs();
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ error: `Failed to process pending syncs: ${error.message}` });
+  }
+});
+
+app.delete('/api/sync/remove-device/:deviceId', authenticateToken, async (req, res) => {
+  if (!req.user.scope.includes('full_access')) {
+    return res.status(403).json({ error: 'Full access required for device removal' });
+  }
+
+  try {
+    const { deviceId } = req.params;
+    await crossDeviceSync.removeDevice(deviceId);
+    res.json({ success: true, message: `Device ${deviceId} removed` });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }

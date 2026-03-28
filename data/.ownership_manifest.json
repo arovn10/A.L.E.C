@@ -1,0 +1,28 @@
+{
+  "owner": "arovn10",
+  "repository": "https://github.com/arovn10/A.L.E.C.git",
+  "version": "1.0.0",
+  "timestamp": "2026-03-28T22:04:19.806Z",
+  "assets": [
+    {
+      "name": "neural_weights",
+      "path": "/Users/alecrovner/A.L.E.C/services/../data/models",
+      "type": "binary"
+    },
+    {
+      "name": "code_base",
+      "path": "/Users/alecrovner/A.L.E.C/services",
+      "type": "source_code"
+    },
+    {
+      "name": "biases_config",
+      "path": "/Users/alecrovner/A.L.E.C/services/../data/biases.json",
+      "type": "config"
+    }
+  ],
+  "permissions": {
+    "selfModification": true,
+    "crossDeviceSync": true,
+    "tscAccess": true
+  }
+}
