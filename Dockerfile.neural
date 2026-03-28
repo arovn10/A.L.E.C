@@ -1,0 +1,51 @@
+# A.L.E.C. - Neural Network Service Docker Image
+# Optimized for ML workloads with GPU support
+
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04 AS builder
+
+WORKDIR /app
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy package files
+COPY package*.json ./
+
+# Install Python dependencies for ML
+RUN pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+RUN pip3 install transformers accelerate peft bitsandbytes
+
+# Copy source code
+COPY . .
+
+# Install Node.js dependencies (if needed)
+# RUN npm install
+
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+
+LABEL maintainer="Your Name"
+LABEL description="A.L.E.C. Neural Network Service - GPU Accelerated ML Processing"
+
+WORKDIR /app
+
+# Copy from builder
+COPY --from=builder /usr/local/lib/python3.10/dist-packages /usr/local/lib/python3.10/dist-packages
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/services ./services
+
+# Create directories for models and data
+RUN mkdir -p data/models logs
+
+ENV CUDA_VISIBLE_DEVICES=0
+ENV PYTHONPATH=/app:$PYTHONPATH
+ENV NEURAL_MODEL_PATH=/app/data/models/personal_model.bin
+
+EXPOSE 3002
+
+CMD ["python3", "services/neural_worker.py"]

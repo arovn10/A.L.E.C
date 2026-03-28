@@ -1,0 +1,56 @@
+# A.L.E.C. - Render Deployment Configuration
+services:
+  # Main API Service (Backend)
+  - type: web
+    name: alec-api
+    env: docker
+    repo: https://github.com/arovn10/A.L.E.C.git
+    dockerfilePath: ./Dockerfile
+    rootDir: .
+    branch: main
+    plan: pro
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3001"
+      - key: JWT_SECRET
+        generateValue: true
+        sync: false
+      # Add your STOA credentials here (set in Render dashboard)
+      # DB_SERVER, DB_DATABASE, etc.
+
+  # Neural Service (Separate for heavy ML workloads)
+  - type: web
+    name: alec-neural
+    env: docker
+    repo: https://github.com/arovn10/A.L.E.C.git
+    dockerfilePath: ./Dockerfile.neural
+    rootDir: .
+    branch: main
+    plan: standard
+    autoDeploy: true
+    healthCheckPath: /health
+    disk:
+      name: neural-data
+      mountPath: /app/data
+      sizeGB: 50
+
+# Cron Jobs for background tasks
+- type: cron
+  name: alec-neural-retrain-daily
+  env: docker
+  repo: https://github.com/arovn10/A.L.E.C.git
+  rootDir: .
+  branch: main
+  schedule: "0 7 * * *" # Every day at 7 AM UTC
+  startCommand: node scripts/cron-neural-retrain.js
+
+# Database (optional - for persistent storage)
+- type: postgres
+  name: alec-database
+  plan: standard
+  databaseName: alec
+  user: alec_user

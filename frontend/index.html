@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>A.L.E.C. - Your Personal AI Companion</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- Background Animation -->
+  <div class="background-animation">
+    <div class="neural-network"></div>
+    <div class="pulse-orbit"></div>
+  </div>
+
+  <!-- Main Interface Container -->
+  <div class="interface-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo-section">
+        <div class="alec-avatar" id="alecAvatar">
+          <div class="avatar-ring"></div>
+          <div class="avatar-core"></div>
+        </div>
+        <div class="header-text">
+          <h1>A.L.E.C.</h1>
+          <p class="subtitle">Adaptive Learning Executive Companion</p>
+          <div class="status-indicator" id="statusIndicator">
+            <span class="status-dot"></span>
+            <span class="status-text">Online - Ready to Learn</span>
+          </div>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button class="icon-btn" id="settingsBtn" title="Settings">⚙️</button>
+        <button class="icon-btn" id="voiceBtn" title="Voice Interface" disabled>🎤</button>
+      </div>
+    </header>
+
+    <!-- Main Chat Area -->
+    <main class="chat-container">
+      <div class="welcome-message" id="welcomeMessage">
+        <h2>Welcome to A.L.E.C.</h2>
+        <p>I'm your personal AI companion, trained on your data and designed to help you innovate.</p>
+        <p><strong>How can I assist you today?</strong></p>
+        <div class="suggestion-chips">
+          <button class="chip" onclick="quickAsk('What are my priorities for today?')">📋 Daily Priorities</button>
+          <button class="chip" onclick="quickAsk('Help me brainstorm ideas for a new project')">💡 Brainstorming</button>
+          <button class="chip" onclick="quickAsk('Analyze this email: [paste content here]')">📧 Email Analysis</button>
+          <button class="chip" onclick="quickAsk('What patterns do you see in my work habits?')">🔍 Pattern Analysis</button>
+        </div>
+      </div>
+
+      <!-- Chat Messages -->
+      <div class="chat-messages" id="chatMessages">
+        <!-- Messages will be dynamically added here -->
+      </div>
+
+      <!-- Voice Visualizer (hidden by default) -->
+      <div class="voice-visualizer hidden" id="voiceVisualizer">
+        <div class="waveform"></div>
+        <p class="listening-text">🎤 Listening...</p>
+      </div>
+
+      <!-- Input Area -->
+      <div class="input-container">
+        <div class="input-wrapper">
+          <textarea
+            id="messageInput"
+            placeholder="Type your message to A.L.E.C..."
+            rows="1"
+            autocomplete="off"
+          ></textarea>
+          <button class="send-btn" id="sendBtn">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="22" y1="2" x2="11" y2="13"></line>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            </svg>
+          </button>
+        </div>
+        <div class="input-hints">
+          <span id="tokenStatus" class="token-badge">🔒 STOA Access</span>
+          <span class="hint">Press Enter to send • Shift+Enter for new line</span>
+        </div>
+      </div>
+    </main>
+
+    <!-- Sidebar Panel -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <h3>📊 A.L.E.C. Insights</h3>
+        <button class="close-sidebar" id="closeSidebar">×</button>
+      </div>
+      <div class="sidebar-content">
+        <!-- Stats Cards -->
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-icon">🧠</div>
+            <div class="stat-value" id="queriesCount">0</div>
+            <div class="stat-label">Queries Processed</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon">💬</div>
+            <div class="stat-value" id="patternsCount">0</div>
+            <div class="stat-label">Patterns Detected</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon">🎯</div>
+            <div class="stat-value" id="confidenceScore">85%</div>
+            <div class="stat-label">Avg Confidence</div>
+          </div>
+        </div>
+
+        <!-- Personality Profile -->
+        <div class="profile-section">
+          <h4>Your Communication Style</h4>
+          <div class="personality-bars">
+            <div class="bar-container">
+              <span>Sass Level</span>
+              <div class="bar" style="width: 70%">
+                <div class="bar-fill sass"></div>
+              </div>
+            </div>
+            <div class="bar-container">
+              <span>Initiative Mode</span>
+              <div class="bar" style="width: 80%">
+                <div class="bar-fill initiative"></div>
+              </div>
+            </div>
+            <div class="bar-container">
+              <span>Empathy</span>
+              <div class="bar" style="width: 90%">
+                <div class="bar-fill empathy"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Recent Interactions -->
+        <div class="recent-section">
+          <h4>Recent Topics</h4>
+          <ul id="topicList" class="topic-list">
+            <li class="topic-item">📊 Project Management</li>
+            <li class="topic-item">💡 Innovation Ideas</li>
+            <li class="topic-item">📧 Email Analysis</li>
+          </ul>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Settings Modal -->
+    <div class="modal hidden" id="settingsModal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>⚙️ A.L.E.C. Configuration</h2>
+          <button class="close-modal" id="closeSettings">×</button>
+        </div>
+        <div class="modal-body">
+          <!-- Token Management -->
+          <div class="settings-section">
+            <h3>🔐 Access Tokens</h3>
+            <div class="token-controls">
+              <button class="btn-primary" id="generateSTOAToken">Generate STOA Access Token</button>
+              <button class="btn-secondary" id="generateFullToken">Generate Full Capabilities Token</button>
+            </div>
+            <div class="tokens-display" id="tokensDisplay"></div>
+          </div>
+
+          <!-- Personality Settings -->
+          <div class="settings-section">
+            <h3>🎭 Personality Configuration</h3>
+            <label class="setting-label">
+              <span>Sass Level (0-1)</span>
+              <input type="range" id="sassLevel" min="0" max="100" value="70">
+              <output for="sassLevel" id="sassValue">0.7</output>
+            </label>
+            <label class="setting-label">
+              <span>Initiative Mode (0-1)</span>
+              <input type="range" id="initiativeLevel" min="0" max="100" value="80">
+              <output for="initiativeLevel" id="initiativeValue">0.8</output>
+            </label>
+          </div>
+
+          <!-- Data Sources -->
+          <div class="settings-section">
+            <h3>📚 Personal Data Sources</h3>
+            <p style="color: #666; font-size: 14px;">Connect your emails, texts, and documents to personalize A.L.E.C.</p>
+            <button class="btn-outline" id="connectDataSources">Connect Data Sources</button>
+          </div>
+
+          <!-- Neural Network Status -->
+          <div class="settings-section">
+            <h3>🧠 Neural Network Status</h3>
+            <div class="neural-status" id="neuralStatus">
+              Loading...
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- JavaScript -->
+  <script src="app.js"></script>
+</body>
+</html>
