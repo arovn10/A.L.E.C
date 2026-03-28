@@ -1,5 +1,5 @@
 /**
- * A.L.E.C. - Adaptive Learning Executive Companion
+ * A.L.E.C. - Adaptive Learning Executive Coordinator
  * Main Server Entry Point
  *
  * Features:
@@ -321,7 +321,7 @@ if (!fs.existsSync(path.join(__dirname, '../data/models/personal_model.bin'))) {
 app.listen(PORT, () => {
   console.log(`
 ╔══════════════════════════════════════════════════════╗
-║   🤖 A.L.E.C. - Adaptive Learning Executive Companion   ║
+║   🤖 A.L.E.C. - Adaptive Learning Executive Coordinator   ║
 ╠══════════════════════════════════════════════════════╣
 ║   Status: ONLINE                                     ║
 ║   Port: ${PORT}                                        ║

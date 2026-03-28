@@ -1,4 +1,4 @@
-# A.L.E.C - Adaptive Learning Executive Companion
+# A.L.E.C - Adaptive Learning Executive Coordinator
 
 **Your Personal AI Companion - Trained on Your Data, Language, and Thought Processes**
 

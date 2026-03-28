@@ -2,7 +2,7 @@
 
 ## 🎯 Overview
 
-A.L.E.C. (Adaptive Learning Executive Companion) is your personal AI assistant trained on your data, language, and thought processes. Like JARVIS from Iron Man, but smarter and more personal.
+A.L.E.C. (Adaptive Learning Executive Coordinator) is your personal AI assistant trained on your data, language, and thought processes. Like JARVIS from Iron Man, but smarter and more personal.
 
 ---
 
