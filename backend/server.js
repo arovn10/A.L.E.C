@@ -20,6 +20,7 @@ const { VoiceInterface } = require('../services/voiceInterface.js');
 const { AdaptiveLearning } = require('../services/adaptiveLearning.js');
 const { SmartHomeConnector } = require('../services/smartHomeConnector.js');
 const { TokenManager } = require('../services/tokenManager.js');
+const { MCPSkillsManager } = require('../services/mcpSkills.js');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -30,6 +31,7 @@ const voiceInterface = new VoiceInterface();
 const adaptiveLearning = new AdaptiveLearning();
 const smartHomeConnector = new SmartHomeConnector();
 const tokenManager = new TokenManager();
+const mcpSkillsManager = new MCPSkillsManager();
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
@@ -216,24 +218,84 @@ app.post('/api/tokens/generate', async (req, res) => {
   }
 });
 
-// Skills management - A.L.E.C. can install new capabilities
-app.post('/api/skills/install', authenticateToken, async (req, res) => {
+// MCP Skills management - Install new capabilities via Model Context Protocol
+app.post('/api/mcp/skills/install', authenticateToken, async (req, res) => {
   if (!req.user.scope.includes('full_access')) {
     return res.status(403).json({ error: 'Full access required' });
   }
 
   try {
-    const { skillName, url } = req.body;
+    const { skillId, permissions = [], autoConnect = false } = req.body;
 
-    await adaptiveLearning.installSkill(skillName, url);
+    const skillConfig = await mcpSkillsManager.installSkill(skillId, { permissions, autoConnect });
 
     res.json({
       success: true,
-      message: `Skill ${skillName} installed successfully`,
-      skill: await adaptiveLearning.getInstalledSkills()
+      message: `MCP Skill ${skillConfig.name} installed successfully`,
+      skill: skillConfig
     });
   } catch (error) {
-    res.status(500).json({ error: 'Skill installation failed' });
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Get available MCP skills for installation
+app.get('/api/mcp/skills/available', authenticateToken, (req, res) => {
+  const availableSkills = mcpSkillsManager.getAvailableSkills();
+  res.json({ success: true, skills: availableSkills });
+});
+
+// Connect to an installed skill
+app.post('/api/mcp/skills/connect/:skillId', authenticateToken, async (req, res) => {
+  if (!req.user.scope.includes('full_access')) {
+    return res.status(403).json({ error: 'Full access required' });
+  }
+
+  try {
+    const { skillId } = req.params;
+    const connectionConfig = req.body;
+
+    const result = await mcpSkillsManager.connectSkill(skillId, connectionConfig);
+
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// List installed skills with status
+app.get('/api/mcp/skills/installed', authenticateToken, (req, res) => {
+  const installed = mcpSkillsManager.getInstalledSkills();
+  res.json({ success: true, skills: installed });
+});
+
+// Disconnect a skill
+app.post('/api/mcp/skills/disconnect/:skillId', authenticateToken, async (req, res) => {
+  if (!req.user.scope.includes('full_access')) {
+    return res.status(403).json({ error: 'Full access required' });
+  }
+
+  try {
+    const { skillId } = req.params;
+    await mcpSkillsManager.disconnectSkill(skillId);
+    res.json({ success: true, message: `Disconnected from ${skillId}` });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Remove a skill completely
+app.delete('/api/mcp/skills/:skillId', authenticateToken, async (req, res) => {
+  if (!req.user.scope.includes('full_access')) {
+    return res.status(403).json({ error: 'Full access required' });
+  }
+
+  try {
+    const { skillId } = req.params;
+    await mcpSkillsManager.removeSkill(skillId);
+    res.json({ success: true, message: `Removed skill ${skillId}` });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
   }
 });
 
