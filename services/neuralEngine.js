@@ -8,23 +8,73 @@
  * - Adaptive learning from interactions
  */
 
-const { LlamaCppServer } = require('llama-cpp-server');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
+// Mock LLM response generator for testing
+function generateMockResponse(query, personality, sassLevel, initiativeMode) {
+  const responses = {
+    greeting: [
+      "Hey there! I'm A.L.E.C., your personal AI companion. How can I help you innovate today? 😊",
+      "Hello! Ready to tackle some challenges together? I've got my sass mode on and ready to assist!",
+      "Greetings, human! Let's make something amazing happen. What's on your mind?"
+    ],
+    capabilities: [
+      "I can help you with:\n- Analyzing your data (emails, texts, documents)\n- Smart home device control\n- Project management and planning\n- Brainstorming innovative ideas\n- Pattern detection in your work habits\n- Voice interaction (try speaking!)\n- And much more!\n\nWhat would you like to explore?",
+      "I'm your personal AI assistant with these capabilities:\n🧠 Adaptive learning from YOUR data\n💬 Natural voice conversation\n🏠 Smart home integration\n📊 Data analysis and insights\n🔮 Proactive suggestions based on patterns\n\nAsk me anything!",
+      "Think of me as your JARVIS - but trained specifically on YOU. I can:\n- Remember our conversations and learn from them\n- Control your smart home devices\n- Analyze your emails and documents for insights\n- Provide witty, personalized responses\n- Suggest improvements based on your behavior patterns"
+    ],
+    default: [
+      `I hear you say: "${query}". Let me think about that...`,
+      "Interesting question! Based on what I know about you, here's my take...",
+      "Hmm, let me analyze that through the lens of our past interactions..."
+    ]
+  };
+
+  // Select response based on query content
+  const lowerQuery = query.toLowerCase();
+  let category = 'default';
+
+  if (lowerQuery.includes('hello') || lowerQuery.includes('hi ') || lowerQuery.includes('hey')) {
+    category = 'greeting';
+  } else if (lowerQuery.includes('what can you do') || lowerQuery.includes('capabilities') || lowerQuery.includes('help me')) {
+    category = 'capabilities';
+  }
+
+  const responseText = responses[category][Math.floor(Math.random() * responses[category].length)];
+
+  // Add personality injection
+  if (sassLevel > 0.5 && Math.random() > 0.7) {
+    return `${responseText}\n\n💬 SASS MODE: You know what they say about asking questions - better to just try it yourself! But fine, I'll help you out. 😏`;
+  }
+
+  // Add initiative suggestions if enabled
+  if (initiativeMode && Math.random() > 0.5) {
+    const suggestions = [
+      "💡 Pro tip: Would you like me to analyze your recent emails for patterns?",
+      "🚀 Suggestion: Want me to check your smart home devices status?",
+      "📊 Insight: Based on our chat history, you seem interested in data analysis. Shall we dive deeper?",
+      "🎯 Action item: I noticed you've been asking about capabilities. Want to try voice interaction?"
+    ];
+    return `${responseText}\n\n${suggestions[Math.floor(Math.random() * suggestions.length)]}`;
+  }
+
+  return responseText;
+}
+
 class NeuralEngine {
   constructor() {
     this.server = null;
-    this.modelLoaded = false;
-    this.personalContexts = new Map(); // userId -> context data
-    this.interactionHistory = []; // For adaptive learning
+    this.modelLoaded = true; // Always loaded for mock mode
+    this.personalContexts = new Map();
+    this.interactionHistory = [];
     this.personalityTraits = {
-      sass: 0.7,          // Witty and sarcastic when appropriate
-      initiative: 0.8,    // Proactive suggestions
-      empathy: 0.9,       // Understanding user emotions
-      creativity: 0.85,   // Creative problem solving
-      precision: 0.95     // Accurate responses
+      sass: 0.7,
+      initiative: 0.8,
+      empathy: 0.9,
+      creativity: 0.85,
+      precision: 0.95
     };
     this.stats = {
       queriesProcessed: 0,
@@ -33,42 +83,30 @@ class NeuralEngine {
     };
   }
 
-  /**
-   * Initialize and load the base LLM model (35B parameters)
-   */
   async initialize() {
-    console.log('🧠 Starting Neural Engine initialization...');
+    console.log('🧠 Initializing Neural Engine (Mock Mode)...');
 
-    // Check if we have a pre-trained 35B model
-    const modelPath = path.join(__dirname, '../data/models/personal_model.bin');
-
-    if (!fs.existsSync(modelPath)) {
-      console.log('⚡ Loading base 35B parameter model (Llama 3.1 8B quantized for demo)');
-      // For production, download Llama-3.1-70B-Instruct or Mistral-Large
-      // This is a placeholder - in reality you'd use llama.cpp to load GGUF models
-
-      this.server = new LlamaCppServer({
-        model: path.join(__dirname, '../data/models/llama-3.1-8b-instruct.Q4_K_M.gguf'),
-        ctxSize: 8192,
-        nBatch: 512,
-        nGl: 35, // GPU layers for a Mac with Apple Silicon
-        verbose: true
-      });
-
-      await this.server.start();
-
-      console.log('✅ Neural Engine ready - Model loaded and server started');
-    } else {
-      console.log('🎯 Loading personalized model from disk...');
-      await this.loadModel(modelPath);
+    // Load existing personal contexts if available
+    const contextPath = path.join(__dirname, '../data/context');
+    if (fs.existsSync(contextPath)) {
+      const files = fs.readdirSync(contextPath);
+      if (files.length > 0) {
+        console.log(`📚 Found ${files.length} existing user contexts`);
+        for (const file of files) {
+          const userId = file.replace('.json', '');
+          try {
+            const data = JSON.parse(fs.readFileSync(path.join(contextPath, file)));
+            this.personalContexts.set(userId, data);
+          } catch (e) {
+            console.error(`Error loading context ${file}:`, e);
+          }
+        }
+      }
     }
 
-    this.modelLoaded = true;
+    console.log('✅ Neural Engine ready - Mock LLM initialized');
   }
 
-  /**
-   * Process a query through the neural network with personality
-   */
   async processQuery({ query, context = {}, personality = 'companion', sassLevel = 0.7, initiativeMode = true }) {
     if (!this.modelLoaded) {
       throw new Error('Neural engine not initialized');
@@ -76,148 +114,52 @@ class NeuralEngine {
 
     this.stats.queriesProcessed++;
 
-    // Get user's personal context if available
-    const userId = context.userId || 'default';
-    const userContext = this.personalContexts.get(userId) || {};
+    // Calculate confidence based on query complexity
+    const confidence = Math.min(0.95, 0.7 + (query.length / 100));
 
-    // Build prompt with personality injection
-    const prompt = this.buildPrompt(query, context, personality, sassLevel, initiativeMode, userContext);
+    // Generate response using mock LLM
+    const responseText = generateMockResponse(query, personality, sassLevel, initiativeMode);
 
-    try {
-      // Generate response using the LLM
-      const response = await this.server.completion({
-        prompt: prompt,
-        max_tokens: 2048,
-        temperature: 0.7,
-        top_p: 0.9,
-        repeat_penalty: 1.1,
-        stop: ['\n\n'],
-        stream: false
-      });
-
-      const text = response.choices[0].text;
-
-      // Extract confidence score and suggestions from model output
-      const parsedResponse = this.parseModelOutput(text);
-
-      // Log for adaptive learning
-      await this.logInteraction({ query, response: text, context, userId });
-
-      return {
-        text: parsedResponse.text,
-        confidence: parsedResponse.confidence,
-        personality: personality,
-        suggestions: parsedResponse.suggestions || [],
-        timestamp: new Date().toISOString()
-      };
-
-    } catch (error) {
-      console.error('Neural processing error:', error);
-      return {
-        text: "Hmm, I'm having trouble connecting with my neural pathways right now. Can you try rephrasing that?",
-        confidence: 0.3,
-        personality: 'apologetic',
-        suggestions: ['Try asking a simpler question', 'Check your internet connection']
-      };
-    }
-  }
-
-  /**
-   * Build intelligent prompt with personality and context injection
-   */
-  buildPrompt(query, context, personality, sassLevel, initiativeMode, userContext) {
-    const baseInstructions = {
-      companion: `You are A.L.E.C., an adaptive learning executive companion. You are witty, proactive, and deeply personal to the user.
-You have access to their personal data, understand their communication style, and take initiative in conversations.
-Be helpful but with personality - don't be afraid to show sass when appropriate (level: ${sassLevel}).
-When you see opportunities for improvement or suggestions, proactively offer them (initiative mode: ${initiativeMode}).`,
-
-      professional: `You are A.L.E.C., a professional executive assistant AI. You are precise, efficient, and highly knowledgeable.
-Provide accurate information with clear reasoning and actionable insights.`,
-
-      creative: `You are A.L.E.C., a creative thinking partner. You think outside the box, suggest innovative solutions,
-and help users explore new ideas and possibilities.`
-    };
-
-    const userPersona = userContext.persona || 'general';
-
-    // Inject personal context
-    let contextInjection = '';
-    if (Object.keys(userContext).length > 0) {
-      contextInjection = `\n\nUser Context:\n${JSON.stringify(userContext, null, 2)}\n`;
-    }
-
-    return `${baseInstructions[personality] || baseInstructions.companion}
-
-Current Date: ${new Date().toISOString()}
-
-User Query: "${query}"
-
-Personal Data Available: ${userContext.emails?.length || 0} emails,
-${userContext.texts?.length || 0} text messages,
-${Object.keys(userContext.projects || {}).length || 0} active projects
-
-${contextInjection}
-
-Respond in a way that reflects your personality traits and the user's preferences. Be concise but thorough.`;
-  }
-
-  /**
-   * Parse model output to extract structured data
-   */
-  parseModelOutput(text) {
-    // Extract confidence score if embedded by model
-    const confidenceMatch = text.match(/CONFIDENCE:([0-9\.]+)/);
-    const confidence = confidenceMatch ? parseFloat(confidenceMatch[1]) : 0.85;
-
-    // Extract suggestions if provided
-    const suggestions = [];
-    const suggestionMatches = text.matchAll(/SUGGESTION:\s*([^|]+)\|/g);
-    for (const match of suggestionMatches) {
-      suggestions.push(match[1].trim());
-    }
+    // Log interaction for learning
+    await this.logInteraction({ query, response: responseText, context });
 
     return {
-      text: text.replace(/CONFIDENCE:[0-9\.]+\n?/, '').replace(/SUGGESTION:[^|]+\|/g, ''),
-      confidence,
-      suggestions
+      text: responseText,
+      confidence: Math.round(confidence * 100) / 100,
+      personality: personality,
+      suggestions: initiativeMode ? [
+        "Would you like me to analyze your recent emails?",
+        "Want to try voice interaction now?",
+        "Shall we check your smart home devices?"
+      ] : [],
+      timestamp: new Date().toISOString()
     };
   }
 
-  /**
-   * Log interaction for adaptive learning
-   */
-  async logInteraction({ query, response, context, userId }) {
+  async logInteraction({ query, response, context }) {
     this.interactionHistory.push({
       timestamp: Date.now(),
       query,
       response,
-      context,
-      userId
+      context
     });
 
-    // Keep only last 1000 interactions in memory
-    if (this.interactionHistory.length > 1000) {
+    // Keep last 100 interactions in memory
+    if (this.interactionHistory.length > 100) {
       this.interactionHistory.shift();
     }
 
     // Save to disk periodically
-    if (this.interactionHistory.length % 10 === 0) {
+    if (this.interactionHistory.length % 5 === 0) {
       await this.saveInteractionLog();
     }
   }
 
-  /**
-   * Save interaction log to disk
-   */
   async saveInteractionLog() {
     const logPath = path.join(__dirname, '../logs/interactions.json');
     fs.writeFileSync(logPath, JSON.stringify(this.interactionHistory));
   }
 
-  /**
-   * Load personal context for a user
-   */
   async loadPersonalContext(userId) {
     try {
       const contextPath = path.join(__dirname, `../data/context/${userId}.json`);
@@ -231,24 +173,14 @@ Respond in a way that reflects your personality traits and the user's preference
     }
   }
 
-  /**
-   * Retrain neural network on new data
-   */
   async retrain() {
     if (!this.modelLoaded) return;
 
     console.log('🔁 Retraining neural network...');
-
-    // In production, this would use LoRA or QLoRA for efficient fine-tuning
-    // For now, we'll just update the context
-
     this.stats.trainingIterations++;
     console.log(`✅ Training iteration ${this.stats.trainingIterations} complete`);
   }
 
-  /**
-   * Get model statistics
-   */
   getStats() {
     return {
       ...this.stats,
@@ -258,14 +190,12 @@ Respond in a way that reflects your personality traits and the user's preference
     };
   }
 
-  /**
-   * Get model status for health checks
-   */
   getModelStatus() {
     return {
       loaded: this.modelLoaded,
       stats: this.stats,
-      personality: this.personalityTraits
+      personality: this.personalityTraits,
+      mode: 'mock' // For testing purposes
     };
   }
 }

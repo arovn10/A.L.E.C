@@ -10,6 +10,8 @@
  * - Multi-token authentication system
  */
 
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
@@ -126,8 +128,11 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
   }
 });
 
-// Voice interface endpoint (WebSocket for real-time)
-app.use('/voice', voiceInterface.getWebSocketHandler());
+// Voice interface - WebSocket server runs separately
+const voiceServer = voiceInterface.initialize();
+if (voiceServer) {
+  console.log('🎤 Voice WebSocket initialized');
+}
 
 // Adaptive learning - train on user data
 app.post('/api/learn', authenticateToken, async (req, res) => {
@@ -205,13 +210,15 @@ app.post('/api/tokens/generate', async (req, res) => {
       return res.status(400).json({ error: 'Invalid token type' });
     }
 
-    const token = tokenManager.generateToken(userId, type, permissions);
+    const tokenData = tokenManager.generateToken(userId, type, permissions);
 
     res.json({
       success: true,
-      token,
-      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // 24 hours
-      type
+      token: tokenData.token,
+      userId: tokenData.userId,
+      tokenType: tokenData.tokenType,
+      permissions: tokenData.permissions,
+      expiresAt: tokenData.expiresAt
     });
   } catch (error) {
     res.status(500).json({ error: 'Token generation failed' });

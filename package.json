@@ -21,10 +21,9 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.25.0",
     "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
-    "llama-cpp-server": "^0.36.0",
-    "vite": "^5.2.11",
     "ws": "^8.17.0"
   },
   "devDependencies": {
