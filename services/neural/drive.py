@@ -29,6 +29,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from dedup import DedupCache
+
 logger = logging.getLogger("alec.drive")
 
 DRIVE_LOG = Path(__file__).resolve().parent.parent.parent / "data" / "drive_log.jsonl"
@@ -61,6 +63,11 @@ class DriveEngine:
         self.improvements_made = 0
         self.improvements_today = 0
         self.today_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+
+        # Dedup caches — prevent the same items from resurfacing each cycle
+        self._frontier_dedup = DedupCache("frontier_opps", ttl_days=30)
+        self._innovation_dedup = DedupCache("innovation", ttl_days=14)
+        self._growth_email_dedup = DedupCache("growth_emails", ttl_days=7)
 
         # Cadence — aggressive self-improvement
         self.MIN_DAILY_IMPROVEMENTS = 3   # Must make 3+ improvements per day
@@ -324,8 +331,18 @@ class DriveEngine:
             else:
                 results["actions_pending_approval"].append(action)
 
-        # Email the owner about pending approvals
-        if results["actions_pending_approval"] and self.autonomy and self.autonomy.email_configured:
+        # Email the owner about pending approvals — dedup by action description
+        # so the same suggestion isn't emailed every 8-hour cycle
+        new_pending = []
+        for a in results["actions_pending_approval"]:
+            action_key = f"{a['type']}:{a['description'][:80]}"
+            if self._growth_email_dedup.is_new(action_key):
+                new_pending.append(a)
+                self._growth_email_dedup.mark_seen(action_key)
+        if new_pending:
+            self._growth_email_dedup.save()
+
+        if new_pending and self.autonomy and self.autonomy.email_configured:
             body_parts = [
                 "A.L.E.C. Growth Plan — Actions Needing Your Approval",
                 f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
@@ -333,7 +350,7 @@ class DriveEngine:
                 "",
             ]
 
-            for a in results["actions_pending_approval"]:
+            for a in new_pending:
                 body_parts.append(f"[{a['type'].upper()}] {a['description']}")
                 body_parts.append("  Reply 'approved' to implement this change.")
                 body_parts.append("")
@@ -399,20 +416,26 @@ class DriveEngine:
                     "relevance": "New model that might outperform current one",
                 })
 
+        # Dedup opportunities by URL so the same article doesn't get emailed
+        # every daily scan cycle
+        new_opps, opps_skipped = self._frontier_dedup.batch_filter(opportunities, key_field="url")
+        self._frontier_dedup.save()
+
         result = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "findings": len(findings),
-            "opportunities": opportunities,
+            "opportunities": new_opps,
+            "duplicates_skipped": opps_skipped,
         }
 
-        # Email the owner with opportunities
-        if opportunities and self.autonomy.email_configured:
+        # Email the owner with NEW opportunities only
+        if new_opps and self.autonomy.email_configured:
             body_parts = [
                 "A.L.E.C. AI Frontier Scan",
-                f"I found {len(opportunities)} opportunities to improve myself:",
+                f"I found {len(new_opps)} new opportunities to improve myself:",
                 "",
             ]
-            for opp in opportunities:
+            for opp in new_opps:
                 body_parts.append(f"[{opp['type'].upper()}] {opp['finding']}")
                 body_parts.append(f"  Why: {opp['relevance']}")
                 body_parts.append(f"  Source: {opp['url']}")
@@ -549,12 +572,18 @@ class DriveEngine:
         results = {"actions_taken": 0, "ideas": []}
         
         # 1. Analyze recent failures and create corrective training data
+        #    Dedup by conversation ID so the same failure isn't re-analyzed every cycle
         try:
             convos = self.db.get_conversations(limit=100)
             failures = [c for c in convos if (c.get("user_rating") or 0) < 0]
-            if failures:
-                # Each failure is a learning opportunity
-                for fail in failures[:5]:
+            new_failures = []
+            for fail in failures:
+                fail_key = f"fail_{fail.get('id', 0)}"
+                if self._innovation_dedup.is_new(fail_key):
+                    new_failures.append(fail)
+                    self._innovation_dedup.mark_seen(fail_key)
+            if new_failures:
+                for fail in new_failures[:5]:
                     self.memory.teach(
                         "correction",
                         f"failed_response_{fail.get('id', 0)}",
@@ -562,10 +591,11 @@ class DriveEngine:
                         f"Bad response was given (thumbs down)",
                         source="innovation",
                     )
-                results["ideas"].append(f"Analyzed {len(failures)} failed responses, stored corrections")
+                results["ideas"].append(f"Analyzed {len(new_failures)} NEW failed responses, stored corrections")
                 results["actions_taken"] += 1
                 self.improvements_today += 1
                 self.improvements_made += 1
+                self._innovation_dedup.save()
         except Exception as e:
             logger.debug(f"Failure analysis failed: {e}")
 

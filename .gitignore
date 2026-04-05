@@ -42,6 +42,7 @@ __pycache__/
 .eggs/
 
 # ── Runtime state (local, not code) ──────────────────────────────
+data/dedup/
 data/research_seen.json
 data/autonomy_log.jsonl
 data/drive_log.jsonl
