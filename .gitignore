@@ -46,6 +46,10 @@ data/dedup/
 data/research_seen.json
 data/autonomy_log.jsonl
 data/drive_log.jsonl
+data/memory.db
+data/memory.db-*
+data/skills.json
+data/goals.json
 
 # ── SQLite fallback database ─────────────────────────────────────
 data/alec.db
