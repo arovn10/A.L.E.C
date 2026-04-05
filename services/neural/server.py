@@ -11,6 +11,7 @@ import uuid
 import time
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
@@ -308,12 +309,10 @@ if __name__ == "__main__":
     import uvicorn
 
     port = int(os.getenv("NEURAL_PORT", "8000"))
-    is_dev = os.getenv("NODE_ENV") == "development"
     uvicorn.run(
         "server:app",
         host="0.0.0.0",
         port=port,
-        reload=is_dev,
-        reload_excludes=[".*", ".venv/*", "__pycache__/*", "*.pyc"] if is_dev else None,
+        reload=False,
         log_level="info",
     )
