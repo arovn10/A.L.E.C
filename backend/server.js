@@ -61,7 +61,17 @@ const crossDeviceSync = new CrossDeviceSync();
 neuralEngine.initialize();
 
 // ── Middleware ──────────────────────────────────────────────────
-app.use(cors());
+app.use(cors({
+  origin: true,  // Allow all origins (needed for HA iframe)
+  credentials: true,
+}));
+
+// Allow iframe embedding (Home Assistant, Domo, etc.)
+app.use((req, res, next) => {
+  res.removeHeader('X-Frame-Options');
+  res.setHeader('Content-Security-Policy', "frame-ancestors *");
+  next();
+});
 app.use(express.json({ limit: '50mb' }));
 
 // Serve static frontend
@@ -1113,6 +1123,23 @@ if (voiceServer) {
 // ════════════════════════════════════════════════════════════════
 //  USER MANAGEMENT (Owner only)
 // ════════════════════════════════════════════════════════════════
+
+// Generate a long-lived embed token for Home Assistant / iframe use
+app.post('/api/auth/embed-token', authenticateToken, requireFullCapabilities, (req, res) => {
+  const { email, role, access_level } = req.body;
+  const tokenType = access_level === 'OWNER' ? 'OWNER' :
+                    access_level === 'FULL_CAPABILITIES' ? 'FULL_CAPABILITIES' : 'STOA_ACCESS';
+  const jwtPayload = {
+    userId: req.user.userId,
+    email: email || req.user.email,
+    role: role || req.user.role,
+    tokenType,
+    embed: true,
+  };
+  // 365-day token for persistent iframe access
+  const token = jwt.sign(jwtPayload, process.env.JWT_SECRET, { expiresIn: '365d' });
+  res.json({ success: true, token, usage: `Add ?token=${token} to your iframe URL` });
+});
 
 // Device-based auto-login (no auth required — this IS the auth)
 app.post('/api/auth/device/check', async (req, res) => {

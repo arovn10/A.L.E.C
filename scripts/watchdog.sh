@@ -77,6 +77,48 @@ while true; do
                 pip install -r services/neural/requirements.txt --quiet 2>/dev/null
             fi
             
+            # Run Azure SQL migration if schema files changed
+            if git diff --name-only "$LOCAL_HEAD" "$REMOTE_HEAD" 2>/dev/null | grep -qE "migrate.*\.sql|database\.py|schema"; then
+                echo "$(date): 🗄️  Schema changes detected — running Azure SQL migration"
+                source "$PROJECT_DIR/services/neural/.venv/bin/activate" 2>/dev/null
+                python3 -c "
+from database import ALECDatabase
+db = ALECDatabase()
+print('  SQLite schema updated')
+" 2>/dev/null && echo "$(date):   ✅ SQLite schema migrated" || echo "$(date):   ⚠️ SQLite migration skipped"
+                # Azure SQL migration (if pymssql available and connected)
+                if [ -f "$PROJECT_DIR/scripts/migrate-azure-sql.sql" ]; then
+                    python3 -c "
+import os
+try:
+    import pymssql
+    conn = pymssql.connect(
+        server=os.getenv('STOA_DB_HOST', ''),
+        user=os.getenv('STOA_DB_USER', ''),
+        password=os.getenv('STOA_DB_PASSWORD', ''),
+        database=os.getenv('STOA_DB_NAME', ''),
+        port=int(os.getenv('STOA_DB_PORT', '1433')),
+    )
+    with open('scripts/migrate-azure-sql.sql') as f:
+        sql = f.read()
+    for stmt in sql.split('GO'):
+        stmt = stmt.strip()
+        if stmt and not stmt.startswith('--'):
+            try:
+                conn.cursor().execute(stmt)
+                conn.commit()
+            except Exception as e:
+                pass  # Ignore already-exists errors
+    conn.close()
+    print('  Azure SQL migration complete')
+except ImportError:
+    print('  pymssql not available — skipping Azure SQL migration')
+except Exception as e:
+    print(f'  Azure SQL migration skipped: {e}')
+" 2>/dev/null && echo "$(date):   ✅ Azure SQL migrated" || echo "$(date):   ⚠️ Azure SQL migration skipped"
+                fi
+            fi
+            
             echo "$(date): ✅ Code updated to $(git rev-parse --short HEAD) — restarting..."
             
             # Force restart with new code

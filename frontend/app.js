@@ -297,17 +297,29 @@ async function validateStoredToken(token) {
 }
 
 async function initAuth() {
-  // Domo embed detection
+  // Iframe / embed detection (Home Assistant, Domo, etc.)
   const isIframe = window.parent !== window;
   const isDomoParam = new URLSearchParams(window.location.search).get('embed') === 'domo';
+  const isHAParam = new URLSearchParams(window.location.search).get('embed') === 'ha';
+  const embedUser = new URLSearchParams(window.location.search).get('user');
+  const embedToken = new URLSearchParams(window.location.search).get('token');
 
-  if (isIframe || isDomoParam) {
+  // If an embed token is provided in the URL, use it directly
+  if (embedToken) {
+    state.token = embedToken;
+    localStorage.setItem(TOKEN_KEY, embedToken);
+    try {
+      const payload = JSON.parse(atob(embedToken.split('.')[1]));
+      showDashboard({ email: payload.email, role: payload.role, tokenType: payload.tokenType, access_level: payload.tokenType });
+      return;
+    } catch {}
+  }
+
+  if (isDomoParam) {
     try {
       await login('domo@embed.auto', '', true);
       return;
-    } catch {
-      // Fall through to login page
-    }
+    } catch {}
   }
 
   // Generate a persistent device ID
