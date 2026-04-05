@@ -56,7 +56,12 @@ class TrainingStatus:
     error: Optional[str] = None
 
     def to_dict(self):
-        return asdict(self)
+        d = asdict(self)
+        # Replace inf/nan with None for JSON serialization
+        for k, v in d.items():
+            if isinstance(v, float) and (v == float('inf') or v == float('-inf') or v != v):
+                d[k] = None
+        return d
 
 
 class ALECTrainer:

@@ -90,8 +90,7 @@ class StoaConnector:
     def discover_tables(self) -> list[str]:
         """Discover all tables in the Stoa database."""
         try:
-            import pyodbc
-            conn = pyodbc.connect(self._get_conn_string(), timeout=30)
+            conn = self._get_connection()
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT TABLE_SCHEMA + '.' + TABLE_NAME as full_name
@@ -110,10 +109,12 @@ class StoaConnector:
     def query(self, sql: str, params: tuple = ()) -> list[dict]:
         """Execute a query against Stoa DB and return results as dicts."""
         try:
-            import pyodbc
-            conn = pyodbc.connect(self._get_conn_string(), timeout=30)
+            conn = self._get_connection()
             cursor = conn.cursor()
-            cursor.execute(sql, params)
+            if params:
+                cursor.execute(sql, params)
+            else:
+                cursor.execute(sql)
             cols = [d[0] for d in cursor.description] if cursor.description else []
             rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
             conn.close()
