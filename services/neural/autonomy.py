@@ -292,6 +292,74 @@ class AutonomyEngine:
         return self.send_email(subject, html, html=True)
 
 
+    # ═══════════════════════════════════════════════════════════
+    #  AI RESEARCH — What's happening in the AI world?
+    # ═══════════════════════════════════════════════════════════
+
+    def research_ai_developments(self) -> dict:
+        """
+        Search the web for the latest AI developments relevant to A.L.E.C.
+        Uses Brave Search API. Returns structured findings for the drive
+        engine's frontier scanner and the research email report.
+        """
+        api_key = os.getenv("SEARCH_API_KEY", "")
+        if not api_key:
+            logger.warning("SEARCH_API_KEY not set — cannot research AI developments")
+            return {"findings": [], "error": "SEARCH_API_KEY not configured"}
+
+        # Targeted queries that surface things A.L.E.C. can act on
+        queries = [
+            "latest GGUF model releases llama.cpp 2026",
+            "LoRA fine-tuning new techniques local LLM",
+            "Apple Silicon MLX LLM inference optimization",
+            "AI agent tool calling MCP developments",
+            "Qwen Llama Mistral new model release",
+        ]
+
+        all_findings = []
+        seen_urls = set()
+
+        for query in queries:
+            try:
+                encoded = urllib.parse.quote(query)
+                url = f"https://api.search.brave.com/res/v1/web/search?q={encoded}&count=5&freshness=pw"
+                req = urllib.request.Request(url, headers={
+                    "X-Subscription-Token": api_key,
+                    "Accept": "application/json",
+                })
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = json.loads(resp.read())
+
+                results = data.get("web", {}).get("results", [])
+                for r in results:
+                    link = r.get("url", "")
+                    if link in seen_urls:
+                        continue
+                    seen_urls.add(link)
+                    all_findings.append({
+                        "title": r.get("title", "Untitled"),
+                        "description": (r.get("description", "") or "")[:300],
+                        "url": link,
+                        "query": query,
+                        "age": r.get("age", ""),
+                    })
+            except Exception as e:
+                logger.warning(f"Brave search failed for '{query}': {e}")
+                continue
+
+        logger.info(f"AI research complete: {len(all_findings)} findings from {len(queries)} queries")
+        self._log({
+            "event": "ai_research",
+            "findings_count": len(all_findings),
+            "queries": queries,
+        })
+
+        return {
+            "findings": all_findings,
+            "queries_run": queries,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
     def send_research_report(self) -> bool:
         """Research AI developments and email the findings."""
         research = self.research_ai_developments()
