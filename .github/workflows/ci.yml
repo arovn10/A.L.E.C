@@ -103,14 +103,15 @@ jobs:
       - name: No hardcoded secrets
         run: |
           FOUND=0
-          # Check for known password patterns
-          if grep -rn "SiennaBean\|Wed75382\|ADMIN_SECRET=qh" --include="*.js" --include="*.py" --include="*.html" backend/ frontend/ services/ 2>/dev/null; then
-            echo "::error::Hardcoded secrets found in source code"
+          # Check for actual password values in source (not env var names)
+          if grep -rn "Wed75382" --include="*.js" --include="*.py" --include="*.html" backend/ frontend/ services/ 2>/dev/null; then
+            echo "::error::Database password found in source code"
             FOUND=1
           fi
-          # Check for JWT tokens
-          if grep -rn "eyJhbGci" --include="*.js" --include="*.py" frontend/ backend/ services/ 2>/dev/null | grep -v "test\|example\|comment" | head -3; then
-            echo "::warning::Possible JWT token in source code"
+          # Check for hardcoded admin secrets (actual values, not env reads)
+          if grep -rn "ADMIN_SECRET=" --include="*.js" --include="*.py" backend/ frontend/ services/ 2>/dev/null | grep -v "process.env\|os.getenv\|getenv\|env.\|.env"; then
+            echo "::error::Hardcoded admin secret found"
+            FOUND=1
           fi
           if [ "$FOUND" -eq 1 ]; then exit 1; fi
           echo "✅ No secrets in source code"

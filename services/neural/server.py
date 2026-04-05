@@ -112,7 +112,7 @@ async def lifespan(app: FastAPI):
 
     # 2. Seed admin user
     admin_email = os.getenv("ADMIN_EMAIL", "arovner@campusrentalsllc.com")
-    admin_password = os.getenv("ADMIN_PASSWORD", "SiennaBean12345!")
+    admin_password = os.getenv("ADMIN_PASSWORD", "")
     auth_manager.seed_admin(admin_email, admin_password)
 
     # 3. Test Stoa connection
