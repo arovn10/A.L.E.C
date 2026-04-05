@@ -142,20 +142,24 @@ class BackgroundTaskRunner:
                     logger.debug(f"Stoa sync trigger failed: {e}")
                 last_stoa_sync = now
 
-            # Auto-training check every hour
-            if now - last_training_check > TRAINING_CHECK_INTERVAL and trainer and self.db:
+            # Self-improvement cycle every hour
+            if now - last_training_check > TRAINING_CHECK_INTERVAL:
                 try:
-                    convos = self.db.get_conversations(limit=10000, rated_only=True)
-                    positive = [c for c in convos if c.get("user_rating", 0) > 0]
-                    if len(positive) >= 500:
-                        logger.info(f"Auto-training threshold met: {len(positive)} rated conversations")
-                        self.run_task(
-                            "Auto LoRA Training",
-                            _auto_train_task,
-                            trainer, self.db,
-                        )
+                    from self_improve import SelfImprovementEngine
+                    # Get the global self_improver if available
+                    import server as srv
+                    if hasattr(srv, 'self_improver') and srv.self_improver:
+                        should, reason = srv.self_improver.should_retrain()
+                        if should:
+                            logger.info(f"Self-improvement triggered: {reason}")
+                            self.run_task(
+                                "Self-Improvement Cycle",
+                                lambda task_info=None: srv.self_improver.run_improvement_cycle(),
+                            )
+                        else:
+                            logger.debug(f"Self-improvement skipped: {reason}")
                 except Exception as e:
-                    logger.debug(f"Training check failed: {e}")
+                    logger.debug(f"Self-improvement check failed: {e}")
                 last_training_check = now
 
             time.sleep(30)  # Check every 30 seconds

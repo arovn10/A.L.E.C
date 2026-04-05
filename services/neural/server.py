@@ -45,6 +45,7 @@ from initiative import InitiativeEngine
 from memory import ALECMemory
 from query_planner import QueryPlanner
 from agent import ALECAgent
+from self_improve import SelfImprovementEngine
 from connectors import ConnectorManager
 from encryption import get_encryptor
 from skills_registry import SkillsRegistry
@@ -68,6 +69,7 @@ initiative = InitiativeEngine(db=db)
 memory = ALECMemory()
 query_planner = QueryPlanner(stoa)
 agent = None  # Initialized after engine loads
+self_improver = None  # Initialized after engine loads
 connectors = ConnectorManager()
 skills = SkillsRegistry()
 
@@ -97,9 +99,16 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to load model: {e}")
 
     # 1b. Initialize agent (tool-calling loop)
-    global agent
+    global agent, self_improver
     agent = ALECAgent(engine=engine, query_planner=query_planner, memory_module=memory)
     logger.info(f"Agent initialized with {len(agent.tools)} tools: {list(agent.tools.keys())}")
+
+    # 1c. Initialize self-improvement engine
+    self_improver = SelfImprovementEngine(
+        db=db, trainer=trainer, memory=memory,
+        query_planner=query_planner, stoa=stoa,
+    )
+    logger.info("Self-improvement engine initialized")
 
     # 2. Seed admin user
     admin_email = os.getenv("ADMIN_EMAIL", "arovner@campusrentalsllc.com")
@@ -891,6 +900,43 @@ def sync_all_connectors():
         lambda task_info=None: connectors.sync_all(),
     )
     return {"success": True, "task_id": task_id}
+
+
+# ══════════════════════════════════════════════════════════════════
+#  SELF-IMPROVEMENT
+# ══════════════════════════════════════════════════════════════════
+
+@app.get("/self-improve/status")
+def self_improve_status():
+    if not self_improver:
+        return {"enabled": False}
+    return self_improver.get_status()
+
+@app.post("/self-improve/generate-batch")
+def self_improve_generate():
+    """Generate a training batch from all data sources."""
+    if not self_improver:
+        raise HTTPException(status_code=503, detail="Self-improvement engine not initialized")
+    batch_file, count = self_improver.generate_training_batch()
+    return {"success": True, "batch_file": batch_file, "examples": count}
+
+@app.post("/self-improve/run-cycle")
+def self_improve_cycle():
+    """Run one full self-improvement cycle (curate + generate + train)."""
+    if not self_improver:
+        raise HTTPException(status_code=503, detail="Self-improvement engine not initialized")
+    task_id = task_runner.run_task(
+        "Self-Improvement Cycle",
+        lambda task_info=None: self_improver.run_improvement_cycle(),
+    )
+    return {"success": True, "task_id": task_id}
+
+@app.post("/self-improve/score-conversation")
+def score_conversation(req: dict):
+    """Score a conversation for training quality (for debugging)."""
+    if not self_improver:
+        return {"score": 0}
+    return {"score": self_improver.score_conversation(req)}
 
 
 # ══════════════════════════════════════════════════════════════════
