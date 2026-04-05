@@ -905,12 +905,30 @@ class ALECAgent:
                 "result_preview": tool_result[:200],
             })
 
-            # Feed tool result back into the conversation
+            # Feed tool result back — truncate large results to keep context manageable
+            truncated = tool_result[:3000] + ("\n... (truncated)" if len(tool_result) > 3000 else "")
+
             agent_messages.append({"role": "assistant", "content": response_text})
-            agent_messages.append({
-                "role": "system",
-                "content": f"[TOOL RESULT from {tool_name}]:\n{tool_result}\n\n[Now respond to the user using the above tool result. Use the REAL data — do NOT make up values.]",
-            })
+
+            # Tell the model to continue with the next step, not stop
+            if tool_name == "self_edit" and args.get("action") in ("read_file", "list_files"):
+                next_instruction = (
+                    f"[TOOL RESULT from {tool_name}]:\n{truncated}\n\n"
+                    f"[You read the file. Now make the edit the user requested using TOOL_CALL: self_edit with action='edit_file'. "
+                    f"Then TOOL_CALL: self_edit with action='commit_push' to deploy it.]"
+                )
+            elif tool_name == "self_edit" and args.get("action") == "edit_file":
+                next_instruction = (
+                    f"[TOOL RESULT from {tool_name}]:\n{truncated}\n\n"
+                    f"[Edit done. Now deploy it with TOOL_CALL: self_edit action='commit_push' message='describe the change'.]"
+                )
+            else:
+                next_instruction = (
+                    f"[TOOL RESULT from {tool_name}]:\n{truncated}\n\n"
+                    f"[Use the above result to respond to the user. Do NOT make up data. If you need another tool call, make it.]"
+                )
+
+            agent_messages.append({"role": "system", "content": next_instruction})
 
         # If we hit max steps, return what we have
         return {
