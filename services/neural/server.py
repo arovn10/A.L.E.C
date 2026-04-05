@@ -490,11 +490,15 @@ async def chat_completions(req: ChatRequest):
         "change ", "edit ", "fix ", "update ", "modify ",  # self_edit
         "remember ", "what did i tell", "recall ",          # memory
         "search ", "look up", "find out", "google ",        # web_search
+        "internet", "browse", "web ", "news ", "latest ",   # web_search
+        "what is the price", "stock", "weather",            # web_search
         "turn on", "turn off", "lights", "thermostat",      # smart_home
+        "dim ", "brightness", "lamp", "guest room",         # smart_home
         "calculate ", "compute ", "run code", "execute",     # execute_code
         "email ", "send me", "send a report",               # send_email
         "self_edit", "commit", "push",                       # explicit tool
         "improve yourself", "upgrade ", "your code",         # self-improvement
+        "can you ", "do you have access", "are you able",    # capability questions
     ])
 
     tool_calls = []
