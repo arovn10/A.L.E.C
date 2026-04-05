@@ -956,20 +956,24 @@ window.installSkill = async function(skillId) {
 
 document.getElementById('skills-refresh-btn').addEventListener('click', loadSkills);
 
-document.getElementById('mcp-connect-btn').addEventListener('click', async () => {
-  const url = document.getElementById('mcp-url-input').value.trim();
-  if (!url) { toast('Please enter a server URL.', 'warning'); return; }
+const mcpConnectBtn = document.getElementById('mcp-connect-btn');
+if (mcpConnectBtn) {
+  mcpConnectBtn.addEventListener('click', async () => {
+    const url = document.getElementById('mcp-url-input')?.value?.trim();
+    if (!url) { toast('Please enter a server URL.', 'warning'); return; }
 
-  try {
-    toast('Connecting to MCP server…', 'info');
-    await api('POST', '/api/mcp/connect', { url });
-    toast('Connected to MCP server!', 'success');
-    document.getElementById('mcp-url-input').value = '';
-    loadSkills();
-  } catch (err) {
-    toast('Connection failed: ' + err.message, 'error');
-  }
-});
+    try {
+      toast('Connecting to MCP server…', 'info');
+      await api('POST', '/api/mcp/connect', { url });
+      toast('Connected to MCP server!', 'success');
+      const mcpInput = document.getElementById('mcp-url-input');
+      if (mcpInput) mcpInput.value = '';
+      loadSkills();
+    } catch (err) {
+      toast('Connection failed: ' + err.message, 'error');
+    }
+  });
+}
 
 /* ─── STOA ───────────────────────────────────────────────────── */
 async function loadStoaStatus() {
@@ -1461,7 +1465,7 @@ async function teachMemory() {
   }
 
   try {
-    const resp = await apiFetch('/api/memory/teach', {
+    const resp = await api('POST', '/api/memory/teach', {
       method: 'POST',
       body: JSON.stringify({ category, key, value }),
     });
@@ -1488,7 +1492,7 @@ async function searchMemory() {
   if (!query) return;
 
   try {
-    const data = await apiFetch('/api/memory/search', {
+    const data = await api('POST', '/api/memory/search', {
       method: 'POST',
       body: JSON.stringify({ query, limit: 20 }),
     });
@@ -1511,7 +1515,7 @@ async function searchMemory() {
 
 async function loadMemoryStats() {
   try {
-    const data = await apiFetch('/api/memory/stats');
+    const data = await api('GET', '/api/memory/stats');
     const el = document.getElementById('memory-stats-content');
     if (!el) return;
     const cats = data.categories || {};
@@ -1528,7 +1532,7 @@ async function loadMemoryStats() {
 
 async function loadAllMemories() {
   try {
-    const data = await apiFetch('/api/memory/all?limit=100');
+    const data = await api('GET', '/api/memory/all?limit=100');
     const el = document.getElementById('memory-list');
     if (!el) return;
     const memories = data.memories || [];
@@ -1554,7 +1558,7 @@ async function loadAllMemories() {
 async function deleteMemory(id) {
   if (!confirm('Delete this memory?')) return;
   try {
-    await apiFetch(`/api/memory/${id}`, { method: 'DELETE' });
+    await api('DELETE', `/api/memory/${id}`);
     loadAllMemories();
     loadMemoryStats();
   } catch (e) {
@@ -1590,7 +1594,7 @@ async function createUser() {
   }
 
   try {
-    const data = await apiFetch('/api/auth/users/create', {
+    const data = await api('GET', '/api/auth/users/create', {
       method: 'POST',
       body: JSON.stringify({ email, password, role }),
     });
@@ -1612,7 +1616,7 @@ async function createUser() {
 
 async function loadUsers() {
   try {
-    const data = await apiFetch('/api/auth/users');
+    const data = await api('GET', '/api/auth/users');
     const el = document.getElementById('users-list');
     if (!el) return;
     const users = data.users || [];
@@ -1645,7 +1649,7 @@ async function loadUsers() {
 
 async function changeRole(email, newRole) {
   try {
-    await apiFetch('/api/auth/users/role', {
+    await api('GET', '/api/auth/users/role', {
       method: 'POST',
       body: JSON.stringify({ email, role: newRole }),
     });
@@ -1659,7 +1663,7 @@ async function changeRole(email, newRole) {
 async function deleteUser(email) {
   if (!confirm(`Delete user ${email}? This cannot be undone.`)) return;
   try {
-    const data = await apiFetch(`/api/auth/users/${encodeURIComponent(email)}`, { method: 'DELETE' });
+    const data = await api('DELETE', `/api/auth/users/${encodeURIComponent(email)}`);
     if (data.success) {
       showToast(`Deleted ${email}`, 'success');
       loadUsers();
@@ -1913,7 +1917,7 @@ async function loadTrustedDevices() {
   const el = document.getElementById('trusted-devices-list');
   if (!el) return;
   try {
-    const data = await apiFetch('/api/auth/devices');
+    const data = await api('GET', '/api/auth/devices');
     const devices = data.devices || [];
     if (!devices.length) {
       el.innerHTML = '<p style="color:var(--text-muted);">No trusted devices.</p>';
@@ -1949,7 +1953,7 @@ async function revokeDevice(deviceId) {
     : 'Revoke this device? It will need to log in again.';
   if (!confirm(msg)) return;
   try {
-    await apiFetch(`/api/auth/device/${encodeURIComponent(deviceId)}`, { method: 'DELETE' });
+    await api('DELETE', `/api/auth/device/${encodeURIComponent(deviceId)}`);
     toast('Device revoked', 'success');
     if (deviceId === currentDeviceId) {
       localStorage.clear();
