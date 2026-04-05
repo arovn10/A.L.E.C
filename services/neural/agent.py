@@ -223,8 +223,10 @@ class SelfEditTool(AgentTool):
     description = (
         "Read, modify, or create files in A.L.E.C.'s own source code repository. "
         "Use this to fix bugs, update the dashboard UI, change styles, add features, "
-        "or improve your own code. After editing, use action='commit_push' to deploy. "
-        "Actions: read_file, list_files, edit_file, create_file, delete_file, commit_push, run_shell."
+        "or improve your own code. After editing, use action='commit_push' to deploy "
+        "(it auto-checks health and rolls back if broken). "
+        "Actions: read_file, list_files, edit_file, create_file, delete_file, "
+        "commit_push, rollback, health_check, run_shell."
     )
     parameters = {
         "action": "One of: read_file, list_files, edit_file, create_file, delete_file, commit_push, run_shell",
@@ -259,6 +261,8 @@ class SelfEditTool(AgentTool):
                 "create_file": lambda: self._create_file(path, content),
                 "delete_file": lambda: self._delete_file(path),
                 "commit_push": lambda: self._commit_push(message),
+                "rollback": lambda: self._rollback(),
+                "health_check": lambda: self._health_check(),
                 "run_shell": lambda: self._run_shell(command),
             }
             fn = actions.get(action)
@@ -349,8 +353,19 @@ class SelfEditTool(AgentTool):
         return f"Deleted {path}"
 
     def _commit_push(self, message: str = "") -> str:
+        """Commit and push, then verify the server survives. Auto-rollback if it breaks."""
         if not message:
             message = f"self-edit: A.L.E.C. auto-improvement ({time.strftime('%Y-%m-%d %H:%M')})"
+
+        # Save current HEAD so we can rollback
+        try:
+            head_before = subprocess.run(
+                ["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+                timeout=5, cwd=self.project_dir,
+            ).stdout.strip()
+        except Exception:
+            head_before = None
+
         cmds = [
             ["git", "add", "-A"],
             ["git", "diff", "--cached", "--stat"],
@@ -373,7 +388,121 @@ class SelfEditTool(AgentTool):
             except Exception as e:
                 results.append(f"{' '.join(cmd[:2])}: {e}")
                 break
-        return "\n".join(results) if results else "Committed and pushed."
+
+        commit_output = "\n".join(results) if results else "Committed and pushed."
+
+        # Wait for uvicorn/nodemon to reload, then health check
+        time.sleep(8)
+        health = self._health_check()
+
+        if "HEALTHY" in health:
+            new_head = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"], capture_output=True,
+                text=True, timeout=5, cwd=self.project_dir,
+            ).stdout.strip()
+            return f"{commit_output}\n\nHealth check: PASSED \u2714\nCommit {new_head} is live."
+        else:
+            # Server is broken — auto-rollback
+            logger.warning(f"Self-edit broke the server! Rolling back to {head_before}")
+            rollback_result = self._rollback(target=head_before)
+            return (
+                f"{commit_output}\n\n"
+                f"\u26a0\ufe0f Health check FAILED after deploy:\n{health}\n\n"
+                f"AUTO-ROLLBACK triggered:\n{rollback_result}"
+            )
+
+    def _rollback(self, target: str = "") -> str:
+        """Revert to a previous commit. If no target, reverts the last commit."""
+        try:
+            if not target:
+                # Get the commit before HEAD
+                r = subprocess.run(
+                    ["git", "rev-parse", "HEAD~1"], capture_output=True, text=True,
+                    timeout=5, cwd=self.project_dir,
+                )
+                if r.returncode != 0:
+                    return "Rollback failed: no previous commit to revert to."
+                target = r.stdout.strip()
+
+            # Get info about what we're reverting
+            log_r = subprocess.run(
+                ["git", "log", "--oneline", "-3"], capture_output=True, text=True,
+                timeout=5, cwd=self.project_dir,
+            )
+            recent = (log_r.stdout or "").strip()
+
+            # Hard reset to target
+            reset = subprocess.run(
+                ["git", "reset", "--hard", target], capture_output=True, text=True,
+                timeout=10, cwd=self.project_dir,
+            )
+            if reset.returncode != 0:
+                return f"Rollback failed: {(reset.stderr or '').strip()}"
+
+            # Force push
+            push = subprocess.run(
+                ["git", "push", "origin", "main", "--force"], capture_output=True,
+                text=True, timeout=30, cwd=self.project_dir,
+            )
+            if push.returncode != 0:
+                return f"Reset succeeded but push failed: {(push.stderr or '').strip()}"
+
+            # Wait for reload
+            time.sleep(8)
+            health = self._health_check()
+
+            short = target[:7]
+            return (
+                f"Rolled back to {short}.\n"
+                f"Recent commits before rollback:\n{recent}\n\n"
+                f"Post-rollback health: {health}"
+            )
+
+        except Exception as e:
+            return f"Rollback error: {e}"
+
+    def _health_check(self) -> str:
+        """Check if both the Python engine and Node server are alive."""
+        results = []
+
+        # Check Python neural engine
+        try:
+            import urllib.request
+            req = urllib.request.Request("http://localhost:8000/health")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read())
+                loaded = data.get("model_loaded", False)
+                results.append(f"Neural engine: {'OK' if loaded else 'MODEL NOT LOADED'}")
+        except Exception as e:
+            results.append(f"Neural engine: DOWN ({e})")
+
+        # Check Node.js backend
+        try:
+            import urllib.request
+            port = os.getenv("PORT", "3001")
+            req = urllib.request.Request(f"http://localhost:{port}/")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    results.append("Node backend: OK")
+                else:
+                    results.append(f"Node backend: HTTP {resp.status}")
+        except Exception as e:
+            results.append(f"Node backend: DOWN ({e})")
+
+        # Check Stoa DB
+        try:
+            import urllib.request
+            req = urllib.request.Request("http://localhost:8000/stoa/status")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read())
+                connected = data.get("connected", False)
+                results.append(f"Stoa DB: {'connected' if connected else 'disconnected'}")
+        except Exception:
+            results.append("Stoa DB: check failed")
+
+        all_ok = all("OK" in r or "connected" in r for r in results)
+        status = "HEALTHY" if all_ok else "UNHEALTHY"
+        return f"[{status}]\n" + "\n".join(results)
 
     def _run_shell(self, command: str) -> str:
         if not command:
@@ -434,6 +563,8 @@ class ALECAgent:
         lines.append("- If math or code is needed → use execute_code")
         lines.append("- If the user asks to change the UI, fix a bug, update code, or improve you → use self_edit")
         lines.append("- self_edit workflow: read_file first, then edit_file, then commit_push to deploy")
+        lines.append("- commit_push auto-checks health and rolls back if the server breaks")
+        lines.append("- If something went wrong, use self_edit action='rollback' to revert the last commit")
         lines.append("- If you CAN answer without tools, just respond normally (no TOOL_CALL)")
         lines.append("- NEVER make up data. If a tool returns no results, say so honestly.")
         return "\n".join(lines)
