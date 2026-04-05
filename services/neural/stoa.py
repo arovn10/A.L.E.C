@@ -111,10 +111,9 @@ class StoaConnector:
         try:
             conn = self._get_connection()
             cursor = conn.cursor()
-            if params:
-                cursor.execute(sql, params)
-            else:
-                cursor.execute(sql)
+            # pymssql uses %s placeholders, pyodbc uses ?
+            # For safety, just use direct SQL (queries are internal, not user-facing)
+            cursor.execute(sql)
             cols = [d[0] for d in cursor.description] if cursor.description else []
             rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
             conn.close()
@@ -135,12 +134,12 @@ class StoaConnector:
         parts = table_name.split(".")
         schema = parts[0] if len(parts) > 1 else "dbo"
         tbl = parts[-1]
-        return self.query("""
+        return self.query(f"""
             SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, CHARACTER_MAXIMUM_LENGTH
             FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+            WHERE TABLE_SCHEMA = '{schema}' AND TABLE_NAME = '{tbl}'
             ORDER BY ORDINAL_POSITION
-        """, (schema, tbl))
+        """)
 
     def generate_training_data(self) -> int:
         """
