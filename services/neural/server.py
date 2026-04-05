@@ -572,6 +572,7 @@ async def chat_completions(req: ChatRequest):
         "can you ", "do you have access", "are you able",    # capability questions
         "schwab", "acorns", "robinhood", "fidelity",          # brokerage integration
         "brokerage", "portfolio", "my stocks", "investment",   # finance integrations
+        "holdings", "my investments", "brokerage balance",     # portfolio tool triggers
         "be more ", "be less ", "use bullet", "from now on",  # style preferences
         "don't say ", "stop saying", "think outside",         # style preferences
         "change your ", "change the format", "respond with",  # style preferences
@@ -1139,6 +1140,62 @@ def sync_all_connectors():
         lambda task_info=None: connectors.sync_all(),
     )
     return {"success": True, "task_id": task_id}
+
+
+# ══════════════════════════════════════════════════════════════════
+#  PLAID BROKERAGE SUMMARY (proxy to Node backend)
+# ══════════════════════════════════════════════════════════════════
+
+@app.get("/plaid/summary")
+def plaid_summary():
+    """Fetch holdings from Node backend and return a concise text summary for the agent."""
+    import httpx
+
+    node_url = f"http://localhost:{os.getenv('PORT', '3001')}"
+    try:
+        resp = httpx.get(f"{node_url}/api/plaid/holdings", timeout=30)
+        if resp.status_code == 401 or resp.status_code == 403:
+            return {"summary": "No brokerage accounts linked yet. You can link your Schwab, Acorns, or other accounts from the Finance panel in the dashboard.", "accounts": [], "total_value": 0}
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        logger.warning(f"Plaid summary proxy error: {e}")
+        return {"summary": "No brokerage accounts linked yet. You can link your Schwab, Acorns, or other accounts from the Finance panel in the dashboard.", "accounts": [], "total_value": 0}
+
+    accounts = data.get("accounts", [])
+    holdings = data.get("holdings", [])
+    securities = data.get("securities", [])
+    total_value = data.get("total_value", 0)
+
+    if not accounts:
+        return {"summary": "No brokerage accounts linked yet. You can link your Schwab, Acorns, or other accounts from the Finance panel in the dashboard.", "accounts": [], "total_value": 0}
+
+    # Build security lookup
+    sec_map = {s.get("security_id"): s for s in securities}
+
+    # Format summary
+    lines = [f"Portfolio Total: ${total_value:,.2f}", ""]
+    for acct in accounts:
+        inst = acct.get("institution_name", "Unknown")
+        name = acct.get("name", acct.get("official_name", "Account"))
+        bal = acct.get("balances", {}).get("current", 0)
+        lines.append(f"{inst} — {name}: ${bal:,.2f}")
+
+        # Top holdings for this account
+        acct_holdings = [h for h in holdings if h.get("account_id") == acct.get("account_id")]
+        acct_holdings.sort(key=lambda h: h.get("institution_value", 0), reverse=True)
+        for h in acct_holdings[:5]:
+            sec = sec_map.get(h.get("security_id"), {})
+            ticker = sec.get("ticker_symbol", "???")
+            sec_name = sec.get("name", "")
+            qty = h.get("quantity", 0)
+            val = h.get("institution_value", 0)
+            price = h.get("institution_price", sec.get("close_price", 0))
+            lines.append(f"  {ticker} ({sec_name}): {qty:.2f} shares @ ${price:.2f} = ${val:,.2f}")
+        lines.append("")
+
+    summary = "\n".join(lines).strip()
+    return {"summary": summary, "accounts": accounts, "total_value": total_value}
 
 
 # ══════════════════════════════════════════════════════════════════

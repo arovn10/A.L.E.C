@@ -345,6 +345,29 @@ class CalendarTool(AgentTool):
         return "Calendar integration not yet configured. Set up Google Calendar API credentials."
 
 
+class PortfolioTool(AgentTool):
+    """Check linked brokerage account balances and holdings."""
+    name = "portfolio_check"
+    description = "Check linked brokerage account balances, holdings, and portfolio value. Use when user asks about their investments, stocks, portfolio, Schwab, Acorns, or account balances."
+    parameters = {}
+
+    def execute(self, **kwargs) -> str:
+        import httpx
+
+        neural_port = os.getenv("NEURAL_PORT", "8000")
+        try:
+            resp = httpx.get(f"http://localhost:{neural_port}/plaid/summary", timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            summary = data.get("summary", "")
+            if summary:
+                return summary
+            return "No brokerage accounts linked yet. You can link your Schwab, Acorns, or other accounts from the Finance panel in the dashboard."
+        except Exception as e:
+            logger.warning(f"Portfolio check error: {e}")
+            return "No brokerage accounts linked yet. You can link your Schwab, Acorns, or other accounts from the Finance panel in the dashboard."
+
+
 # ═══════════════════════════════════════════════════════════════
 #  AGENT LOOP
 # ═══════════════════════════════════════════════════════════════
@@ -883,6 +906,7 @@ class ALECAgent:
         self._register(HomeAssistantTool())
         self._register(CodeExecutionTool())
         self._register(CalendarTool())
+        self._register(PortfolioTool())
         self._register(SendEmailTool())
         self._register(SelfEditTool())
 
@@ -906,6 +930,7 @@ class ALECAgent:
         lines.append("- If the user asks about properties, occupancy, rent, deals, or ANY real estate data → use stoa_query")
         lines.append("- If you don't know something → use web_search or memory_search, don't guess")
         lines.append("- If the user teaches you something → use memory_store")
+        lines.append("- If the user asks about their investments, stocks, portfolio, Schwab, Acorns, brokerage balances → use portfolio_check")
         lines.append("- If math or code is needed → use execute_code")
         lines.append("- If the user asks to change the UI, fix a bug, update code, or improve you → use self_edit")
         lines.append("- To send an email to the owner (updates, questions, reports) → use send_email")

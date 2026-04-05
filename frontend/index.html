@@ -6,6 +6,7 @@
   <title>A.L.E.C. — Adaptive Learning Executive Coordinator</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%236366f1'/%3E%3Ctext x='50%25' y='55%25' dominant-baseline='middle' text-anchor='middle' fill='white' font-family='system-ui' font-size='14' font-weight='700'%3EA%3C/text%3E%3C/svg%3E" />
   <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
 </head>
 <body>
 
@@ -124,6 +125,10 @@
       <div class="nav-item" data-panel="memory" role="button" tabindex="0" aria-label="Memory panel">
         <span class="nav-icon">🧠</span>
         <span class="nav-label">Memory</span>
+      </div>
+      <div class="nav-item" data-panel="finance" role="button" tabindex="0" aria-label="Finance panel">
+        <span class="nav-icon">💰</span>
+        <span class="nav-label">Finance</span>
       </div>
       <div class="nav-item" data-panel="settings" role="button" tabindex="0" aria-label="Settings panel">
         <span class="nav-icon">⚙️</span>
@@ -603,6 +608,39 @@
           </div>
           <div id="tasks-list">
             <div style="text-align:center;padding:32px;color:var(--text-dim);font-size:0.8rem;">Loading tasks…</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ─── FINANCE PANEL ────────────────────────────────── -->
+      <div id="panel-finance" class="panel">
+        <div class="panel-title"><span class="ptitle-icon">💰</span> Finance — Brokerage Accounts</div>
+
+        <!-- Link Account -->
+        <div class="card">
+          <div class="card-header">Link a Brokerage Account</div>
+          <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px;">
+            Connect your Schwab, Acorns, Fidelity, or other brokerage accounts to see live balances and holdings.
+          </p>
+          <button class="btn btn-primary" id="link-brokerage-btn" onclick="linkBrokerageAccount()">
+            <span>🔗</span> Link Brokerage Account
+          </button>
+        </div>
+
+        <!-- Linked Accounts -->
+        <div class="card">
+          <div class="card-header">Linked Accounts</div>
+          <div id="linked-accounts-list">
+            <div style="text-align:center;padding:16px;color:var(--text-dim);font-size:0.85rem;">No accounts linked yet.</div>
+          </div>
+        </div>
+
+        <!-- Portfolio Summary -->
+        <div class="card">
+          <div class="card-header">Portfolio Summary</div>
+          <div id="portfolio-total" style="font-size:1.6rem;font-weight:700;color:var(--accent);margin-bottom:12px;">—</div>
+          <div id="portfolio-accounts-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;">
+            <div style="text-align:center;padding:16px;color:var(--text-dim);font-size:0.85rem;">Link an account to see your portfolio.</div>
           </div>
         </div>
       </div>

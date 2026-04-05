@@ -35,6 +35,8 @@ const { MCPSkillsManager } = require('../services/mcpSkills.js');
 const { SelfEvolutionEngine } = require('../services/selfEvolution.js');
 const { CrossDeviceSync } = require('../services/crossDeviceSync.js');
 
+const crypto = require('crypto');
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 const HOST = process.env.HOST || '0.0.0.0'; // LAN-accessible by default
@@ -1430,6 +1432,277 @@ app.post('/api/connectors/gmail/sync', authenticateToken, requireFullCapabilitie
 app.post('/api/connectors/sync-all', authenticateToken, requireFullCapabilities, async (req, res) => {
   const data = await proxyToNeural('/connectors/sync-all', { method: 'POST' });
   res.json(data);
+});
+
+// ════════════════════════════════════════════════════════════════
+//  PLAID BROKERAGE INTEGRATION  (/api/plaid/*)
+//  Owner-only. Enables linking Schwab, Acorns, Fidelity, etc.
+// ════════════════════════════════════════════════════════════════
+
+// ── Plaid SQLite table ─────────────────────────────────────────
+const DB_PATH = path.join(__dirname, '../data/alec.db');
+const plaidDbDir = path.dirname(DB_PATH);
+if (!fs.existsSync(plaidDbDir)) fs.mkdirSync(plaidDbDir, { recursive: true });
+
+let plaidDb;
+try {
+  const Database = require('better-sqlite3');
+  plaidDb = new Database(DB_PATH);
+} catch {
+  // better-sqlite3 may not be installed — fall back to sqlite3
+  plaidDb = null;
+}
+
+// Initialize plaid_items table using whatever SQLite driver is available
+(async () => {
+  const CREATE_SQL = `CREATE TABLE IF NOT EXISTS plaid_items (
+    item_id TEXT PRIMARY KEY,
+    access_token_enc TEXT NOT NULL,
+    institution_name TEXT DEFAULT '',
+    institution_id TEXT DEFAULT '',
+    linked_at TEXT DEFAULT (datetime('now')),
+    last_fetched TEXT
+  )`;
+  if (plaidDb && plaidDb.exec) {
+    // better-sqlite3 (synchronous)
+    plaidDb.exec(CREATE_SQL);
+  } else {
+    // Fallback: use Python-side DB or a simple JSON file
+    const sqlite3 = await import('sqlite3').then(m => m.default || m).catch(() => null);
+    if (sqlite3) {
+      plaidDb = new sqlite3.Database(DB_PATH);
+      plaidDb.run(CREATE_SQL);
+    }
+  }
+})();
+
+// ── Plaid encryption helpers (AES-256-GCM) ─────────────────────
+function getPlaidEncryptionKey() {
+  const secret = process.env.JWT_SECRET || 'fallback-secret';
+  return crypto.pbkdf2Sync(secret, 'plaid-token-salt', 100000, 32, 'sha256');
+}
+
+function encryptAccessToken(plaintext) {
+  const key = getPlaidEncryptionKey();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  // Store as base64(iv + authTag + ciphertext)
+  return Buffer.concat([iv, authTag, encrypted]).toString('base64');
+}
+
+function decryptAccessToken(encoded) {
+  const key = getPlaidEncryptionKey();
+  const data = Buffer.from(encoded, 'base64');
+  const iv = data.subarray(0, 12);
+  const authTag = data.subarray(12, 28);
+  const ciphertext = data.subarray(28);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+  decipher.setAuthTag(authTag);
+  return decipher.update(ciphertext, null, 'utf8') + decipher.final('utf8');
+}
+
+// ── Plaid API helper ───────────────────────────────────────────
+async function plaidFetch(endpoint, body) {
+  const baseUrl = {
+    sandbox: 'https://sandbox.plaid.com',
+    development: 'https://development.plaid.com',
+    production: 'https://production.plaid.com',
+  }[process.env.PLAID_ENV || 'sandbox'];
+
+  const resp = await fetch(`${baseUrl}${endpoint}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_id: process.env.PLAID_CLIENT_ID,
+      secret: process.env.PLAID_SECRET,
+      ...body,
+    }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.error_message || `Plaid API error: ${resp.status}`);
+  }
+  return resp.json();
+}
+
+// ── Plaid DB helpers (work with both better-sqlite3 and sqlite3) ──
+function plaidDbAll(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    if (!plaidDb) return resolve([]);
+    if (typeof plaidDb.prepare === 'function') {
+      // better-sqlite3
+      try { resolve(plaidDb.prepare(sql).all(...params)); } catch (e) { reject(e); }
+    } else if (typeof plaidDb.all === 'function') {
+      // sqlite3
+      plaidDb.all(sql, params, (err, rows) => err ? reject(err) : resolve(rows || []));
+    } else {
+      resolve([]);
+    }
+  });
+}
+
+function plaidDbRun(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    if (!plaidDb) return resolve();
+    if (typeof plaidDb.prepare === 'function') {
+      try { resolve(plaidDb.prepare(sql).run(...params)); } catch (e) { reject(e); }
+    } else if (typeof plaidDb.run === 'function') {
+      plaidDb.run(sql, params, (err) => err ? reject(err) : resolve());
+    } else {
+      resolve();
+    }
+  });
+}
+
+// Owner-only middleware for Plaid routes
+const requireOwner = (req, res, next) => {
+  if (req.user.email !== 'arovner@campusrentalsllc.com') {
+    return res.status(403).json({ error: 'Owner access required' });
+  }
+  next();
+};
+
+/**
+ * POST /api/plaid/create-link-token
+ * Creates a Plaid link_token for the frontend to open Plaid Link.
+ */
+app.post('/api/plaid/create-link-token', authenticateToken, requireOwner, async (req, res) => {
+  try {
+    if (!process.env.PLAID_CLIENT_ID || !process.env.PLAID_SECRET) {
+      return res.status(500).json({ error: 'Plaid credentials not configured. Set PLAID_CLIENT_ID and PLAID_SECRET in .env' });
+    }
+    const data = await plaidFetch('/link/token/create', {
+      user: { client_user_id: req.user.email },
+      client_name: 'A.L.E.C.',
+      products: ['investments'],
+      country_codes: ['US'],
+      language: 'en',
+    });
+    res.json({ link_token: data.link_token });
+  } catch (error) {
+    console.error('Plaid create-link-token error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/plaid/exchange-token
+ * Exchanges a Plaid public_token for an access_token, encrypts & stores it.
+ */
+app.post('/api/plaid/exchange-token', authenticateToken, requireOwner, async (req, res) => {
+  try {
+    const { public_token, institution } = req.body;
+    if (!public_token) {
+      return res.status(400).json({ error: 'public_token is required' });
+    }
+
+    const data = await plaidFetch('/item/public_token/exchange', { public_token });
+    const accessTokenEnc = encryptAccessToken(data.access_token);
+
+    await plaidDbRun(
+      `INSERT OR REPLACE INTO plaid_items (item_id, access_token_enc, institution_name, institution_id)
+       VALUES (?, ?, ?, ?)`,
+      [data.item_id, accessTokenEnc, institution?.name || '', institution?.institution_id || '']
+    );
+
+    res.json({ success: true, item_id: data.item_id });
+  } catch (error) {
+    console.error('Plaid exchange-token error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/plaid/holdings
+ * Fetches live holdings from all linked brokerage accounts.
+ */
+app.get('/api/plaid/holdings', authenticateToken, requireOwner, async (req, res) => {
+  try {
+    const items = await plaidDbAll('SELECT * FROM plaid_items');
+    if (items.length === 0) {
+      return res.json({ accounts: [], holdings: [], securities: [], total_value: 0 });
+    }
+
+    const allAccounts = [];
+    const allHoldings = [];
+    const allSecurities = [];
+    let totalValue = 0;
+
+    for (const item of items) {
+      try {
+        const accessToken = decryptAccessToken(item.access_token_enc);
+        const data = await plaidFetch('/investments/holdings/get', { access_token: accessToken });
+
+        for (const acct of (data.accounts || [])) {
+          acct.institution_name = item.institution_name;
+          acct.item_id = item.item_id;
+          allAccounts.push(acct);
+          totalValue += acct.balances?.current || 0;
+        }
+
+        allHoldings.push(...(data.holdings || []));
+        allSecurities.push(...(data.securities || []));
+
+        // Update last_fetched
+        await plaidDbRun(
+          `UPDATE plaid_items SET last_fetched = datetime('now') WHERE item_id = ?`,
+          [item.item_id]
+        );
+      } catch (itemErr) {
+        console.error(`Plaid holdings error for ${item.institution_name}:`, itemErr.message);
+      }
+    }
+
+    res.json({ accounts: allAccounts, holdings: allHoldings, securities: allSecurities, total_value: totalValue });
+  } catch (error) {
+    console.error('Plaid holdings error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/plaid/accounts
+ * Lists all linked brokerage institutions.
+ */
+app.get('/api/plaid/accounts', authenticateToken, requireOwner, async (req, res) => {
+  try {
+    const items = await plaidDbAll('SELECT item_id, institution_name, institution_id, linked_at, last_fetched FROM plaid_items');
+    res.json(items);
+  } catch (error) {
+    console.error('Plaid accounts error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * DELETE /api/plaid/accounts/:itemId
+ * Unlinks a brokerage account (removes from Plaid + local DB).
+ */
+app.delete('/api/plaid/accounts/:itemId', authenticateToken, requireOwner, async (req, res) => {
+  try {
+    const { itemId } = req.params;
+    const items = await plaidDbAll('SELECT * FROM plaid_items WHERE item_id = ?', [itemId]);
+    if (items.length === 0) {
+      return res.status(404).json({ error: 'Account not found' });
+    }
+
+    // Remove from Plaid
+    try {
+      const accessToken = decryptAccessToken(items[0].access_token_enc);
+      await plaidFetch('/item/remove', { access_token: accessToken });
+    } catch (plaidErr) {
+      console.error('Plaid item/remove warning:', plaidErr.message);
+      // Continue to delete locally even if Plaid call fails
+    }
+
+    await plaidDbRun('DELETE FROM plaid_items WHERE item_id = ?', [itemId]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Plaid unlink error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // ════════════════════════════════════════════════════════════════

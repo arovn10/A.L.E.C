@@ -243,7 +243,7 @@ function showDashboard(userData) {
 
   // Panel visibility by access level
   state.isAdmin = isAdmin;
-  const ownerOnly = ['settings', 'memory'];  // Only owner can see
+  const ownerOnly = ['settings', 'memory', 'finance'];  // Only owner can see
   const adminPanels = ['metrics', 'files', 'training', 'skills', 'tasks'];  // Admin+
   const stoaPanels = ['stoa'];  // Stoa+ can see
   // Everyone sees: chat
@@ -423,6 +423,7 @@ const PANEL_TITLES = {
   stoa: 'Stoa Data',
   tasks: 'Tasks',
   memory: 'Memory & Knowledge',
+  finance: 'Finance',
   settings: 'Settings'
 };
 
@@ -457,6 +458,7 @@ function onPanelSwitch(panelId) {
     case 'skills':   loadSkills(); break;
     case 'stoa':     loadStoaStatus(); loadStoaTables(); break;
     case 'tasks':    loadTasks(); break;
+    case 'finance':  loadLinkedAccounts(); loadPortfolio(); break;
     case 'settings': loadModelInfo(); buildPersonalitySliders(); break;
   }
 }
@@ -1726,8 +1728,8 @@ if (typeof state !== 'undefined' && !state.isOwner) {
 // Override panel switch to block non-owners from settings
 const _origSwitchPanel = switchPanel;
 switchPanel = function(panelId) {
-  if (panelId === 'settings' && !state.isOwner) {
-    toast('Settings are only accessible by the owner.', 'error');
+  if ((panelId === 'settings' || panelId === 'finance') && !state.isOwner) {
+    toast('This panel is only accessible by the owner.', 'error');
     return;
   }
   _origSwitchPanel(panelId);
@@ -2169,3 +2171,134 @@ onPanelSwitch = function(panelId) {
     loadTrustedDevices();
   }
 };
+
+/* ─── Finance Panel: Plaid Brokerage Integration ─────────────── */
+
+async function linkBrokerageAccount() {
+  const btn = document.getElementById('link-brokerage-btn');
+  if (btn) btn.disabled = true;
+  try {
+    const data = await api('POST', '/api/plaid/create-link-token');
+    if (!data || !data.link_token) {
+      toast('Failed to create Plaid link token', 'error');
+      return;
+    }
+
+    const handler = Plaid.create({
+      token: data.link_token,
+      onSuccess: async (publicToken, metadata) => {
+        try {
+          await api('POST', '/api/plaid/exchange-token', {
+            public_token: publicToken,
+            institution: metadata.institution || {},
+          });
+          toast('Account linked successfully!', 'success');
+          loadLinkedAccounts();
+          loadPortfolio();
+        } catch (e) {
+          toast('Failed to link account: ' + e.message, 'error');
+        }
+      },
+      onExit: (err) => {
+        if (err) {
+          toast('Plaid Link closed: ' + (err.display_message || err.error_message || 'User exited'), 'error');
+        }
+      },
+    });
+    handler.open();
+  } catch (e) {
+    toast('Failed to start Plaid Link: ' + e.message, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function loadLinkedAccounts() {
+  const el = document.getElementById('linked-accounts-list');
+  if (!el) return;
+  try {
+    const accounts = await api('GET', '/api/plaid/accounts');
+    if (!accounts || accounts.length === 0) {
+      el.innerHTML = '<div style="text-align:center;padding:16px;color:var(--text-dim);font-size:0.85rem;">No accounts linked yet.</div>';
+      return;
+    }
+    el.innerHTML = accounts.map(a => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-bottom:1px solid var(--border);font-size:0.9rem;">
+        <div>
+          <strong>${a.institution_name || 'Unknown'}</strong>
+          <span style="color:var(--text-dim);margin-left:8px;font-size:0.8rem;">Linked ${new Date(a.linked_at).toLocaleDateString()}</span>
+        </div>
+        <button class="btn btn-danger" style="font-size:0.75rem;padding:4px 10px;" onclick="unlinkAccount('${a.item_id}')">Unlink</button>
+      </div>
+    `).join('');
+  } catch (e) {
+    el.innerHTML = '<div style="text-align:center;padding:16px;color:var(--text-dim);">Failed to load accounts.</div>';
+  }
+}
+
+async function loadPortfolio() {
+  const totalEl = document.getElementById('portfolio-total');
+  const gridEl = document.getElementById('portfolio-accounts-grid');
+  if (!totalEl || !gridEl) return;
+
+  try {
+    const data = await api('GET', '/api/plaid/holdings');
+    if (!data || !data.accounts || data.accounts.length === 0) {
+      totalEl.textContent = '—';
+      gridEl.innerHTML = '<div style="text-align:center;padding:16px;color:var(--text-dim);font-size:0.85rem;">Link an account to see your portfolio.</div>';
+      return;
+    }
+
+    totalEl.textContent = '$' + data.total_value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    // Build security lookup
+    const secMap = {};
+    for (const s of (data.securities || [])) {
+      secMap[s.security_id] = s;
+    }
+
+    gridEl.innerHTML = data.accounts.map(acct => {
+      const bal = acct.balances?.current || 0;
+      const acctHoldings = (data.holdings || [])
+        .filter(h => h.account_id === acct.account_id)
+        .sort((a, b) => (b.institution_value || 0) - (a.institution_value || 0))
+        .slice(0, 5);
+
+      const holdingsHtml = acctHoldings.map(h => {
+        const sec = secMap[h.security_id] || {};
+        const ticker = sec.ticker_symbol || '???';
+        const name = sec.name || '';
+        const val = h.institution_value || 0;
+        const qty = h.quantity || 0;
+        return `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:0.8rem;border-bottom:1px solid var(--border-light);">
+          <span><strong>${ticker}</strong> <span style="color:var(--text-dim)">${name.slice(0, 25)}</span></span>
+          <span>${qty.toFixed(2)} @ $${val.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+        </div>`;
+      }).join('');
+
+      return `<div class="card" style="margin-bottom:0;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <strong>${acct.institution_name || 'Account'}</strong>
+          <span style="font-size:1.1rem;font-weight:600;color:var(--accent);">$${bal.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+        </div>
+        <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:6px;">${acct.name || acct.official_name || ''} — ${acct.subtype || acct.type || ''}</div>
+        ${holdingsHtml || '<div style="font-size:0.8rem;color:var(--text-dim);">No holdings data</div>'}
+      </div>`;
+    }).join('');
+  } catch (e) {
+    totalEl.textContent = '—';
+    gridEl.innerHTML = '<div style="text-align:center;padding:16px;color:var(--text-dim);">Failed to load portfolio.</div>';
+  }
+}
+
+async function unlinkAccount(itemId) {
+  if (!confirm('Unlink this brokerage account? You can always re-link it later.')) return;
+  try {
+    await api('DELETE', `/api/plaid/accounts/${encodeURIComponent(itemId)}`);
+    toast('Account unlinked', 'success');
+    loadLinkedAccounts();
+    loadPortfolio();
+  } catch (e) {
+    toast('Failed to unlink: ' + e.message, 'error');
+  }
+}
