@@ -66,10 +66,12 @@ app.use(cors({
   credentials: true,
 }));
 
-// Allow iframe embedding (Home Assistant, Domo, etc.)
+// Allow iframe embedding with full permissions (Home Assistant, Domo, etc.)
 app.use((req, res, next) => {
   res.removeHeader('X-Frame-Options');
   res.setHeader('Content-Security-Policy', "frame-ancestors *");
+  res.setHeader('Permissions-Policy', 'microphone=*, camera=*, geolocation=*');
+  res.setHeader('Access-Control-Allow-Private-Network', 'true');
   next();
 });
 app.use(express.json({ limit: '50mb' }));

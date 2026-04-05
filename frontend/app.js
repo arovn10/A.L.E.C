@@ -1790,6 +1790,20 @@ function initVoiceActivation() {
     return;
   }
 
+  // Request microphone permission explicitly (needed for iframes/Android WebViews)
+  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then(stream => {
+        // Got permission — stop the stream, we just needed the permission grant
+        stream.getTracks().forEach(t => t.stop());
+        console.log('🎤 Microphone permission granted');
+      })
+      .catch(err => {
+        console.log('🎤 Microphone permission denied:', err.message);
+        toast('Microphone access needed for "Hey ALEC". Check browser permissions.', 'warning');
+      });
+  }
+
   _voiceRecognition = new SpeechRecognition();
   _voiceRecognition.continuous = true;
   _voiceRecognition.interimResults = true;
