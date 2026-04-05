@@ -194,7 +194,7 @@ class HomeAssistantTool(AgentTool):
                     return "\n".join(parts)
 
             # TURN ON
-            if any(w in lower for w in ["turn on", "switch on", "enable"]):
+            if any(w in lower for w in ["turn on", "turn_on", "switch on", "enable", " on"]):
                 if not entity_id:
                     return f"Not sure which device. Known: {', '.join(self.ENTITY_MAP.keys())}"
                 domain = entity_id.split('.')[0]
@@ -207,7 +207,7 @@ class HomeAssistantTool(AgentTool):
                 return f"Turned on {entity_id.split('.')[1].replace('_', ' ').title()}"
 
             # TURN OFF
-            if any(w in lower for w in ["turn off", "switch off", "disable", "shut off"]):
+            if any(w in lower for w in ["turn off", "turn_off", "switch off", "disable", "shut off", "off"]):
                 if not entity_id:
                     return f"Not sure which device. Known: {', '.join(self.ENTITY_MAP.keys())}"
                 domain = entity_id.split('.')[0]
