@@ -17,7 +17,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 import math
@@ -31,6 +31,17 @@ def json_safe(obj):
     if isinstance(obj, float) and (math.isinf(obj) or math.isnan(obj)):
         return None
     return obj
+
+
+class SafeJSONResponse(JSONResponse):
+    """JSONResponse that handles inf/nan instead of crashing."""
+    def render(self, content) -> bytes:
+        return json.dumps(
+            json_safe(content),
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
 
 load_dotenv()
 
@@ -178,7 +189,10 @@ async def lifespan(app: FastAPI):
 
 
 # ── FastAPI app ──────────────────────────────────────────────────
-app = FastAPI(title="A.L.E.C. Neural Engine", version="2.0.0", lifespan=lifespan)
+app = FastAPI(
+    title="A.L.E.C. Neural Engine", version="2.0.0", lifespan=lifespan,
+    default_response_class=SafeJSONResponse,  # Never crash on inf/nan
+)
 
 app.add_middleware(
     CORSMiddleware,
