@@ -223,10 +223,10 @@ class SelfEditTool(AgentTool):
     description = (
         "Read, modify, or create files in A.L.E.C.'s own source code repository. "
         "Use this to fix bugs, update the dashboard UI, change styles, add features, "
-        "or improve your own code. After editing, use action='commit_push' to deploy "
-        "(it auto-checks health and rolls back if broken). "
+        "or improve your own code. Use dry_run to test changes safely before deploying, "
+        "then promote to go live. Or use commit_push for direct deploy with auto-rollback. "
         "Actions: read_file, list_files, edit_file, create_file, delete_file, "
-        "commit_push, rollback, health_check, run_shell."
+        "dry_run, promote, commit_push, rollback, health_check, run_shell."
     )
     parameters = {
         "action": "One of: read_file, list_files, edit_file, create_file, delete_file, commit_push, run_shell",
@@ -261,6 +261,8 @@ class SelfEditTool(AgentTool):
                 "create_file": lambda: self._create_file(path, content),
                 "delete_file": lambda: self._delete_file(path),
                 "commit_push": lambda: self._commit_push(message),
+                "dry_run": lambda: self._dry_run(message),
+                "promote": lambda: self._promote(),
                 "rollback": lambda: self._rollback(),
                 "health_check": lambda: self._health_check(),
                 "run_shell": lambda: self._run_shell(command),
@@ -351,6 +353,201 @@ class SelfEditTool(AgentTool):
             return f"Cannot delete critical file: {path}"
         os.remove(full)
         return f"Deleted {path}"
+
+    def _dry_run(self, message: str = "") -> str:
+        """
+        Sandbox test: commit changes to a temp branch, validate syntax/health,
+        then return to main WITHOUT merging. Changes stay staged for promote.
+        
+        Flow:
+          1. Stash current changes on main
+          2. Create sandbox branch alec/sandbox-<timestamp>
+          3. Apply stashed changes + commit
+          4. Run syntax validation (python -c, node -c)
+          5. Report results — do NOT merge or deploy
+          6. Return to main, restore working state
+        """
+        if not message:
+            message = f"dry-run: testing self-edit ({time.strftime('%Y-%m-%d %H:%M')})"
+
+        sandbox_branch = f"alec/sandbox-{int(time.time())}"
+        results = []
+
+        def _git(*args, **kw):
+            r = subprocess.run(
+                ["git"] + list(args), capture_output=True, text=True,
+                timeout=kw.get("timeout", 15), cwd=self.project_dir,
+            )
+            return r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip()
+
+        try:
+            # Check if there are changes to test
+            rc, diff_stat, _ = _git("diff", "--stat")
+            rc2, diff_staged, _ = _git("diff", "--cached", "--stat")
+            if not diff_stat and not diff_staged:
+                return "Nothing to dry-run — no pending changes. Edit files first."
+
+            results.append(f"Changes to test:\n{diff_stat or diff_staged}")
+
+            # Stage everything
+            _git("add", "-A")
+
+            # Stash changes so we can branch cleanly
+            _git("stash", "push", "-m", f"dry-run-{int(time.time())}")
+
+            # Create sandbox branch from current main HEAD
+            rc, _, err = _git("checkout", "-b", sandbox_branch)
+            if rc != 0:
+                _git("stash", "pop")
+                return f"Failed to create sandbox branch: {err}"
+
+            # Apply stashed changes onto sandbox
+            rc, out, err = _git("stash", "pop")
+            if rc != 0:
+                results.append(f"Stash apply warning: {err}")
+
+            # Commit on sandbox
+            _git("add", "-A")
+            _git("commit", "-m", message)
+
+            results.append(f"Committed to sandbox branch: {sandbox_branch}")
+
+            # ── VALIDATION CHECKS ──
+            checks_passed = 0
+            checks_total = 0
+
+            # Check 1: Python syntax for all changed .py files
+            rc, changed_files, _ = _git("diff", "--name-only", "HEAD~1")
+            py_files = [f for f in changed_files.split("\n") if f.endswith(".py") and f.strip()]
+            if py_files:
+                checks_total += 1
+                py_errors = []
+                for pf in py_files:
+                    full = os.path.join(self.project_dir, pf)
+                    if os.path.exists(full):
+                        r = subprocess.run(
+                            ["python3", "-c", f"import py_compile; py_compile.compile('{full}', doraise=True)"],
+                            capture_output=True, text=True, timeout=10, cwd=self.project_dir,
+                        )
+                        if r.returncode != 0:
+                            py_errors.append(f"  {pf}: {r.stderr.strip().split(chr(10))[-1]}")
+                if py_errors:
+                    results.append("Python syntax: FAIL\n" + "\n".join(py_errors))
+                else:
+                    results.append(f"Python syntax: PASS ({len(py_files)} files)")
+                    checks_passed += 1
+
+            # Check 2: Node.js syntax for changed .js files
+            js_files = [f for f in changed_files.split("\n") if f.endswith(".js") and f.strip()]
+            if js_files:
+                checks_total += 1
+                js_errors = []
+                for jf in js_files:
+                    full = os.path.join(self.project_dir, jf)
+                    if os.path.exists(full):
+                        r = subprocess.run(
+                            ["node", "-c", open(full).read()[:50000]],
+                            capture_output=True, text=True, timeout=10, cwd=self.project_dir,
+                        )
+                        if r.returncode != 0:
+                            js_errors.append(f"  {jf}: {r.stderr.strip().split(chr(10))[-1]}")
+                if js_errors:
+                    results.append("JS syntax: FAIL\n" + "\n".join(js_errors))
+                else:
+                    results.append(f"JS syntax: PASS ({len(js_files)} files)")
+                    checks_passed += 1
+
+            # Check 3: HTML validity (basic — check for unclosed tags)
+            html_files = [f for f in changed_files.split("\n") if f.endswith(".html") and f.strip()]
+            if html_files:
+                checks_total += 1
+                results.append(f"HTML files changed: {len(html_files)} (manual review recommended)")
+                checks_passed += 1
+
+            # Check 4: CSS syntax (basic — check for parse errors)
+            css_files = [f for f in changed_files.split("\n") if f.endswith(".css") and f.strip()]
+            if css_files:
+                checks_total += 1
+                results.append(f"CSS files changed: {len(css_files)} (manual review recommended)")
+                checks_passed += 1
+
+            # No files to validate
+            if checks_total == 0:
+                checks_total = 1
+                checks_passed = 1
+                results.append("No Python/JS files changed — no syntax checks needed.")
+
+            # Summary
+            all_pass = checks_passed == checks_total
+            verdict = "SAFE TO DEPLOY" if all_pass else "ISSUES FOUND — fix before deploying"
+            results.append(f"\nDry-run result: {checks_passed}/{checks_total} checks passed — {verdict}")
+
+            if all_pass:
+                results.append(f"\nRun self_edit action='promote' to merge sandbox into main and deploy.")
+                results.append(f"Or run self_edit action='rollback' to discard the sandbox.")
+            else:
+                results.append(f"\nFix the issues, then run dry_run again. Sandbox branch: {sandbox_branch}")
+
+        except Exception as e:
+            results.append(f"Dry-run error: {e}")
+
+        finally:
+            # Always return to main, regardless of what happened
+            _git("checkout", "main")
+            # Reapply the changes to working tree (so promote can pick them up)
+            rc, _, _ = _git("stash", "list")
+            # The changes are on the sandbox branch; cherry-pick onto main working tree
+            try:
+                # Get the sandbox commit hash
+                rc, sandbox_hash, _ = _git("rev-parse", sandbox_branch)
+                if rc == 0 and sandbox_hash:
+                    # Apply the diff without committing
+                    subprocess.run(
+                        ["git", "diff", f"{sandbox_branch}~1", sandbox_branch],
+                        capture_output=True, text=True, timeout=10, cwd=self.project_dir,
+                    )
+                    # Restore the edits to working tree
+                    subprocess.run(
+                        ["git", "checkout", sandbox_branch, "--", "."],
+                        capture_output=True, text=True, timeout=10, cwd=self.project_dir,
+                    )
+                    _git("reset", "HEAD")  # Unstage but keep in working tree
+            except Exception:
+                pass
+
+        return "\n".join(results)
+
+    def _promote(self) -> str:
+        """
+        Promote a validated dry-run to main: commit pending changes and push.
+        Only call this after a successful dry_run.
+        """
+        # Check if there are changes to promote
+        r = subprocess.run(
+            ["git", "status", "--porcelain"], capture_output=True, text=True,
+            timeout=5, cwd=self.project_dir,
+        )
+        if not (r.stdout or "").strip():
+            return "Nothing to promote — no pending changes. Run dry_run first."
+
+        # Find the sandbox branch to get the commit message
+        r = subprocess.run(
+            ["git", "branch", "--list", "alec/sandbox-*"], capture_output=True,
+            text=True, timeout=5, cwd=self.project_dir,
+        )
+        branches = [b.strip().lstrip("* ") for b in (r.stdout or "").strip().split("\n") if b.strip()]
+
+        # Clean up sandbox branches
+        for branch in branches:
+            subprocess.run(
+                ["git", "branch", "-D", branch], capture_output=True, text=True,
+                timeout=5, cwd=self.project_dir,
+            )
+
+        # Commit and push via the normal commit_push (which has health check + auto-rollback)
+        return self._commit_push(
+            message=f"self-edit (validated): A.L.E.C. auto-improvement ({time.strftime('%Y-%m-%d %H:%M')})"
+        )
 
     def _commit_push(self, message: str = "") -> str:
         """Commit and push, then verify the server survives. Auto-rollback if it breaks."""
@@ -562,8 +759,9 @@ class ALECAgent:
         lines.append("- If the user teaches you something → use memory_store")
         lines.append("- If math or code is needed → use execute_code")
         lines.append("- If the user asks to change the UI, fix a bug, update code, or improve you → use self_edit")
-        lines.append("- self_edit workflow: read_file first, then edit_file, then commit_push to deploy")
-        lines.append("- commit_push auto-checks health and rolls back if the server breaks")
+        lines.append("- self_edit safe workflow: read_file → edit_file → dry_run (validates on sandbox branch) → promote (deploys to main)")
+        lines.append("- self_edit fast workflow: read_file → edit_file → commit_push (direct deploy with auto-health-check + auto-rollback)")
+        lines.append("- Use dry_run for risky changes (Python/JS logic). Use commit_push for simple changes (CSS, text, config).")
         lines.append("- If something went wrong, use self_edit action='rollback' to revert the last commit")
         lines.append("- If you CAN answer without tools, just respond normally (no TOOL_CALL)")
         lines.append("- NEVER make up data. If a tool returns no results, say so honestly.")

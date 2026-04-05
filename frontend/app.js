@@ -1421,7 +1421,12 @@ async function sendMessage() {
 
     // Speak the response if this was a voice-triggered message
     if (state._voiceTriggered && typeof speakResponse === 'function') {
-      speakResponse(responseText);
+      try {
+        speakResponse(responseText);
+      } catch {
+        // TTS failed — ensure voice loop resumes anyway
+        if (_voiceListening) setTimeout(_startWakeWordLoop, 1000);
+      }
     }
     state._voiceTriggered = false;
   } catch (err) {
@@ -1832,14 +1837,34 @@ function speakResponse(text) {
   if (preferred) utterance.voice = preferred;
 
   _voiceSpeaking = true;
+
+  // Safety timeout: if onend never fires (mobile browsers, TTS blocked),
+  // force-resume the wake word loop after a reasonable time
+  const safetyTimeout = setTimeout(() => {
+    if (_voiceSpeaking) {
+      _voiceSpeaking = false;
+      if (_voiceListening && !_voiceCommandMode) {
+        setTimeout(_startWakeWordLoop, 500);
+      }
+    }
+  }, Math.max(5000, text.length * 80)); // ~80ms per char, min 5s
+
   utterance.onend = () => {
+    clearTimeout(safetyTimeout);
     _voiceSpeaking = false;
     // Resume wake word listening after speaking
     if (_voiceListening && !_voiceCommandMode) {
       setTimeout(_startWakeWordLoop, 500);
     }
   };
-  utterance.onerror = () => { _voiceSpeaking = false; };
+  utterance.onerror = () => {
+    clearTimeout(safetyTimeout);
+    _voiceSpeaking = false;
+    // Resume wake word even on TTS error
+    if (_voiceListening && !_voiceCommandMode) {
+      setTimeout(_startWakeWordLoop, 500);
+    }
+  };
 
   window.speechSynthesis.speak(utterance);
 }
@@ -1959,11 +1984,16 @@ function _startCommandCapture() {
     _voiceCommandMode = false;
     if (!gotResult) {
       toast('Didn\'t catch that. Say "Hey ALEC" again.', 'warning');
-    }
-    // Don't restart wake word here — speakResponse.onend will do it
-    // unless no voice response (non-voice-triggered path)
-    if (!gotResult && _voiceListening) {
-      setTimeout(_startWakeWordLoop, 1000);
+      // No result — resume wake word immediately
+      if (_voiceListening) setTimeout(_startWakeWordLoop, 1000);
+    } else {
+      // Got a result — speakResponse.onend SHOULD resume the loop,
+      // but set a safety fallback in case TTS doesn't fire onend
+      setTimeout(() => {
+        if (_voiceListening && !_voiceSpeaking && !_voiceCommandMode) {
+          _startWakeWordLoop();
+        }
+      }, 15000); // 15s fallback
     }
   };
 
