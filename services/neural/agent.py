@@ -33,7 +33,7 @@ from typing import Optional
 
 logger = logging.getLogger("alec.agent")
 
-MAX_AGENT_STEPS = 5  # Max tool calls per message (prevents infinite loops)
+MAX_AGENT_STEPS = 3  # Max tool calls per message (3 steps = read + edit + commit)
 
 
 class AgentTool:

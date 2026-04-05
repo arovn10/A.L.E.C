@@ -454,11 +454,28 @@ async def chat_completions(req: ChatRequest):
             media_type="text/event-stream",
         )
 
-    # ── AGENT LOOP: route through the tool-calling agent ──
-    # The agent decides: respond directly OR call tools (stoa_query,
-    # memory, web_search, self_edit, etc.) then respond with real data.
+    # ── SMART ROUTING: only use the agent loop when tools are likely needed ──
+    # The agent loop adds 2-3x latency (multiple LLM calls), so we only
+    # invoke it for messages that genuinely need tools. Simple chat goes
+    # straight to the engine for fast responses.
     start_time = time.time()
-    if agent:
+    lower_msg = user_msg.lower() if user_msg else ""
+
+    # Detect if this message needs tools
+    needs_tools = any(kw in lower_msg for kw in [
+        "change ", "edit ", "fix ", "update ", "modify ",  # self_edit
+        "remember ", "what did i tell", "recall ",          # memory
+        "search ", "look up", "find out", "google ",        # web_search
+        "turn on", "turn off", "lights", "thermostat",      # smart_home
+        "calculate ", "compute ", "run code", "execute",     # execute_code
+        "email ", "send me", "send a report",               # send_email
+        "self_edit", "commit", "push",                       # explicit tool
+        "improve yourself", "upgrade ", "your code",         # self-improvement
+    ])
+
+    tool_calls = []
+    if needs_tools and agent:
+        logger.info(f"Agent loop activated for: '{user_msg[:60]}'")
         try:
             agent_result = agent.run(
                 user_message=user_msg,
@@ -480,18 +497,16 @@ async def chat_completions(req: ChatRequest):
                 max_tokens=req.max_tokens, top_p=req.top_p, top_k=req.top_k, stream=False,
             )
             response_text = strip_think_tags(result["text"])
-            tool_calls = []
             latency_ms = result["latency_ms"]
             prompt_tokens = result["prompt_tokens"]
             completion_tokens = result["completion_tokens"]
     else:
-        # No agent — direct generation
+        # Fast path: direct generation, no agent overhead
         result = engine.generate(
             messages=messages, temperature=req.temperature,
             max_tokens=req.max_tokens, top_p=req.top_p, top_k=req.top_k, stream=False,
         )
         response_text = strip_think_tags(result["text"])
-        tool_calls = []
         latency_ms = result["latency_ms"]
         prompt_tokens = result["prompt_tokens"]
         completion_tokens = result["completion_tokens"]
