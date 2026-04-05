@@ -46,6 +46,7 @@ from memory import ALECMemory
 from query_planner import QueryPlanner
 from connectors import ConnectorManager
 from encryption import get_encryptor
+from skills_registry import SkillsRegistry
 
 # ── Logging ──────────────────────────────────────────────────────
 logging.basicConfig(
@@ -66,6 +67,7 @@ initiative = InitiativeEngine(db=db)
 memory = ALECMemory()
 query_planner = QueryPlanner(stoa)
 connectors = ConnectorManager()
+skills = SkillsRegistry()
 
 
 @asynccontextmanager
@@ -705,6 +707,46 @@ def initiative_analyze():
 @app.get("/initiative/suggest-skills")
 def initiative_suggest_skills():
     return {"suggestions": initiative.suggest_skills()}
+
+
+# ══════════════════════════════════════════════════════════════════
+#  SKILLS REGISTRY
+# ══════════════════════════════════════════════════════════════════
+
+class SkillConfigRequest(BaseModel):
+    skill_id: str
+    config: dict = {}
+
+@app.get("/skills/available")
+def skills_available():
+    return {"skills": skills.get_available()}
+
+@app.get("/skills/installed")
+def skills_installed():
+    return {"skills": skills.get_installed()}
+
+@app.post("/skills/install")
+def skills_install(req: SkillConfigRequest):
+    result = skills.install(req.skill_id, req.config)
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+@app.post("/skills/uninstall")
+def skills_uninstall(req: SkillConfigRequest):
+    return skills.uninstall(req.skill_id)
+
+@app.post("/skills/configure")
+def skills_configure(req: SkillConfigRequest):
+    return skills.configure(req.skill_id, req.config)
+
+@app.post("/skills/enable")
+def skills_enable(req: SkillConfigRequest):
+    return skills.enable(req.skill_id)
+
+@app.post("/skills/disable")
+def skills_disable(req: SkillConfigRequest):
+    return skills.disable(req.skill_id)
 
 
 # ══════════════════════════════════════════════════════════════════

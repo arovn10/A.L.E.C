@@ -835,7 +835,7 @@ async function loadSkills() {
 async function loadInstalledSkills() {
   const container = document.getElementById('installed-skills-list');
   try {
-    const data = await api('GET', '/api/mcp/skills/installed');
+    const data = await api('GET', '/api/skills/installed');
     const skills = Array.isArray(data) ? data : (data.skills || []);
 
     if (!skills.length) {
@@ -845,13 +845,13 @@ async function loadInstalledSkills() {
 
     container.innerHTML = skills.map(s => `
       <div class="skill-item">
-        <div class="skill-icon">🔌</div>
+        <div class="skill-icon">${s.icon || '🔌'}</div>
         <div class="skill-info">
           <div class="skill-name">${escapeHtml(s.name || '—')}</div>
-          <div class="skill-desc">${escapeHtml(s.description || s.url || '—')}</div>
+          <div class="skill-desc">${escapeHtml(s.description || '—')}</div>
         </div>
-        <span class="badge ${s.status === 'connected' || s.connected ? 'badge-connected' : 'badge-disconnected'}">
-          ${s.status === 'connected' || s.connected ? 'Connected' : 'Disconnected'}
+        <span class="badge ${s.enabled ? 'badge-connected' : 'badge-disconnected'}">
+          ${s.enabled ? 'Enabled' : 'Disabled'}
         </span>
       </div>
     `).join('');
@@ -863,22 +863,23 @@ async function loadInstalledSkills() {
 async function loadAvailableSkills() {
   const container = document.getElementById('available-skills-list');
   try {
-    const data = await api('GET', '/api/mcp/skills/available');
+    const data = await api('GET', '/api/skills/available');
     const skills = Array.isArray(data) ? data : (data.skills || []);
+    const notInstalled = skills.filter(s => !s.installed);
 
-    if (!skills.length) {
-      container.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-dim);font-size:0.8rem;">No additional skills available.</div>';
+    if (!notInstalled.length) {
+      container.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-dim);font-size:0.8rem;">All skills installed!</div>';
       return;
     }
 
-    container.innerHTML = skills.map(s => `
+    container.innerHTML = notInstalled.map(s => `
       <div class="skill-item">
-        <div class="skill-icon">📦</div>
+        <div class="skill-icon">${s.icon || '📦'}</div>
         <div class="skill-info">
           <div class="skill-name">${escapeHtml(s.name || '—')}</div>
           <div class="skill-desc">${escapeHtml(s.description || '—')}</div>
         </div>
-        <button class="btn btn-accent btn-sm" onclick="installSkill('${escapeHtml(s.id || s.name || '')}')">Install</button>
+        <button class="btn btn-accent btn-sm" onclick="installSkill('${escapeHtml(s.id || '')}')">Install</button>
       </div>
     `).join('');
   } catch {
@@ -889,7 +890,7 @@ async function loadAvailableSkills() {
 window.installSkill = async function(skillId) {
   try {
     toast(`Installing skill ${skillId}…`, 'info');
-    await api('POST', '/api/mcp/skills/install', { skill_id: skillId });
+    await api('POST', '/api/skills/install', { skill_id: skillId });
     toast('Skill installed!', 'success');
     loadSkills();
   } catch (err) {

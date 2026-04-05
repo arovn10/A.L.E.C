@@ -1219,6 +1219,35 @@ app.get('/api/initiative/suggest-skills', authenticateToken, async (req, res) =>
 });
 
 // ════════════════════════════════════════════════════════════════
+//  SKILLS REGISTRY
+// ════════════════════════════════════════════════════════════════
+
+app.get('/api/skills/available', authenticateToken, async (req, res) => {
+  const data = await proxyToNeural('/skills/available');
+  res.json(data);
+});
+
+app.get('/api/skills/installed', authenticateToken, async (req, res) => {
+  const data = await proxyToNeural('/skills/installed');
+  res.json(data);
+});
+
+app.post('/api/skills/install', authenticateToken, requireFullCapabilities, async (req, res) => {
+  const data = await proxyToNeural('/skills/install', { method: 'POST', body: req.body });
+  res.json(data);
+});
+
+app.post('/api/skills/uninstall', authenticateToken, requireFullCapabilities, async (req, res) => {
+  const data = await proxyToNeural('/skills/uninstall', { method: 'POST', body: req.body });
+  res.json(data);
+});
+
+app.post('/api/skills/configure', authenticateToken, requireFullCapabilities, async (req, res) => {
+  const data = await proxyToNeural('/skills/configure', { method: 'POST', body: req.body });
+  res.json(data);
+});
+
+// ════════════════════════════════════════════════════════════════
 //  CONNECTORS (iMessage, Gmail)
 // ════════════════════════════════════════════════════════════════
 
