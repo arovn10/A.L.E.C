@@ -509,6 +509,9 @@ async def chat_completions(req: ChatRequest):
         "self_edit", "commit", "push",                       # explicit tool
         "improve yourself", "upgrade ", "your code",         # self-improvement
         "can you ", "do you have access", "are you able",    # capability questions
+        "be more ", "be less ", "use bullet", "from now on",  # style preferences
+        "don't say ", "stop saying", "think outside",         # style preferences
+        "change your ", "change the format", "respond with",  # style preferences
     ])
 
     tool_calls = []
@@ -658,6 +661,43 @@ def training_status():
 @app.get("/training/adapters")
 def list_adapters():
     return {"adapters": trainer.get_available_adapters()}
+
+@app.get("/training/history")
+def training_history():
+    """Training metrics across all runs, persisted across reboots."""
+    try:
+        cursor = db._sqlite_conn.execute(
+            """SELECT run_id, step, loss, learning_rate, epoch, timestamp
+            FROM training_metrics ORDER BY timestamp DESC LIMIT 500"""
+        )
+        rows = []
+        for r in cursor.fetchall():
+            rows.append({
+                "run_id": r[0], "step": r[1], "loss": r[2],
+                "learning_rate": r[3], "epoch": r[4], "timestamp": r[5],
+            })
+
+        # Also get evolution log for key upgrades
+        evo_cursor = db._sqlite_conn.execute(
+            """SELECT event_type, description, metrics_snapshot, created_at
+            FROM evolution_log ORDER BY created_at DESC LIMIT 50"""
+        )
+        upgrades = []
+        for r in evo_cursor.fetchall():
+            upgrades.append({
+                "event_type": r[0], "description": r[1],
+                "metrics": json.loads(r[2]) if r[2] else None,
+                "created_at": r[3],
+            })
+
+        return {
+            "training_runs": rows,
+            "total_metrics": len(rows),
+            "evolution_log": upgrades,
+            "total_upgrades": len(upgrades),
+        }
+    except Exception as e:
+        return {"error": str(e), "training_runs": [], "evolution_log": []}
 
 @app.post("/training/export")
 def export_training_data():

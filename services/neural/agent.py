@@ -179,17 +179,24 @@ class HomeAssistantTool(AgentTool):
         if not ha_url or not ha_token:
             return "Home Assistant not configured. Set HA_URL and HA_TOKEN in .env."
 
-        lower = action.lower()
+        # Normalize: replace underscores with spaces, collapse whitespace
+        lower = action.lower().replace('_', ' ').replace('  ', ' ').strip()
         try:
             import urllib.request
             headers = {"Authorization": f"Bearer {ha_token}", "Content-Type": "application/json"}
 
-            # Find the target entity
+            # Find the target entity (fuzzy match — handles underscore/space variants)
             entity_id = None
             for name, eid in self.ENTITY_MAP.items():
                 if name in lower:
                     entity_id = eid
                     break
+            # Also try singular/partial matches
+            if not entity_id:
+                for name, eid in self.ENTITY_MAP.items():
+                    if any(word in lower for word in name.split() if len(word) > 3):
+                        entity_id = eid
+                        break
 
             # STATUS CHECK
             if any(w in lower for w in ["status", "state", "check", "what", "are the", "is the"]):

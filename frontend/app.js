@@ -1421,12 +1421,17 @@ async function sendMessage() {
 
     // Speak the response if this was a voice-triggered message
     if (state._voiceTriggered && typeof speakResponse === 'function') {
-      try {
-        speakResponse(responseText);
-      } catch {
-        // TTS failed — ensure voice loop resumes anyway
-        if (_voiceListening) setTimeout(_startWakeWordLoop, 1000);
-      }
+      // Fire TTS and ensure wake word resumes regardless of outcome
+      speakResponse(responseText)
+        .catch(() => {})
+        .finally(() => {
+          // Safety: always resume wake word after response, even if TTS fails
+          setTimeout(() => {
+            if (_voiceListening && !_voiceSpeaking && !_voiceCommandMode) {
+              _startWakeWordLoop();
+            }
+          }, 2000);
+        });
     }
     state._voiceTriggered = false;
   } catch (err) {

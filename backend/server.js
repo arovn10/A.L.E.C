@@ -517,6 +517,15 @@ app.post('/api/training/export', authenticateToken, requireFullCapabilities, asy
  * GET /api/training/adapters
  * Forwards to Python /training/adapters.
  */
+app.get("/api/training/history", authenticateToken, async (req, res) => {
+  try {
+    const data = await proxyToNeural("/training/history");
+    res.json(data);
+  } catch (error) {
+    res.json({ training_runs: [], evolution_log: [], error: error.message });
+  }
+});
+
 app.get('/api/training/adapters', authenticateToken, async (req, res) => {
   try {
     const data = await proxyToNeural('/training/adapters');
