@@ -183,6 +183,7 @@
         <span class="topbar-title" id="topbar-title">Chat</span>
       </div>
       <div class="topbar-right">
+        <button id="voice-toggle-btn" onclick="toggleVoiceActivation()" title="Toggle voice activation (Hey ALEC)" style="background:none;border:1px solid var(--border);border-radius:6px;padding:3px 8px;cursor:pointer;font-size:0.8rem;color:var(--text-muted);">🎤 Off</button>
         <span id="topbar-model" style="font-size:0.7rem;font-family:'JetBrains Mono',monospace;color:var(--text-dim);background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:3px 8px;">A.L.E.C.</span>
       </div>
     </div>
@@ -500,22 +501,12 @@
 
       <!-- ─── SKILLS PANEL ─────────────────────────────────── -->
       <div id="panel-skills" class="panel">
-        <div class="panel-title"><span class="ptitle-icon">🔌</span> MCP Skills</div>
-
-        <!-- Add MCP Server -->
-        <div class="card mb-24">
-          <div class="card-header">
-            <div class="card-title"><span class="icon">➕</span> Add MCP Server</div>
-          </div>
-          <div class="inline-form">
-            <input type="url" class="form-control" id="mcp-url-input" placeholder="mcp://server-url or https://…" />
-            <button class="btn btn-accent" id="mcp-connect-btn">Connect</button>
-          </div>
-        </div>
+        <div class="panel-title"><span class="ptitle-icon">🔌</span> Skills & Connectors</div>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">Connect A.L.E.C. to your accounts and services. Credentials are encrypted at rest.</p>
 
         <!-- Installed Skills -->
         <div class="section-header mb-16">
-          <div class="section-title"><span>🔧</span> Installed Skills</div>
+          <div class="section-title"><span>✅</span> Installed</div>
           <button class="btn btn-ghost btn-sm" id="skills-refresh-btn">↻ Refresh</button>
         </div>
         <div id="installed-skills-list" class="mb-24">
@@ -524,10 +515,27 @@
 
         <!-- Available Skills -->
         <div class="section-header mb-16">
-          <div class="section-title"><span>📦</span> Available Skills</div>
+          <div class="section-title"><span>📦</span> Available</div>
         </div>
         <div id="available-skills-list">
           <div style="text-align:center;padding:24px;color:var(--text-dim);font-size:0.8rem;">Loading…</div>
+        </div>
+
+        <!-- Skill Config Modal -->
+        <div id="skill-config-modal" class="modal hidden" style="position:fixed;inset:0;z-index:1000;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.7);">
+          <div class="card" style="max-width:500px;width:90%;max-height:80vh;overflow-y:auto;">
+            <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+              <span id="skill-config-title">Configure Skill</span>
+              <button onclick="closeSkillConfig()" style="background:none;border:none;color:var(--text);cursor:pointer;font-size:18px;">✕</button>
+            </div>
+            <p id="skill-config-instructions" style="color:var(--text-muted);font-size:13px;margin-bottom:12px;"></p>
+            <div id="skill-config-fields"></div>
+            <div style="display:flex;gap:8px;margin-top:12px;">
+              <button class="btn-primary" onclick="saveSkillConfig()" style="flex:1;">Save & Connect</button>
+              <button class="btn-outline" onclick="closeSkillConfig()" style="flex:0;">Cancel</button>
+            </div>
+            <div id="skill-config-result" style="margin-top:8px;font-size:13px;"></div>
+          </div>
         </div>
       </div>
 

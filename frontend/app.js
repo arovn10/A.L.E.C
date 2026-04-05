@@ -843,18 +843,25 @@ async function loadInstalledSkills() {
       return;
     }
 
-    container.innerHTML = skills.map(s => `
-      <div class="skill-item">
-        <div class="skill-icon">${s.icon || '🔌'}</div>
-        <div class="skill-info">
-          <div class="skill-name">${escapeHtml(s.name || '—')}</div>
-          <div class="skill-desc">${escapeHtml(s.description || '—')}</div>
+    container.innerHTML = skills.map(s => {
+      const hasConfig = s.requires_config || (s.config_fields && s.config_fields.length > 0);
+      const configured = s.config && Object.keys(s.config).length > 0;
+      const statusClass = configured ? 'badge-connected' : hasConfig ? 'badge-disconnected' : 'badge-connected';
+      const statusText = configured ? 'Connected' : hasConfig ? 'Needs Setup' : 'Active';
+      return `
+        <div class="skill-item">
+          <div class="skill-icon">${s.icon || '🔌'}</div>
+          <div class="skill-info">
+            <div class="skill-name">${escapeHtml(s.name || '—')}</div>
+            <div class="skill-desc">${escapeHtml(s.description || '—')}</div>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;">
+            ${hasConfig ? `<button class="btn btn-ghost btn-sm" onclick="openSkillConfig('${s.id}')">⚙️ Configure</button>` : ''}
+            <span class="badge ${statusClass}">${statusText}</span>
+          </div>
         </div>
-        <span class="badge ${s.enabled ? 'badge-connected' : 'badge-disconnected'}">
-          ${s.enabled ? 'Enabled' : 'Disabled'}
-        </span>
-      </div>
-    `).join('');
+      `;
+    }).join('');
   } catch {
     container.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-dim);font-size:0.8rem;">No skills loaded.</div>';
   }
@@ -1640,4 +1647,202 @@ switchPanel = function(panelId) {
     return;
   }
   _origSwitchPanel(panelId);
+};
+
+/* ─── Skill Configuration Modal ─────────────────────────────── */
+
+let _currentSkillConfig = null;
+
+window.openSkillConfig = async function(skillId) {
+  try {
+    const data = await api('GET', '/api/skills/available');
+    const skill = (data.skills || []).find(s => s.id === skillId);
+    if (!skill) { toast('Skill not found', 'error'); return; }
+
+    _currentSkillConfig = skill;
+    const modal = document.getElementById('skill-config-modal');
+    document.getElementById('skill-config-title').textContent = `Configure ${skill.name}`;
+    document.getElementById('skill-config-instructions').textContent = skill.setup_instructions || '';
+    document.getElementById('skill-config-result').textContent = '';
+
+    const fieldsEl = document.getElementById('skill-config-fields');
+    const fields = skill.config_fields || [];
+    if (fields.length === 0) {
+      fieldsEl.innerHTML = '<p style="color:var(--text-muted);">No configuration needed for this skill.</p>';
+    } else {
+      // Get existing config
+      const installed = await api('GET', '/api/skills/installed');
+      const existing = (installed.skills || []).find(s => s.id === skillId);
+      const existingConfig = existing?.config || {};
+
+      fieldsEl.innerHTML = fields.map(f => {
+        const val = existingConfig[f.key] || '';
+        if (f.type === 'select') {
+          return `<div style="margin-bottom:8px;">
+            <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px;">${f.label}</label>
+            <select class="input-field skill-config-input" data-key="${f.key}" style="width:100%;">
+              ${(f.options || []).map(o => `<option value="${o}" ${val===o?'selected':''}>${o}</option>`).join('')}
+            </select>
+          </div>`;
+        }
+        return `<div style="margin-bottom:8px;">
+          <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px;">${f.label}</label>
+          <input type="${f.type || 'text'}" class="input-field skill-config-input" data-key="${f.key}" 
+                 placeholder="${f.placeholder || ''}" value="${val}" style="width:100%;">
+        </div>`;
+      }).join('');
+    }
+
+    modal.style.display = 'flex';
+    modal.classList.remove('hidden');
+  } catch (e) {
+    toast('Failed to load skill config: ' + e.message, 'error');
+  }
+};
+
+window.closeSkillConfig = function() {
+  const modal = document.getElementById('skill-config-modal');
+  modal.style.display = 'none';
+  modal.classList.add('hidden');
+  _currentSkillConfig = null;
+};
+
+window.saveSkillConfig = async function() {
+  if (!_currentSkillConfig) return;
+  const config = {};
+  document.querySelectorAll('.skill-config-input').forEach(el => {
+    const key = el.dataset.key;
+    const val = el.value.trim();
+    if (key && val) config[key] = val;
+  });
+
+  const resultEl = document.getElementById('skill-config-result');
+  try {
+    // First install if not already
+    await api('POST', '/api/skills/install', { skill_id: _currentSkillConfig.id, config });
+    // Then configure
+    await api('POST', '/api/skills/configure', { skill_id: _currentSkillConfig.id, config });
+    resultEl.style.color = 'var(--success-color)';
+    resultEl.textContent = '✅ Connected and saved! Credentials are encrypted.';
+    loadSkills();
+    setTimeout(closeSkillConfig, 1500);
+  } catch (e) {
+    resultEl.style.color = 'var(--danger-color)';
+    resultEl.textContent = 'Failed: ' + e.message;
+  }
+};
+
+/* ─── Voice Activation ("Hey ALEC") ─────────────────────────── */
+
+let _voiceRecognition = null;
+let _voiceListening = false;
+
+function initVoiceActivation() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    console.log('Speech recognition not available in this browser');
+    return;
+  }
+
+  _voiceRecognition = new SpeechRecognition();
+  _voiceRecognition.continuous = true;
+  _voiceRecognition.interimResults = true;
+  _voiceRecognition.lang = 'en-US';
+
+  _voiceRecognition.onresult = (event) => {
+    const last = event.results[event.results.length - 1];
+    const transcript = last[0].transcript.toLowerCase().trim();
+    
+    // Wake word detection: "hey alec"
+    if (transcript.includes('hey alec') || transcript.includes('hey a.l.e.c')) {
+      // Stop listening for wake word, switch to command mode
+      toast('🎤 Listening...', 'info');
+      _voiceRecognition.stop();
+      startVoiceCommand();
+    }
+  };
+
+  _voiceRecognition.onend = () => {
+    // Restart listening for wake word if not in command mode
+    if (_voiceListening && _voiceRecognition) {
+      try { _voiceRecognition.start(); } catch {}
+    }
+  };
+
+  _voiceRecognition.onerror = (e) => {
+    if (e.error !== 'no-speech' && e.error !== 'aborted') {
+      console.log('Voice recognition error:', e.error);
+    }
+  };
+}
+
+function startVoiceListening() {
+  if (!_voiceRecognition) initVoiceActivation();
+  if (!_voiceRecognition) return;
+  _voiceListening = true;
+  try { _voiceRecognition.start(); } catch {}
+  console.log('🎤 Wake word listening active ("Hey ALEC")');
+}
+
+function stopVoiceListening() {
+  _voiceListening = false;
+  if (_voiceRecognition) {
+    try { _voiceRecognition.stop(); } catch {}
+  }
+}
+
+function startVoiceCommand() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) return;
+
+  const cmdRecog = new SpeechRecognition();
+  cmdRecog.continuous = false;
+  cmdRecog.interimResults = false;
+  cmdRecog.lang = 'en-US';
+
+  cmdRecog.onresult = (event) => {
+    const command = event.results[0][0].transcript;
+    toast(`🎤 "${command}"`, 'info');
+    
+    // Type the command into chat and send it
+    const chatInput = document.getElementById('chat-input');
+    if (chatInput) {
+      chatInput.value = command;
+      sendMessage();
+    }
+    
+    // Resume wake word listening
+    setTimeout(startVoiceListening, 2000);
+  };
+
+  cmdRecog.onerror = () => {
+    setTimeout(startVoiceListening, 1000);
+  };
+
+  cmdRecog.onend = () => {
+    // If no result, resume wake word
+    if (_voiceListening) setTimeout(startVoiceListening, 1000);
+  };
+
+  cmdRecog.start();
+}
+
+// Auto-start voice listening for owner
+if (typeof state !== 'undefined' && state.isOwner) {
+  setTimeout(initVoiceActivation, 2000);
+}
+
+window.toggleVoiceActivation = function() {
+  const btn = document.getElementById('voice-toggle-btn');
+  if (_voiceListening) {
+    stopVoiceListening();
+    btn.textContent = '🎤 Off';
+    btn.style.color = 'var(--text-muted)';
+    toast('Voice deactivated', 'info');
+  } else {
+    startVoiceListening();
+    btn.textContent = '🎤 On';
+    btn.style.color = 'var(--success)';
+    toast('Say "Hey ALEC" to activate', 'success');
+  }
 };
