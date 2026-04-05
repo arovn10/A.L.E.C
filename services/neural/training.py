@@ -50,7 +50,7 @@ class TrainingStatus:
     current_step: int = 0
     total_steps: int = 0
     current_loss: float = 0.0
-    best_loss: float = float("inf")
+    best_loss: float = 999999.0  # Use large number instead of inf (inf breaks JSON)
     started_at: Optional[str] = None
     eta_seconds: Optional[int] = None
     error: Optional[str] = None
