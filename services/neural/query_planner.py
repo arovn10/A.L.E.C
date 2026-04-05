@@ -143,6 +143,8 @@ class QueryPlanner:
         self.stoa = stoa
         self.query_count = 0
         self.successful_queries = 0
+        self.table_cache: list[str] = []
+        self.schema_cache: dict[str, list] = {}
 
     def should_query_stoa(self, user_message: str) -> bool:
         """Check if this message is asking about Stoa data."""
@@ -167,44 +169,76 @@ class QueryPlanner:
         lower = user_message.lower()
         self.query_count += 1
 
-        # Find matching query template
+        # Cache table list
+        if not self.table_cache and self.stoa:
+            try:
+                self.table_cache = self.stoa.discover_tables()
+            except Exception:
+                pass
+
+        # STRATEGY 1: Try predefined query templates
         results = None
         query_type = None
 
         for qtype, template in QUERY_TEMPLATES.items():
             if any(kw in lower for kw in template["detect"]):
                 query_type = qtype
+                # Try primary SQL
                 try:
                     results = self.stoa.query(template["sql"])
-                    if not results and "fallback_sql" in template:
-                        # Table/column names might be different — discover schema
+                except Exception as e:
+                    logger.info(f"Template query {qtype} failed: {e}")
+                
+                # If primary failed, try fallback to discover actual table/column names
+                if not results and "fallback_sql" in template:
+                    try:
                         results = self.stoa.query(template["fallback_sql"])
                         if results:
-                            query_type = f"{qtype}_schema_discovery"
-                except Exception as e:
-                    logger.warning(f"Stoa query failed for {qtype}: {e}")
-                    # Try fallback
-                    try:
-                        if "fallback_sql" in template:
-                            results = self.stoa.query(template["fallback_sql"])
-                            if results:
-                                query_type = f"{qtype}_schema_discovery"
+                            query_type = f"{qtype}_schema"
                     except Exception:
                         pass
                 break
 
-        # If no template matched, try a general table discovery
-        if results is None:
-            try:
-                # Find relevant tables based on keywords
-                tables = self.stoa.discover_tables()
-                relevant = [t for t in tables if any(kw in t.lower() for kw in lower.split())]
-                if relevant:
-                    # Sample from the first relevant table
-                    results = self.stoa.get_table_sample(relevant[0], limit=10)
-                    query_type = f"sample_from_{relevant[0]}"
-            except Exception as e:
-                logger.warning(f"General Stoa lookup failed: {e}")
+        # STRATEGY 2: If no template matched or template failed, find relevant tables dynamically
+        if not results and self.table_cache:
+            keywords = [w for w in lower.split() if len(w) > 3]
+            relevant_tables = []
+            for t in self.table_cache:
+                t_lower = t.lower()
+                if any(kw in t_lower for kw in keywords):
+                    relevant_tables.append(t)
+            
+            # Also check common synonyms
+            synonym_map = {
+                "occupancy": ["occupan", "unit", "vacant", "lease"],
+                "revenue": ["income", "revenue", "rent", "financial"],
+                "property": ["property", "propert", "building", "asset"],
+                "deal": ["deal", "acquisition", "transaction"],
+            }
+            for keyword, synonyms in synonym_map.items():
+                if keyword in lower:
+                    for t in self.table_cache:
+                        t_lower = t.lower()
+                        if any(s in t_lower for s in synonyms) and t not in relevant_tables:
+                            relevant_tables.append(t)
+            
+            if relevant_tables:
+                # Query the most relevant table
+                try:
+                    table = relevant_tables[0]
+                    results = self.stoa.query(f"SELECT TOP 15 * FROM {table}")
+                    query_type = f"auto_{table}"
+                    if not results and len(relevant_tables) > 1:
+                        table = relevant_tables[1]
+                        results = self.stoa.query(f"SELECT TOP 15 * FROM {table}")
+                        query_type = f"auto_{table}"
+                except Exception as e:
+                    logger.warning(f"Dynamic table query failed: {e}")
+
+        # STRATEGY 3: Last resort — dump all table names so LLM can at least describe the schema
+        if not results and self.table_cache:
+            query_type = "available_tables"
+            results = [{"table_name": t} for t in self.table_cache[:50]]
 
         if not results:
             return None

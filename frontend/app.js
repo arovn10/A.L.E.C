@@ -444,9 +444,9 @@ async function loadStatusBadges() {
     setDot('dot-neural', loaded);
     document.getElementById('status-neural-text').textContent = loaded ? 'On' : 'Off';
     document.getElementById('status-model-name').textContent =
-      info.model_name || info.name || 'Qwen 7B';
+      'A.L.E.C. Neural Engine';
     document.getElementById('topbar-model').textContent =
-      (info.model_name || info.name || 'Qwen 7B').split('/').pop().slice(0, 16);
+      'A.L.E.C.';
 
     setDot('dot-db', true);
     document.getElementById('status-db-text').textContent =

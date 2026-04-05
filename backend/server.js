@@ -293,7 +293,7 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     const data = await proxyToNeural('/v1/chat/completions', {
       method: 'POST',
       body: {
-        model: 'alec-local',
+        model: 'alec-v2',
         messages: chatMessages,
         temperature: 0.7,
         max_tokens: 1024,
@@ -1265,7 +1265,7 @@ app.listen(PORT, HOST, () => {
 ║   Port:    ${PORT}
 ║   Host:    ${HOST}
 ║   Neural:  ${NEURAL_URL}
-║   Model:   Qwen2.5-Coder-7B-Instruct (Q4_K_M)
+║   Model:   A.L.E.C. Neural Engine
 ║
 ║   Local:   http://localhost:${PORT}
 ║   LAN:     ${lanList}

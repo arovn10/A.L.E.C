@@ -3,7 +3,7 @@
     {
       "title": "A.L.E.C. Local",
       "provider": "openai",
-      "model": "alec-local",
+      "model": "alec-v2",
       "apiBase": "http://localhost:8000/v1",
       "apiKey": "not-needed",
       "contextLength": 4096,
@@ -17,7 +17,7 @@
   "tabAutocompleteModel": {
     "title": "A.L.E.C. Autocomplete",
     "provider": "openai",
-    "model": "alec-local",
+    "model": "alec-v2",
     "apiBase": "http://localhost:8000/v1",
     "apiKey": "not-needed"
   },

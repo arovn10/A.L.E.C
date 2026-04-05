@@ -142,7 +142,7 @@ class ChatMessage(BaseModel):
     content: str
 
 class ChatRequest(BaseModel):
-    model: str = "alec-local"
+    model: str = "alec-v2"
     messages: list[ChatMessage]
     temperature: float = 0.7
     max_tokens: int = 1024
@@ -194,7 +194,7 @@ def list_models():
     return {
         "object": "list",
         "data": [{
-            "id": "alec-local",
+            "id": "alec-v2",
             "object": "model",
             "owned_by": "alec-rovner",
             "loaded": info["loaded"],
@@ -365,7 +365,7 @@ async def chat_completions(req: ChatRequest):
             user_message=user_msg,
             alec_response=result["text"],
             confidence=0.0,
-            model_used="qwen2.5-coder-7b",
+            model_used="alec-v2",
             tokens_in=result["prompt_tokens"],
             tokens_out=result["completion_tokens"],
             latency_ms=result["latency_ms"],
@@ -378,7 +378,7 @@ async def chat_completions(req: ChatRequest):
         "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
         "object": "chat.completion",
         "created": int(time.time()),
-        "model": "alec-local",
+        "model": "alec-v2",
         "choices": [{
             "index": 0,
             "message": {"role": "assistant", "content": result["text"]},
@@ -409,7 +409,7 @@ async def _stream_response(messages, req, session_id):
             "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
             "object": "chat.completion.chunk",
             "created": int(time.time()),
-            "model": "alec-local",
+            "model": "alec-v2",
             "choices": [{"index": 0, "delta": {"content": chunk}, "finish_reason": None}],
         }
         yield f"data: {json.dumps(payload)}\n\n"
@@ -418,7 +418,7 @@ async def _stream_response(messages, req, session_id):
     full_text = "".join(collected)
     user_msg = next((m["content"] for m in messages if m["role"] == "user"), "")
     try:
-        db.log_conversation(session_id=session_id, user_message=user_msg, alec_response=full_text, model_used="qwen2.5-coder-7b")
+        db.log_conversation(session_id=session_id, user_message=user_msg, alec_response=full_text, model_used="alec-v2")
     except Exception:
         pass
 
