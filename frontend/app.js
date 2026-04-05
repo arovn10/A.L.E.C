@@ -152,9 +152,17 @@ function confirm(title, message) {
 
 /* ─── API Helper ─────────────────────────────────────────────── */
 async function api(method, path, data = null, formData = null) {
+  // Chat & training get 3 minutes (model can be slow), everything else 30s
+  const isLongOp = path.includes('/chat') || path.includes('/training');
+  const timeoutMs = isLongOp ? 180000 : 30000;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
   const opts = {
     method,
-    headers: {}
+    headers: {},
+    signal: controller.signal,
   };
 
   if (state.token) {
@@ -169,7 +177,17 @@ async function api(method, path, data = null, formData = null) {
     opts.body = JSON.stringify(data);
   }
 
-  const res = await fetch(API_URL + path, opts);
+  let res;
+  try {
+    res = await fetch(API_URL + path, opts);
+  } catch (err) {
+    clearTimeout(timer);
+    if (err.name === 'AbortError') {
+      throw new Error('Request timed out — the model may still be processing. Try again in a moment.');
+    }
+    throw err;
+  }
+  clearTimeout(timer);
 
   if (res.status === 401) {
     logout();

@@ -383,23 +383,84 @@ import re as _re
 
 def strip_think_tags(text: str) -> str:
     """Remove <think>...</think> blocks and chain-of-thought reasoning from responses.
-    Qwen3 uses thinking mode by default — the reasoning should never be shown."""
+    Qwen3 uses thinking mode by default — the reasoning should never be shown.
+
+    This is aggressive on purpose: multi-paragraph CoT leaks look broken to users.
+    We strip everything that reads like internal reasoning, even mid-response."""
     # Remove <think>...</think> blocks (including multiline)
     cleaned = _re.sub(r'<think>.*?</think>', '', text, flags=_re.DOTALL)
     # Remove orphaned <think> or </think> tags
     cleaned = cleaned.replace('<think>', '').replace('</think>', '')
-    # Remove chain-of-thought that leaks without think tags
-    # Qwen3 sometimes starts with "Okay, the user..." or "Let me think..."
-    cot_patterns = [
-        r'^Okay,? the user[^\.]*\.\s*',
-        r'^Let me (?:think|see|check|analyze)[^\.]*\.\s*',
-        r'^I need to [^\.]*\.\s*',
-        r'^The user (?:wants|asked|is asking)[^\.]*\.\s*',
-        r'^First,? (?:let me|I\'ll|I should|I need)[^\.]*\.\s*',
-        r'^Now,? (?:let me|I\'ll|I should|I need)[^\.]*\.\s*',
+
+    # ── MULTI-SENTENCE CoT BLOCK DETECTION ──
+    # Qwen3 sometimes dumps entire paragraphs of reasoning before the real answer.
+    # Strategy: if the response starts with reasoning sentences, strip them all
+    # until we hit a line that looks like actual user-facing content.
+    cot_sentence_patterns = _re.compile(
+        r'^(?:'
+        r'Okay,? (?:the user|so|let me|I)'
+        r'|Let me (?:think|see|check|analyze|consider|look|break|start|summarize)'
+        r'|I (?:need to|should|will|want to|can see|notice|see that|think)'
+        r'|The user (?:wants|asked|is asking|might|may|said|mentioned)'
+        r'|First,? (?:let me|I\'ll|I should|I need|I\'m going)'
+        r'|Now,? (?:let me|I\'ll|I should|I need|I\'m going)'
+        r'|So,? (?:the|let me|I\'ll|I should|I need|basically)'
+        r'|Hmm,?'
+        r'|Also,? (?:the|I should|I need|mentioning|including|there)'
+        r'|That\'s (?:a |an )?(?:key|good|important|significant)'
+        r'|(?:This|That) (?:is a|means|shows|makes sense|might)'
+        r'|Including (?:that|this|those)'
+        r'|Mentioning (?:that|this|those)'
+        r'|Keeping it (?:concise|brief|short)'
+        r'|I should (?:summarize|present|format|mention|include|highlight)'
+        r')[^\n]*',
+        _re.IGNORECASE,
+    )
+
+    lines = cleaned.split('\n')
+    stripped_lines = []
+    still_stripping = True
+    for line in lines:
+        trimmed = line.strip()
+        if still_stripping and trimmed:
+            # Strip consecutive CoT lines from the start
+            if cot_sentence_patterns.match(trimmed):
+                continue
+            else:
+                still_stripping = False
+        stripped_lines.append(line)
+    cleaned = '\n'.join(stripped_lines)
+
+    # ── INLINE CoT CLEANUP ──
+    # Catch stray reasoning sentences that appear mid-response
+    inline_cot = [
+        r'(?:^|\n)(?:Okay,? (?:the user|so|let me|I)[^\.\n]*\.\s*)',
+        r'(?:^|\n)(?:I (?:need to|should|will|want to) [^\.\n]*\.\s*)',
+        r'(?:^|\n)(?:The user (?:wants|asked|is asking|might)[^\.\n]*\.\s*)',
+        r'(?:^|\n)(?:(?:Including|Mentioning|Keeping|Adding|Highlighting) (?:that|this|it|those)[^\.\n]*\.\s*)',
     ]
-    for pat in cot_patterns:
-        cleaned = _re.sub(pat, '', cleaned, flags=_re.IGNORECASE)
+    for pat in inline_cot:
+        cleaned = _re.sub(pat, '\n', cleaned, flags=_re.IGNORECASE)
+
+    # ── FULL-RESPONSE CoT DETECTION ──
+    # If after stripping, the remaining text is still overwhelmingly reasoning
+    # (contains meta-reasoning markers throughout), the whole response is CoT.
+    # Count reasoning markers vs total sentences.
+    meta_markers = [
+        'the user might', 'the user may', 'the user would',
+        'that makes sense', 'that\'s a key', 'that\'s significant',
+        'i should summarize', 'i should present', 'i should mention',
+        'keeping it concise', 'keeping it brief',
+        'gives a more comprehensive', 'adds context',
+        'highlighting that', 'mentioning those',
+    ]
+    lower_cleaned = cleaned.lower()
+    marker_count = sum(1 for m in meta_markers if m in lower_cleaned)
+    if marker_count >= 3:
+        # This is entirely internal reasoning — return empty so the caller
+        # falls through to the fallback "I wasn't able to formulate a response"
+        return ''
+
     return cleaned.strip()
 
 @app.post("/v1/chat/completions")
@@ -509,6 +570,8 @@ async def chat_completions(req: ChatRequest):
         "self_edit", "commit", "push",                       # explicit tool
         "improve yourself", "upgrade ", "your code",         # self-improvement
         "can you ", "do you have access", "are you able",    # capability questions
+        "schwab", "acorns", "robinhood", "fidelity",          # brokerage integration
+        "brokerage", "portfolio", "my stocks", "investment",   # finance integrations
         "be more ", "be less ", "use bullet", "from now on",  # style preferences
         "don't say ", "stop saying", "think outside",         # style preferences
         "change your ", "change the format", "respond with",  # style preferences
@@ -551,6 +614,18 @@ async def chat_completions(req: ChatRequest):
         latency_ms = result["latency_ms"]
         prompt_tokens = result["prompt_tokens"]
         completion_tokens = result["completion_tokens"]
+
+    # If CoT stripping emptied the response (entire output was internal reasoning),
+    # generate a clean fallback rather than showing nothing
+    if not response_text:
+        logger.warning("CoT stripping emptied the response — regenerating with lower temperature")
+        result = engine.generate(
+            messages=messages, temperature=0.1,
+            max_tokens=req.max_tokens, top_p=0.9, stream=False,
+        )
+        response_text = strip_think_tags(result["text"])
+        if not response_text:
+            response_text = "I wasn't able to formulate a clean response. Could you rephrase your question?"
 
     # Log the conversation
     try:

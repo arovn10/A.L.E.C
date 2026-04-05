@@ -916,6 +916,8 @@ class ALECAgent:
         lines.append("- If you CAN answer without tools, just respond normally (no TOOL_CALL)")
         lines.append("- NEVER make up data. If a tool returns no results, say so honestly.")
         lines.append("- NEVER pretend you did something. If a tool fails, say it failed and try again or report the error.")
+        lines.append("- NEVER fabricate search results, stock prices, statistics, or news headlines. If web_search fails or returns nothing, say 'I wasn't able to retrieve that data right now.'")
+        lines.append("- When summarizing web_search results, ONLY use information from the actual tool output. Do not add details, numbers, or context from your training data.")
         lines.append("")
         lines.append("A.L.E.C. REPO STRUCTURE (use these exact paths with self_edit):")
         lines.append("  frontend/index.html    — Main HTML (dashboard, panels, chat)")
@@ -1055,7 +1057,8 @@ class ALECAgent:
             else:
                 next_instruction = (
                     f"[TOOL RESULT from {tool_name}]:\n{truncated}\n\n"
-                    f"[Use the above result to respond to the user. Do NOT make up data. If you need another tool call, make it.]"
+                    f"[Use ONLY the above result to respond to the user. Do NOT add data, numbers, or facts that are not in the tool output. "
+                    f"If the result is empty or an error, tell the user the search failed. If you need another tool call, make it.]"
                 )
 
             agent_messages.append({"role": "system", "content": next_instruction})

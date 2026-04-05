@@ -162,6 +162,20 @@ class DriveEngine:
                 "current": 0,
                 "priority": "high",
             },
+            {
+                "id": "brokerage",
+                "title": "Brokerage & Finance Integration",
+                "description": "Connect to financial platforms (Charles Schwab, Acorns, "
+                               "Robinhood, Fidelity) for personalized portfolio summaries. "
+                               "Research OAuth/API access, build encrypted connectors, "
+                               "deliver daily stock digests. Schwab has a developer portal "
+                               "(developer.schwab.com) with OAuth2 API access. Acorns doesn't "
+                               "have a public API yet — explore alternatives (Plaid, Yodlee).",
+                "metric": "brokerage_connectors",
+                "target": 2,
+                "current": 0,
+                "priority": "high",
+            },
         ]
         self._save_goals(goals)
         return goals
