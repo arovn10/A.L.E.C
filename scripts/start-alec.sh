@@ -9,9 +9,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
-# Load .env if present
+# Load .env if present (use set -a / source to handle values with spaces)
 if [ -f .env ]; then
-    export $(grep -v '^#' .env | grep -v '^\s*$' | xargs)
+    set -a
+    source .env
+    set +a
 fi
 
 NEURAL_PORT=${NEURAL_PORT:-8000}
