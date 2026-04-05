@@ -1,7 +1,7 @@
 {
   "name": "a-l-e-c",
   "version": "2.0.0",
-  "description": "A.L.E.C. — Autonomous Language Embedded Cognition: Self-improving AI agent with local LLM inference and LoRA fine-tuning",
+  "description": "A.L.E.C. — Autonomous Language Embedded Cognition: Self-improving AI agent with local LLM inference, LoRA fine-tuning, and autonomous knowledge acquisition",
   "main": "backend/server.js",
   "scripts": {
     "start": "node backend/server.js",
@@ -11,26 +11,30 @@
     "download-model": "bash scripts/download-model.sh",
     "start:full": "bash scripts/start-alec.sh",
     "build": "echo 'No build step required'",
-    "test": "jest"
+    "test": "jest",
+    "lint": "node -c backend/server.js && node -c services/neuralEngine.js && node -c frontend/app.js"
   },
   "keywords": [
     "ai",
     "llm",
-    "personal-assistant",
-    "adaptive-learning",
+    "autonomous-agent",
+    "self-improving",
     "lora",
     "qwen",
     "local-inference",
-    "self-improving"
+    "real-estate",
+    "personal-ai"
   ],
   "author": "Alec Rovner",
   "license": "PROPRIETARY",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.25.0",
+    "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.1",
     "ws": "^8.17.0"
   },
   "devDependencies": {

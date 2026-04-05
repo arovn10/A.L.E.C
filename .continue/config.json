@@ -1,0 +1,43 @@
+{
+  "models": [
+    {
+      "title": "A.L.E.C. Local",
+      "provider": "openai",
+      "model": "alec-local",
+      "apiBase": "http://localhost:8000/v1",
+      "apiKey": "not-needed",
+      "contextLength": 4096,
+      "completionOptions": {
+        "temperature": 0.7,
+        "topP": 0.9,
+        "maxTokens": 1024
+      }
+    }
+  ],
+  "tabAutocompleteModel": {
+    "title": "A.L.E.C. Autocomplete",
+    "provider": "openai",
+    "model": "alec-local",
+    "apiBase": "http://localhost:8000/v1",
+    "apiKey": "not-needed"
+  },
+  "customCommands": [
+    {
+      "name": "alec",
+      "description": "Ask A.L.E.C. about this codebase",
+      "prompt": "You are A.L.E.C., an AI coding agent with deep knowledge of this codebase. {{{ input }}}"
+    },
+    {
+      "name": "review",
+      "description": "A.L.E.C. code review",
+      "prompt": "You are A.L.E.C. Review this code for bugs, performance issues, and improvements. Be direct and specific:\n\n{{{ input }}}"
+    },
+    {
+      "name": "refactor",
+      "description": "A.L.E.C. refactoring suggestions",
+      "prompt": "You are A.L.E.C. Suggest refactoring improvements for this code. Focus on readability, performance, and maintainability:\n\n{{{ input }}}"
+    }
+  ],
+  "allowAnonymousTelemetry": false,
+  "docs": []
+}

@@ -1,567 +1,1470 @@
 /**
- * A.L.E.C. - Frontend Application Logic
- * Handles UI interactions, API communication, and real-time updates
+ * A.L.E.C. Dashboard — app.js
+ * Autonomous Language Embedded Cognition
+ * Vanilla JS — no frameworks required
  */
 
-// Configuration
-const CONFIG = {
-  API_URL: 'http://localhost:3001',
-  VOICE_WS_URL: 'ws://localhost:3001/voice',
-  TOKEN_TYPES: {
-    STOA_ACCESS: 'STOA_ACCESS',
-    FULL_CAPABILITIES: 'FULL_CAPABILITIES'
-  },
-  currentTokenType: null,
-  currentToken: null
-};
+'use strict';
 
-// State Management
+/* ─── Constants ─────────────────────────────────────────────── */
+const API_URL = '';
+const TOKEN_KEY = 'alec_token';
+const SESSION_KEY = 'alec_session_id';
+
+/* ─── State ──────────────────────────────────────────────────── */
 const state = {
+  token: null,
+  user: null,
+  currentPanel: 'chat',
+  sessionId: null,
   messages: [],
-  isListening: false,
-  voiceConnection: null,
-  settings: {
-    sassLevel: 0.7,
-    initiativeMode: true,
-    personality: 'companion'
+  pendingAttachments: [],  // { name, fileId, size }
+  isWaiting: false,
+  intervals: {},
+  personality: {
+    sass: 0.3,
+    initiative: 0.5,
+    empathy: 0.7,
+    creativity: 0.5,
+    precision: 0.8
   }
 };
 
-// DOM Elements
-const elements = {
-  chatMessages: document.getElementById('chatMessages'),
-  messageInput: document.getElementById('messageInput'),
-  sendBtn: document.getElementById('sendBtn'),
-  voiceBtn: document.getElementById('voiceBtn'),
-  settingsBtn: document.getElementById('settingsBtn'),
-  sidebar: document.getElementById('sidebar'),
-  settingsModal: document.getElementById('settingsModal'),
-  welcomeMessage: document.getElementById('welcomeMessage')
-};
+/* ─── Utilities ──────────────────────────────────────────────── */
 
-// Initialize Application
-document.addEventListener('DOMContentLoaded', () => {
-  initializeApp();
-});
+function generateSessionId() {
+  return 'sess_' + Math.random().toString(36).slice(2) + '_' + Date.now();
+}
 
-async function initializeApp() {
-  console.log('🚀 Initializing A.L.E.C. Frontend...');
+function formatBytes(bytes) {
+  if (!bytes) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
 
-  try {
-    // Check for existing token
-    const savedToken = localStorage.getItem('alec_token');
-    if (savedToken) {
-      CONFIG.currentToken = JSON.parse(savedToken);
-      updateTokenUI();
-    }
+function formatDate(val) {
+  if (!val) return '—';
+  const d = new Date(val);
+  if (isNaN(d)) return val;
+  return d.toLocaleString();
+}
 
-    // Setup event listeners
-    setupEventListeners();
+function timeAgo(val) {
+  if (!val) return '—';
+  const d = new Date(val);
+  if (isNaN(d)) return val;
+  const diff = Math.floor((Date.now() - d) / 1000);
+  if (diff < 60) return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
+  return d.toLocaleDateString();
+}
 
-    // Initialize voice interface if available (don't block on failure)
-    try {
-      await initializeVoiceInterface();
-    } catch (voiceError) {
-      console.log('⚠️ Voice interface initialization failed (expected in browser context):', voiceError);
-      elements.voiceBtn.disabled = true;
-    }
-
-    // Load user settings
-    loadSettings();
-
-    // Check neural network connection status
-    await checkNeuralNetworkStatus();
-
-    console.log('✅ A.L.E.C. Frontend ready - All systems operational');
-  } catch (error) {
-    console.error('❌ Frontend initialization error:', error);
-    showNotification(`⚠️ Initialization warning: ${error.message}`);
-  }
+function escapeHtml(str) {
+  const el = document.createElement('div');
+  el.textContent = str;
+  return el.innerHTML;
 }
 
 /**
- * Check neural network connection status
+ * Simple markdown → HTML converter for chat messages.
  */
-async function checkNeuralNetworkStatus() {
-  try {
-    const response = await fetch(`${CONFIG.API_URL}/health`);
-    const data = await response.json();
+function renderMarkdown(text) {
+  if (!text) return '';
+  let html = escapeHtml(text);
 
-    if (data.status === 'ok') {
-      console.log('✅ Neural Network: Connected and healthy');
+  // Code blocks (``` ... ```)
+  html = html.replace(/```(\w+)?\n?([\s\S]*?)```/g, (_, lang, code) =>
+    `<pre><code class="lang-${lang || ''}">${code.trim()}</code></pre>`
+  );
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // Bold
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  // Italic
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  // Headers
+  html = html.replace(/^### (.+)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^## (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^# (.+)$/gm, '<h2>$1</h2>');
+  // Unordered list items
+  html = html.replace(/^[*\-] (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/(<li>.*<\/li>\n?)+/g, (m) => `<ul>${m}</ul>`);
+  // Ordered list
+  html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+  // Links
+  html = html.replace(/\[(.+?)\]\((https?:\/\/.+?)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // Horizontal rule
+  html = html.replace(/^---$/gm, '<hr/>');
+  // Line breaks / paragraphs
+  html = html.split(/\n{2,}/).map(block => {
+    if (/^<(pre|ul|h[2-4]|hr)/.test(block.trim())) return block;
+    return `<p>${block.replace(/\n/g, '<br/>')}</p>`;
+  }).join('');
 
-      // Update status indicator
-      const statusText = document.getElementById('status-text');
-      if (statusText) {
-        statusText.textContent = `Online - ${data.neuralModel.mode} mode active`;
-      }
+  return html;
+}
 
-      // Show notification about neural network status
-      showNotification(`🧠 Neural Network: ${data.neuralModel.mode} mode - Ready to chat!`);
-    } else {
-      console.warn('⚠️ Neural Network not responding properly');
+/* ─── Toast Notifications ────────────────────────────────────── */
+function toast(message, type = 'info') {
+  const container = document.getElementById('toast-container');
+  const icons = { info: 'ℹ️', success: '✅', error: '❌', warning: '⚠️' };
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.innerHTML = `
+    <span class="toast-icon">${icons[type] || '💬'}</span>
+    <span class="toast-message">${escapeHtml(message)}</span>
+  `;
+  container.appendChild(el);
+  setTimeout(() => {
+    el.classList.add('removing');
+    el.addEventListener('animationend', () => el.remove());
+  }, 4000);
+}
+
+/* ─── Confirm Dialog ─────────────────────────────────────────── */
+function confirm(title, message) {
+  return new Promise(resolve => {
+    const dialog = document.getElementById('confirm-dialog');
+    document.getElementById('confirm-title').textContent = title;
+    document.getElementById('confirm-message').textContent = message;
+    dialog.classList.remove('hidden');
+
+    const okBtn = document.getElementById('confirm-ok');
+    const cancelBtn = document.getElementById('confirm-cancel');
+
+    function cleanup(result) {
+      dialog.classList.add('hidden');
+      okBtn.removeEventListener('click', onOk);
+      cancelBtn.removeEventListener('click', onCancel);
+      resolve(result);
     }
-  } catch (error) {
-    console.error('❌ Neural network connection check failed:', error);
-    showNotification('⚠️ Neural network temporarily unavailable - retrying...');
+
+    function onOk() { cleanup(true); }
+    function onCancel() { cleanup(false); }
+
+    okBtn.addEventListener('click', onOk);
+    cancelBtn.addEventListener('click', onCancel);
+  });
+}
+
+/* ─── API Helper ─────────────────────────────────────────────── */
+async function api(method, path, data = null, formData = null) {
+  const opts = {
+    method,
+    headers: {}
+  };
+
+  if (state.token) {
+    opts.headers['Authorization'] = `Bearer ${state.token}`;
+  }
+
+  if (formData) {
+    opts.body = formData;
+    // Do NOT set Content-Type — browser sets multipart boundary
+  } else if (data !== null) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(data);
+  }
+
+  const res = await fetch(API_URL + path, opts);
+
+  if (res.status === 401) {
+    logout();
+    throw new Error('Unauthorized — please log in again.');
+  }
+
+  const text = await res.text();
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    json = { raw: text };
+  }
+
+  if (!res.ok) {
+    throw new Error(json.error || json.message || `HTTP ${res.status}`);
+  }
+
+  return json;
+}
+
+/* ─── Auth ───────────────────────────────────────────────────── */
+
+function logout() {
+  state.token = null;
+  state.user = null;
+  localStorage.removeItem(TOKEN_KEY);
+  clearAllIntervals();
+  document.getElementById('dashboard').classList.add('hidden');
+  document.getElementById('login-page').classList.remove('hidden');
+}
+
+function showDashboard(userData) {
+  state.user = userData;
+  document.getElementById('login-page').classList.add('hidden');
+  document.getElementById('dashboard').classList.remove('hidden');
+
+  // Update sidebar user info
+  const email = userData.email || userData.user?.email || '—';
+  const role = userData.role || userData.user?.role || '—';
+  document.getElementById('user-email-display').textContent = email;
+  document.getElementById('user-role-display').textContent = role.toUpperCase();
+  document.getElementById('user-avatar').textContent = email.slice(0, 2).toUpperCase();
+
+  // Admin section in settings
+  document.getElementById('admin-email').textContent = email;
+  document.getElementById('admin-role').textContent = role;
+  const lastLogin = userData.last_login || userData.user?.last_login;
+  document.getElementById('admin-last-login').textContent = lastLogin ? formatDate(lastLogin) : 'Now';
+
+  // Start polling & load initial data
+  loadModelInfo();
+  loadMetrics();
+  startPolling();
+  switchPanel('chat');
+}
+
+async function login(email, password, isDomoEmbed = false) {
+  const body = { email, password };
+  if (isDomoEmbed) body.is_domo_embed = true;
+
+  const data = await api('POST', '/api/auth/login', body);
+
+  if (data.token) {
+    state.token = data.token;
+    localStorage.setItem(TOKEN_KEY, data.token);
+    showDashboard(data);
+  } else {
+    throw new Error(data.error || 'Login failed — no token returned.');
   }
 }
 
-function setupEventListeners() {
-  // Send message on Enter (Shift+Enter for new line)
-  elements.messageInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+async function validateStoredToken(token) {
+  try {
+    const data = await api('GET', '/api/model/info');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function initAuth() {
+  // Domo embed detection
+  const isIframe = window.parent !== window;
+  const isDomoParam = new URLSearchParams(window.location.search).get('embed') === 'domo';
+
+  if (isIframe || isDomoParam) {
+    try {
+      await login('domo@embed.auto', '', true);
+      return;
+    } catch {
+      // Fall through to login page
+    }
+  }
+
+  // Check localStorage
+  const stored = localStorage.getItem(TOKEN_KEY);
+  if (stored) {
+    state.token = stored;
+    const valid = await validateStoredToken(stored);
+    if (valid) {
+      // Decode token for display (JWT payload is base64)
+      let userData = { email: 'Loading…', role: 'admin' };
+      try {
+        const payload = JSON.parse(atob(stored.split('.')[1]));
+        userData = { email: payload.email || payload.sub || '—', role: payload.role || 'admin' };
+      } catch {}
+      showDashboard(userData);
+      return;
+    }
+    localStorage.removeItem(TOKEN_KEY);
+    state.token = null;
+  }
+
+  // Show login page
+  document.getElementById('login-page').classList.remove('hidden');
+}
+
+/* ─── Login Form ─────────────────────────────────────────────── */
+document.getElementById('login-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const email = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-password').value;
+  const errEl = document.getElementById('login-error');
+  const btnText = document.getElementById('login-btn-text');
+  const btnLoader = document.getElementById('login-btn-loader');
+  const btn = document.getElementById('login-btn');
+
+  errEl.classList.add('hidden');
+  btnText.textContent = 'Signing in…';
+  btnLoader.classList.remove('hidden');
+  btn.disabled = true;
+
+  try {
+    await login(email, password);
+  } catch (err) {
+    errEl.textContent = err.message;
+    errEl.classList.remove('hidden');
+  } finally {
+    btnText.textContent = 'Sign In';
+    btnLoader.classList.add('hidden');
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('logout-btn').addEventListener('click', logout);
+
+/* ─── Panel Navigation ───────────────────────────────────────── */
+const PANEL_TITLES = {
+  chat: 'Chat',
+  metrics: 'Metrics',
+  files: 'Files',
+  training: 'Training',
+  skills: 'Skills',
+  stoa: 'Stoa Data',
+  tasks: 'Tasks',
+  memory: 'Memory & Knowledge',
+  settings: 'Settings'
+};
+
+function switchPanel(panelId) {
+  // Deactivate all nav items
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+  // Hide all panels
+  document.querySelectorAll('.panel').forEach(el => el.classList.remove('active'));
+
+  // Activate new
+  const navEl = document.querySelector(`.nav-item[data-panel="${panelId}"]`);
+  if (navEl) navEl.classList.add('active');
+
+  const panelEl = document.getElementById(`panel-${panelId}`);
+  if (panelEl) panelEl.classList.add('active');
+
+  state.currentPanel = panelId;
+  document.getElementById('topbar-title').textContent = PANEL_TITLES[panelId] || panelId;
+
+  // Close sidebar on mobile
+  closeSidebarMobile();
+
+  // Panel-specific load
+  onPanelSwitch(panelId);
+}
+
+function onPanelSwitch(panelId) {
+  switch (panelId) {
+    case 'metrics':  loadMetrics(); break;
+    case 'files':    loadFiles(); break;
+    case 'training': loadTrainingStatus(); loadAdapters(); break;
+    case 'skills':   loadSkills(); break;
+    case 'stoa':     loadStoaStatus(); loadStoaTables(); break;
+    case 'tasks':    loadTasks(); break;
+    case 'settings': loadModelInfo(); buildPersonalitySliders(); break;
+  }
+}
+
+document.querySelectorAll('.nav-item').forEach(el => {
+  el.addEventListener('click', () => switchPanel(el.dataset.panel));
+  el.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
-      sendMessage();
+      switchPanel(el.dataset.panel);
     }
   });
+});
 
-  // Send button click
-  elements.sendBtn.addEventListener('click', sendMessage);
+/* ─── Sidebar Mobile ─────────────────────────────────────────── */
+const sidebar = document.getElementById('sidebar');
+const overlay = document.getElementById('sidebar-overlay');
+const hamburger = document.getElementById('hamburger-btn');
 
-  // Voice button toggle
-  elements.voiceBtn.addEventListener('click', toggleVoiceMode);
+hamburger.addEventListener('click', () => {
+  sidebar.classList.toggle('open');
+  overlay.classList.toggle('open');
+});
 
-  // Settings modal
-  elements.settingsBtn.addEventListener('click', () => {
-    elements.settingsModal.classList.remove('hidden');
-  });
+overlay.addEventListener('click', closeSidebarMobile);
 
-  document.getElementById('closeSettings').addEventListener('click', () => {
-    elements.settingsModal.classList.add('hidden');
-  });
-
-  // Sidebar toggle
-  const closeSidebar = document.getElementById('closeSidebar');
-  if (closeSidebar) {
-    closeSidebar.addEventListener('click', () => {
-      elements.sidebar.classList.remove('active');
-    });
-  }
-
-  // Settings sliders
-  document.getElementById('sassLevel').addEventListener('input', updateSassSetting);
-  document.getElementById('initiativeLevel').addEventListener('input', updateInitiativeSetting);
-
-  // Token generation buttons
-  document.getElementById('generateSTOAToken').addEventListener('click', () => generateToken(CONFIG.TOKEN_TYPES.STOA_ACCESS));
-  document.getElementById('generateFullToken').addEventListener('click', () => generateToken(CONFIG.TOKEN_TYPES.FULL_CAPABILITIES));
+function closeSidebarMobile() {
+  sidebar.classList.remove('open');
+  overlay.classList.remove('open');
 }
 
-async function sendMessage() {
-  const message = elements.messageInput.value.trim();
-  if (!message || !CONFIG.currentToken) return;
+/* ─── Polling ────────────────────────────────────────────────── */
+function startPolling() {
+  // Metrics every 30 seconds
+  state.intervals.metrics = setInterval(() => {
+    if (state.currentPanel === 'metrics') loadMetrics();
+    loadStatusBadges();
+  }, 30000);
 
-  // Add user message to chat
-  addMessage(message, 'user');
-  elements.messageInput.value = '';
+  // Tasks every 10 seconds
+  state.intervals.tasks = setInterval(() => {
+    if (state.currentPanel === 'tasks') loadTasks();
+  }, 10000);
+
+  // Training every 5 seconds when on training panel
+  state.intervals.training = setInterval(() => {
+    if (state.currentPanel === 'training') loadTrainingStatus();
+    if (state.currentPanel === 'metrics') updateMetricsTrainingSection();
+  }, 5000);
+
+  // Initial status load
+  loadStatusBadges();
+}
+
+function clearAllIntervals() {
+  Object.values(state.intervals).forEach(id => clearInterval(id));
+  state.intervals = {};
+}
+
+/* ─── Status Badges (sidebar) ────────────────────────────────── */
+async function loadStatusBadges() {
+  try {
+    const info = await api('GET', '/api/model/info');
+    const loaded = info.loaded || info.model_loaded || false;
+
+    setDot('dot-neural', loaded);
+    document.getElementById('status-neural-text').textContent = loaded ? 'On' : 'Off';
+    document.getElementById('status-model-name').textContent =
+      info.model_name || info.name || 'Qwen 7B';
+    document.getElementById('topbar-model').textContent =
+      (info.model_name || info.name || 'Qwen 7B').split('/').pop().slice(0, 16);
+
+    setDot('dot-db', true);
+    document.getElementById('status-db-text').textContent =
+      info.database || info.db_type || 'SQLite';
+  } catch {
+    // Silently fail — API may not be running
+  }
 
   try {
-    // Show loading state
-    showLoadingIndicator();
+    const stoa = await api('GET', '/api/stoa/status');
+    const connected = stoa.connected || stoa.status === 'connected';
+    setDot('dot-stoa', connected);
+    document.getElementById('status-stoa-text').textContent = connected ? 'On' : 'Off';
+  } catch {
+    setDot('dot-stoa', false);
+    document.getElementById('status-stoa-text').textContent = 'Off';
+  }
+}
 
-    const response = await fetch(`${CONFIG.API_URL}/api/chat`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${CONFIG.currentToken.token}`
-      },
-      body: JSON.stringify({
-        message,
-        context: {
-          userId: CONFIG.currentToken.userId,
-          sassLevel: state.settings.sassLevel,
-          initiativeMode: state.settings.initiativeMode
-        }
-      })
-    });
+function setDot(id, on) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.className = 'dot ' + (on ? 'dot-on' : 'dot-off');
+}
 
-    const data = await response.json();
+/* ─── MODEL INFO ─────────────────────────────────────────────── */
+async function loadModelInfo() {
+  try {
+    const info = await api('GET', '/api/model/info');
 
-    // Remove loading indicator
-    removeLoadingIndicator();
+    // Settings panel
+    document.getElementById('cfg-model-name').textContent = info.model_name || info.name || '—';
+    document.getElementById('cfg-backend').textContent = info.backend || info.neural_backend || '—';
+    document.getElementById('cfg-ctx-len').textContent = info.context_length || info.n_ctx || '—';
+    document.getElementById('cfg-temperature').textContent = info.temperature ?? '—';
+    document.getElementById('cfg-top-p').textContent = info.top_p ?? '—';
+    document.getElementById('cfg-gpu-layers').textContent = info.n_gpu_layers ?? '—';
+    document.getElementById('cfg-tps').textContent =
+      info.tokens_per_second ? info.tokens_per_second.toFixed(1) : '—';
+    document.getElementById('cfg-loaded').textContent = info.loaded ? 'Yes ✓' : 'No';
 
-    if (data.success) {
-      addMessage(data.response, 'alec', {
-        confidence: data.confidence,
-        suggestions: data.suggestions
-      });
+    // DB section
+    const dbType = info.database || info.db_type || '—';
+    document.getElementById('db-type').textContent = dbType;
+    const isAzure = dbType.toLowerCase().includes('azure') || dbType.toLowerCase().includes('sql');
+    document.getElementById('db-host').textContent = isAzure ? 'stoagroupdb.database.windows.net' : 'local';
+    document.getElementById('db-name-val').textContent = isAzure ? 'stoagroupDB' : 'alec.db';
+    setDot('db-status-dot', true);
+    document.getElementById('db-status-label').textContent = 'Connected';
+  } catch {
+    // API not running — show placeholders
+  }
+}
 
-      // Update UI stats
-      updateStats(data);
-    } else {
-      addMessage('Sorry, I encountered an error. Please try again.', 'alec');
+/* ─── METRICS ────────────────────────────────────────────────── */
+async function loadMetrics() {
+  try {
+    const data = await api('GET', '/api/metrics/dashboard');
+
+    // Top stats
+    document.getElementById('m-total-convos').textContent =
+      (data.total_conversations ?? data.conversations?.total ?? 0).toLocaleString();
+
+    const tps = data.tokens_per_second || data.engine?.tokens_per_second;
+    document.getElementById('m-tokens-sec').textContent =
+      tps ? tps.toFixed(1) : '—';
+
+    const loadTime = data.model_load_time || data.engine?.load_time_seconds;
+    document.getElementById('m-load-time').textContent =
+      loadTime ? loadTime.toFixed(2) + 's' : '—';
+
+    const pos = data.positive_ratings || data.conversations?.positive || 0;
+    const neg = data.negative_ratings || data.conversations?.negative || 0;
+    const total = data.total_conversations || data.conversations?.total || 0;
+    const rated = pos + neg;
+    const posPercent = rated > 0 ? Math.round((pos / rated) * 100) : 0;
+    document.getElementById('m-pos-rating').textContent = rated > 0 ? posPercent + '%' : '—';
+
+    // Rating bar
+    const unrated = total - rated;
+    if (total > 0) {
+      document.getElementById('rbar-pos').style.width = ((pos / total) * 100) + '%';
+      document.getElementById('rbar-neg').style.width = ((neg / total) * 100) + '%';
+      document.getElementById('rbar-none').style.width = ((unrated / total) * 100) + '%';
+    }
+    document.getElementById('legend-pos').textContent = `Positive: ${pos}`;
+    document.getElementById('legend-neg').textContent = `Negative: ${neg}`;
+    document.getElementById('legend-none').textContent = `Unrated: ${unrated}`;
+
+    // System status in metrics
+    const engine = data.engine || {};
+    const loaded = engine.loaded || data.neural_engine_loaded;
+    setDot('sys-neural-dot', loaded);
+    document.getElementById('sys-neural-text').textContent = loaded ? 'Loaded' : 'Not Loaded';
+
+    const stoaConn = data.stoa_connected || engine.stoa_connected;
+    setDot('sys-stoa-dot', stoaConn);
+    document.getElementById('sys-stoa-text').textContent = stoaConn ? 'Yes' : 'No';
+
+    document.getElementById('sys-tasks-text').textContent = data.tasks_running ?? '—';
+    setDot('sys-db-dot', true);
+    document.getElementById('sys-db-text').textContent = data.database || 'SQLite';
+    document.getElementById('sys-model-text').textContent =
+      (engine.model_name || data.model_name || '—').split('/').pop();
+    document.getElementById('sys-updated').textContent = new Date().toLocaleTimeString();
+
+    // Training section
+    updateMetricsTrainingSection(data.training);
+  } catch (err) {
+    // API offline
+  }
+}
+
+async function updateMetricsTrainingSection(trainingData) {
+  try {
+    const data = trainingData || await api('GET', '/api/training/status');
+    const isTraining = data.is_training || data.status === 'running';
+
+    const badge = document.getElementById('ms-is-training');
+    badge.textContent = isTraining ? 'Training' : 'Idle';
+    badge.className = 'badge ' + (isTraining ? 'badge-running' : 'badge-pending');
+
+    document.getElementById('ms-run-id').textContent = data.run_id || '—';
+
+    const step = data.current_step || data.step || 0;
+    const total = data.total_steps || data.max_steps || 0;
+    document.getElementById('ms-progress-text').textContent = total ? `${step} / ${total}` : '—';
+
+    const bar = document.getElementById('ms-progress-bar');
+    if (total > 0) {
+      bar.style.display = 'block';
+      document.getElementById('ms-progress-fill').style.width = ((step / total) * 100) + '%';
     }
 
-  } catch (error) {
-    removeLoadingIndicator();
-    console.error('Send error:', error);
-    addMessage('A.L.E.C. is currently unavailable. Please check your connection.', 'alec');
+    document.getElementById('ms-loss').textContent = data.current_loss ? data.current_loss.toFixed(4) : '—';
+    document.getElementById('ms-best-loss').textContent = data.best_loss ? data.best_loss.toFixed(4) : '—';
+  } catch {}
+}
+
+document.getElementById('metrics-refresh-btn').addEventListener('click', loadMetrics);
+
+/* ─── FILES ──────────────────────────────────────────────────── */
+async function loadFiles() {
+  const tbody = document.getElementById('files-tbody');
+  tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--text-dim);">Loading…</td></tr>';
+
+  try {
+    const data = await api('GET', '/api/files');
+    const files = Array.isArray(data) ? data : (data.files || []);
+
+    if (!files.length) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--text-dim);">No files uploaded yet.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = files.map(f => `
+      <tr data-filename="${escapeHtml(f.filename || f.name || '')}">
+        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+            title="${escapeHtml(f.original_name || f.name || '')}">
+          ${escapeHtml(f.original_name || f.name || '—')}
+        </td>
+        <td class="mono">${formatBytes(f.size_bytes || f.size)}</td>
+        <td class="mono">${timeAgo(f.created_at || f.uploaded_at)}</td>
+        <td><span class="badge ${f.processed ? 'badge-yes' : 'badge-no'}">${f.processed ? 'Yes' : 'No'}</span></td>
+        <td class="mono">${f.training_examples ?? '—'}</td>
+        <td>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            ${!f.processed ? `<button class="btn btn-success btn-sm" onclick="processFile('${escapeHtml(f.filename || f.name || '')}')">Process</button>` : ''}
+            <button class="btn btn-danger btn-sm" onclick="deleteFile('${escapeHtml(f.filename || f.name || '')}', '${escapeHtml(f.original_name || f.name || '')}')">Delete</button>
+          </div>
+        </td>
+      </tr>
+    `).join('');
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--danger);">Error: ${escapeHtml(err.message)}</td></tr>`;
   }
 }
 
-function addMessage(text, sender, metadata = {}) {
-  const messageDiv = document.createElement('div');
-  messageDiv.className = `message ${sender}`;
+window.processFile = async function(filename) {
+  try {
+    toast('Processing file for training…', 'info');
+    const data = await api('POST', `/api/files/${encodeURIComponent(filename)}/process`);
+    toast(`Processed — ${data.training_examples || 0} examples generated.`, 'success');
+    loadFiles();
+  } catch (err) {
+    toast('Process failed: ' + err.message, 'error');
+  }
+};
 
-  let contentHtml = `<div class="message-content">${escapeHtml(text)}</div>`;
+window.deleteFile = async function(filename, displayName) {
+  const ok = await confirm('Delete File', `Delete "${displayName}"? This cannot be undone.`);
+  if (!ok) return;
+  try {
+    await api('DELETE', `/api/files/${encodeURIComponent(filename)}`);
+    toast('File deleted.', 'success');
+    loadFiles();
+  } catch (err) {
+    toast('Delete failed: ' + err.message, 'error');
+  }
+};
 
-  if (metadata.confidence !== undefined) {
-    contentHtml += `
-      <div style="margin-top: 10px; font-size: 12px; color: ${getConfidenceColor(metadata.confidence)}">
-        Confidence: ${(metadata.confidence * 100).toFixed(0)}%
-      </div>
-    `;
+document.getElementById('files-refresh-btn').addEventListener('click', loadFiles);
+
+/* Drop Zone */
+const dropZone = document.getElementById('drop-zone');
+const fileUploadInput = document.getElementById('file-upload-input');
+
+dropZone.addEventListener('click', () => fileUploadInput.click());
+
+dropZone.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  dropZone.classList.add('drag-over');
+});
+
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+
+dropZone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  if (e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
+});
+
+fileUploadInput.addEventListener('change', (e) => {
+  if (e.target.files.length) uploadFiles(e.target.files);
+  e.target.value = '';
+});
+
+async function uploadFiles(files) {
+  const progressEl = document.getElementById('upload-progress');
+  const labelEl = document.getElementById('upload-progress-label');
+  const fillEl = document.getElementById('upload-progress-fill');
+
+  progressEl.classList.remove('hidden');
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    labelEl.textContent = `Uploading ${file.name} (${i + 1}/${files.length})…`;
+    fillEl.style.width = ((i / files.length) * 100) + '%';
+
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      await api('POST', '/api/files/upload', null, fd);
+    } catch (err) {
+      toast(`Failed to upload ${file.name}: ${err.message}`, 'error');
+    }
   }
 
-  if (metadata.suggestions && metadata.suggestions.length > 0) {
-    contentHtml += `
-      <div style="margin-top: 15px;">
-        <strong>Suggestions:</strong>
-        <ul style="margin-top: 8px; padding-left: 20px;">
-          ${metadata.suggestions.map(suggestion => `<li>${escapeHtml(suggestion)}</li>`).join('')}
-        </ul>
-      </div>
-    `;
-  }
+  fillEl.style.width = '100%';
+  labelEl.textContent = 'Upload complete!';
 
-  messageDiv.innerHTML = contentHtml;
-  elements.chatMessages.appendChild(messageDiv);
+  setTimeout(() => {
+    progressEl.classList.add('hidden');
+    fillEl.style.width = '0%';
+  }, 1500);
 
-  // Scroll to bottom
-  elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
-
-  // Store in state
-  state.messages.push({ text, sender, timestamp: Date.now() });
+  toast(`${files.length} file(s) uploaded.`, 'success');
+  loadFiles();
 }
 
-function showLoadingIndicator() {
-  const loadingDiv = document.createElement('div');
-  loadingDiv.className = 'message alec';
-  loadingDiv.id = 'loadingIndicator';
-  loadingDiv.innerHTML = `
-    <div class="message-content">
-      <div style="display: flex; gap: 4px;">
-        <div style="width: 8px; height: 8px; background: var(--primary-color); border-radius: 50%; animation: bounce 1s infinite;"></div>
-        <div style="width: 8px; height: 8px; background: var(--primary-color); border-radius: 50%; animation: bounce 1s infinite 0.2s;"></div>
-        <div style="width: 8px; height: 8px; background: var(--primary-color); border-radius: 50%; animation: bounce 1s infinite 0.4s;"></div>
+/* ─── TRAINING ───────────────────────────────────────────────── */
+async function loadTrainingStatus() {
+  try {
+    const data = await api('GET', '/api/training/status');
+    const isTraining = data.is_training || data.status === 'running';
+
+    const badge = document.getElementById('train-status-badge');
+    badge.textContent = isTraining ? 'Training' : 'Idle';
+    badge.className = 'badge ' + (isTraining ? 'badge-running' : 'badge-pending');
+
+    document.getElementById('train-run-id').textContent = data.run_id || '—';
+
+    const step = data.current_step || data.step || 0;
+    const total = data.total_steps || data.max_steps || 0;
+    document.getElementById('train-step').textContent = total ? `${step} / ${total}` : '—';
+    document.getElementById('train-loss').textContent = data.current_loss ? data.current_loss.toFixed(4) : '—';
+    document.getElementById('train-best-loss').textContent = data.best_loss ? data.best_loss.toFixed(4) : '—';
+    document.getElementById('train-dataset-size').textContent = data.dataset_size?.toLocaleString() || '—';
+
+    // ETA
+    if (isTraining && total > step && data.seconds_per_step) {
+      const remaining = Math.round((total - step) * data.seconds_per_step);
+      document.getElementById('train-eta').textContent = `~${Math.ceil(remaining / 60)}m`;
+    } else {
+      document.getElementById('train-eta').textContent = isTraining ? 'Calculating…' : '—';
+    }
+
+    // Progress bar
+    const pct = total > 0 ? (step / total) * 100 : 0;
+    document.getElementById('train-progress-label').textContent = total ? `Progress: ${step} / ${total} steps (${pct.toFixed(1)}%)` : 'Progress: —';
+    document.getElementById('train-progress-fill').style.width = pct + '%';
+
+    // Buttons
+    document.getElementById('start-training-btn').disabled = isTraining;
+  } catch {}
+}
+
+async function loadAdapters() {
+  const container = document.getElementById('adapters-list');
+  try {
+    const data = await api('GET', '/api/training/adapters');
+    const adapters = Array.isArray(data) ? data : (data.adapters || []);
+
+    if (!adapters.length) {
+      container.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-dim);font-size:0.8rem;">No LoRA adapters found. Train the model to create one.</div>';
+      return;
+    }
+
+    container.innerHTML = adapters.map(a => `
+      <div class="adapter-item">
+        <span class="adapter-icon">🔧</span>
+        <div class="adapter-info">
+          <div class="adapter-name">${escapeHtml(a.name || a.run_id || '—')}</div>
+          <div class="adapter-meta">rank: ${a.lora_rank || '—'} · ${timeAgo(a.created_at)}</div>
+        </div>
+        <span class="badge badge-completed">Saved</span>
       </div>
+    `).join('');
+  } catch {
+    container.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-dim);font-size:0.8rem;">No adapters loaded.</div>';
+  }
+}
+
+document.getElementById('adapters-refresh-btn').addEventListener('click', loadAdapters);
+
+document.getElementById('start-training-btn').addEventListener('click', async () => {
+  const lr = parseFloat(document.getElementById('train-lr').value) || 2e-4;
+  const steps = parseInt(document.getElementById('train-steps').value) || 100;
+  const rank = parseInt(document.getElementById('train-lora-rank').value) || 16;
+
+  const ok = await confirm('Start Training', `Start a LoRA training run with ${steps} steps, rank ${rank}, LR ${lr}?`);
+  if (!ok) return;
+
+  try {
+    toast('Starting training run…', 'info');
+    const data = await api('POST', '/api/training/start', {
+      learning_rate: lr,
+      max_steps: steps,
+      lora_rank: rank
+    });
+    toast('Training started! Run ID: ' + (data.run_id || 'unknown'), 'success');
+    loadTrainingStatus();
+  } catch (err) {
+    toast('Failed to start training: ' + err.message, 'error');
+  }
+});
+
+document.getElementById('export-training-btn').addEventListener('click', async () => {
+  try {
+    toast('Exporting training data…', 'info');
+    const data = await api('POST', '/api/training/export');
+    toast(`Exported ${data.exported_count || data.count || 0} examples.`, 'success');
+  } catch (err) {
+    toast('Export failed: ' + err.message, 'error');
+  }
+});
+
+/* ─── SKILLS ─────────────────────────────────────────────────── */
+async function loadSkills() {
+  await Promise.all([loadInstalledSkills(), loadAvailableSkills()]);
+}
+
+async function loadInstalledSkills() {
+  const container = document.getElementById('installed-skills-list');
+  try {
+    const data = await api('GET', '/api/mcp/skills/installed');
+    const skills = Array.isArray(data) ? data : (data.skills || []);
+
+    if (!skills.length) {
+      container.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-dim);font-size:0.8rem;">No skills installed.</div>';
+      return;
+    }
+
+    container.innerHTML = skills.map(s => `
+      <div class="skill-item">
+        <div class="skill-icon">🔌</div>
+        <div class="skill-info">
+          <div class="skill-name">${escapeHtml(s.name || '—')}</div>
+          <div class="skill-desc">${escapeHtml(s.description || s.url || '—')}</div>
+        </div>
+        <span class="badge ${s.status === 'connected' || s.connected ? 'badge-connected' : 'badge-disconnected'}">
+          ${s.status === 'connected' || s.connected ? 'Connected' : 'Disconnected'}
+        </span>
+      </div>
+    `).join('');
+  } catch {
+    container.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-dim);font-size:0.8rem;">No skills loaded.</div>';
+  }
+}
+
+async function loadAvailableSkills() {
+  const container = document.getElementById('available-skills-list');
+  try {
+    const data = await api('GET', '/api/mcp/skills/available');
+    const skills = Array.isArray(data) ? data : (data.skills || []);
+
+    if (!skills.length) {
+      container.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-dim);font-size:0.8rem;">No additional skills available.</div>';
+      return;
+    }
+
+    container.innerHTML = skills.map(s => `
+      <div class="skill-item">
+        <div class="skill-icon">📦</div>
+        <div class="skill-info">
+          <div class="skill-name">${escapeHtml(s.name || '—')}</div>
+          <div class="skill-desc">${escapeHtml(s.description || '—')}</div>
+        </div>
+        <button class="btn btn-accent btn-sm" onclick="installSkill('${escapeHtml(s.id || s.name || '')}')">Install</button>
+      </div>
+    `).join('');
+  } catch {
+    container.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-dim);font-size:0.8rem;">No available skills listed.</div>';
+  }
+}
+
+window.installSkill = async function(skillId) {
+  try {
+    toast(`Installing skill ${skillId}…`, 'info');
+    await api('POST', '/api/mcp/skills/install', { skill_id: skillId });
+    toast('Skill installed!', 'success');
+    loadSkills();
+  } catch (err) {
+    toast('Install failed: ' + err.message, 'error');
+  }
+};
+
+document.getElementById('skills-refresh-btn').addEventListener('click', loadSkills);
+
+document.getElementById('mcp-connect-btn').addEventListener('click', async () => {
+  const url = document.getElementById('mcp-url-input').value.trim();
+  if (!url) { toast('Please enter a server URL.', 'warning'); return; }
+
+  try {
+    toast('Connecting to MCP server…', 'info');
+    await api('POST', '/api/mcp/connect', { url });
+    toast('Connected to MCP server!', 'success');
+    document.getElementById('mcp-url-input').value = '';
+    loadSkills();
+  } catch (err) {
+    toast('Connection failed: ' + err.message, 'error');
+  }
+});
+
+/* ─── STOA ───────────────────────────────────────────────────── */
+async function loadStoaStatus() {
+  try {
+    const data = await api('GET', '/api/stoa/status');
+    const connected = data.connected || data.status === 'connected';
+
+    const badge = document.getElementById('stoa-status-badge');
+    badge.textContent = connected ? 'Connected' : 'Disconnected';
+    badge.className = 'badge ' + (connected ? 'badge-connected' : 'badge-disconnected');
+
+    document.getElementById('stoa-db-name').textContent = data.database || data.db_name || '—';
+    document.getElementById('stoa-last-sync').textContent = data.last_sync ? timeAgo(data.last_sync) : '—';
+    document.getElementById('stoa-training-examples').textContent =
+      (data.training_examples || data.examples_generated || 0).toLocaleString();
+    document.getElementById('stoa-table-count').textContent = data.table_count ?? '—';
+  } catch {}
+}
+
+async function loadStoaTables() {
+  const container = document.getElementById('stoa-table-list');
+  try {
+    const data = await api('GET', '/api/stoa/tables');
+    const tables = Array.isArray(data) ? data : (data.tables || []);
+
+    if (!tables.length) {
+      container.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-dim);font-size:0.8rem;">No tables found. Check Stoa connection.</div>';
+      return;
+    }
+
+    container.innerHTML = tables.map(t => {
+      const name = typeof t === 'string' ? t : (t.name || t.table_name || JSON.stringify(t));
+      return `
+        <div class="table-list-item" onclick="selectStoaTable('${escapeHtml(name)}', this)">
+          <span>📋</span>
+          <span>${escapeHtml(name)}</span>
+        </div>
+      `;
+    }).join('');
+  } catch {
+    container.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-dim);font-size:0.8rem;">Could not load tables.</div>';
+  }
+}
+
+window.selectStoaTable = async function(tableName, el) {
+  document.querySelectorAll('.table-list-item').forEach(i => i.classList.remove('selected'));
+  el.classList.add('selected');
+  document.getElementById('stoa-selected-table').textContent = tableName;
+
+  const preview = document.getElementById('stoa-schema-preview');
+  preview.textContent = 'Loading…';
+
+  try {
+    const data = await api('POST', '/api/stoa/query', {
+      query: `SELECT TOP 5 * FROM ${tableName}`
+    });
+    if (data.results || data.rows) {
+      const rows = data.results || data.rows || [];
+      preview.textContent = JSON.stringify(rows, null, 2);
+    } else if (data.columns || data.schema) {
+      preview.textContent = JSON.stringify(data, null, 2);
+    } else {
+      preview.textContent = JSON.stringify(data, null, 2);
+    }
+  } catch (err) {
+    preview.textContent = `Error: ${err.message}`;
+  }
+};
+
+document.getElementById('stoa-sync-btn').addEventListener('click', async () => {
+  try {
+    toast('Syncing Stoa data…', 'info');
+    const data = await api('POST', '/api/stoa/sync');
+    toast(`Sync complete! ${data.examples_generated || 0} training examples generated.`, 'success');
+    loadStoaStatus();
+    loadStoaTables();
+  } catch (err) {
+    toast('Sync failed: ' + err.message, 'error');
+  }
+});
+
+document.getElementById('stoa-tables-refresh-btn').addEventListener('click', () => {
+  loadStoaStatus();
+  loadStoaTables();
+});
+
+/* ─── TASKS ──────────────────────────────────────────────────── */
+async function loadTasks() {
+  const container = document.getElementById('tasks-list');
+  try {
+    const data = await api('GET', '/api/tasks');
+    const tasks = Array.isArray(data) ? data : (data.tasks || []);
+
+    if (!tasks.length) {
+      container.innerHTML = '<div style="text-align:center;padding:32px;color:var(--text-dim);font-size:0.8rem;">No background tasks.</div>';
+      return;
+    }
+
+    container.innerHTML = tasks.map(t => {
+      const pct = Math.round((t.progress || 0) * 100);
+      const statusClass = {
+        running: 'badge-running',
+        completed: 'badge-completed',
+        failed: 'badge-failed',
+        cancelled: 'badge-cancelled',
+        pending: 'badge-pending'
+      }[t.status] || 'badge-pending';
+
+      return `
+        <div style="padding:14px 0;border-bottom:1px solid rgba(51,65,85,0.5);" data-task-id="${escapeHtml(t.task_id || t.id || '')}">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+            <div>
+              <div style="font-size:0.875rem;font-weight:500;color:var(--text);">${escapeHtml(t.name || 'Unknown Task')}</div>
+              <div style="font-size:0.7rem;color:var(--text-dim);font-family:'JetBrains Mono',monospace;margin-top:2px;">${escapeHtml(t.task_id || t.id || '')}</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span class="badge ${statusClass}">${t.status || '—'}</span>
+              ${t.status === 'running' ? `<button class="btn btn-danger btn-sm" onclick="cancelTask('${escapeHtml(t.task_id || t.id || '')}')">Cancel</button>` : ''}
+            </div>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill ${t.status === 'failed' ? 'danger' : t.status === 'completed' ? 'success' : ''}"
+                 style="width:${pct}%"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;margin-top:6px;">
+            <span style="font-size:0.7rem;color:var(--text-dim);">${pct}%</span>
+            <span style="font-size:0.7rem;color:var(--text-dim);">${timeAgo(t.created_at)}</span>
+          </div>
+          ${t.error ? `<div style="font-size:0.75rem;color:var(--danger);margin-top:6px;">Error: ${escapeHtml(t.error)}</div>` : ''}
+        </div>
+      `;
+    }).join('');
+  } catch {
+    container.innerHTML = '<div style="text-align:center;padding:32px;color:var(--text-dim);font-size:0.8rem;">Could not load tasks.</div>';
+  }
+}
+
+window.cancelTask = async function(taskId) {
+  try {
+    await api('DELETE', `/api/tasks/${encodeURIComponent(taskId)}`);
+    toast('Task cancelled.', 'success');
+    loadTasks();
+  } catch (err) {
+    toast('Cancel failed: ' + err.message, 'error');
+  }
+};
+
+document.getElementById('tasks-refresh-btn').addEventListener('click', loadTasks);
+
+/* ─── SETTINGS ───────────────────────────────────────────────── */
+function buildPersonalitySliders() {
+  const container = document.getElementById('personality-sliders');
+  const traits = [
+    { key: 'sass', label: 'Sass', emoji: '😏' },
+    { key: 'initiative', label: 'Initiative', emoji: '🚀' },
+    { key: 'empathy', label: 'Empathy', emoji: '💙' },
+    { key: 'creativity', label: 'Creativity', emoji: '🎨' },
+    { key: 'precision', label: 'Precision', emoji: '🎯' }
+  ];
+
+  container.innerHTML = traits.map(t => `
+    <div class="slider-item">
+      <div class="slider-header">
+        <span class="slider-label">${t.emoji} ${t.label}</span>
+        <span class="slider-value" id="slider-val-${t.key}">${state.personality[t.key].toFixed(2)}</span>
+      </div>
+      <input type="range" min="0" max="1" step="0.01"
+             value="${state.personality[t.key]}"
+             id="slider-${t.key}"
+             oninput="onSliderChange('${t.key}', this.value)" />
+    </div>
+  `).join('');
+}
+
+window.onSliderChange = function(key, val) {
+  state.personality[key] = parseFloat(val);
+  const valEl = document.getElementById(`slider-val-${key}`);
+  if (valEl) valEl.textContent = parseFloat(val).toFixed(2);
+};
+
+document.getElementById('save-personality-btn').addEventListener('click', async () => {
+  try {
+    await api('POST', '/api/settings/personality', state.personality);
+    toast('Personality saved!', 'success');
+  } catch (err) {
+    // Silently try to store locally if API not available
+    localStorage.setItem('alec_personality', JSON.stringify(state.personality));
+    toast('Personality saved locally.', 'info');
+  }
+});
+
+document.getElementById('reset-data-btn').addEventListener('click', async () => {
+  const ok = await confirm(
+    '⚠️ Reset All Data',
+    'This will delete all conversations, training data, and files. This CANNOT be undone. Are you absolutely sure?'
+  );
+  if (!ok) return;
+
+  // Second confirmation
+  const ok2 = await confirm(
+    'Final Confirmation',
+    'Type: Are you 100% sure? All data will be permanently deleted.'
+  );
+  if (!ok2) return;
+
+  try {
+    await api('POST', '/api/admin/reset');
+    toast('All data reset.', 'warning');
+    state.messages = [];
+    renderWelcome();
+  } catch (err) {
+    toast('Reset failed: ' + err.message, 'error');
+  }
+});
+
+/* ─── CHAT ───────────────────────────────────────────────────── */
+const chatMessages = document.getElementById('chat-messages');
+const chatInput = document.getElementById('chat-input');
+const sendBtn = document.getElementById('send-btn');
+
+// Auto-resize textarea
+chatInput.addEventListener('input', () => {
+  chatInput.style.height = 'auto';
+  chatInput.style.height = Math.min(chatInput.scrollHeight, 160) + 'px';
+  sendBtn.disabled = chatInput.value.trim().length === 0 && state.pendingAttachments.length === 0;
+});
+
+// Send on Enter (Shift+Enter = newline)
+chatInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    if (!sendBtn.disabled) sendMessage();
+  }
+});
+
+sendBtn.addEventListener('click', sendMessage);
+
+// Suggestion chips
+document.getElementById('suggestion-chips').addEventListener('click', (e) => {
+  const chip = e.target.closest('.chip');
+  if (chip) {
+    chatInput.value = chip.dataset.prompt;
+    chatInput.dispatchEvent(new Event('input'));
+    sendMessage();
+  }
+});
+
+// File attachment
+const attachBtn = document.getElementById('attach-btn');
+const fileAttachInput = document.getElementById('file-attach-input');
+
+attachBtn.addEventListener('click', () => fileAttachInput.click());
+
+fileAttachInput.addEventListener('change', async (e) => {
+  const files = e.target.files;
+  for (const file of files) {
+    try {
+      toast(`Uploading ${file.name}…`, 'info');
+      const fd = new FormData();
+      fd.append('file', file);
+      const data = await api('POST', '/api/files/upload', null, fd);
+      const fileId = data.file_id || data.filename || data.id || file.name;
+      state.pendingAttachments.push({ name: file.name, fileId, size: file.size });
+      renderAttachmentPreviews();
+      sendBtn.disabled = false;
+    } catch (err) {
+      toast(`Upload failed: ${err.message}`, 'error');
+    }
+  }
+  e.target.value = '';
+});
+
+function renderAttachmentPreviews() {
+  const container = document.getElementById('attachment-preview');
+  container.innerHTML = state.pendingAttachments.map((a, i) => `
+    <div class="attachment-chip">
+      <span>📎 ${escapeHtml(a.name)}</span>
+      <button onclick="removeAttachment(${i})" title="Remove">×</button>
+    </div>
+  `).join('');
+}
+
+window.removeAttachment = function(index) {
+  state.pendingAttachments.splice(index, 1);
+  renderAttachmentPreviews();
+  if (state.pendingAttachments.length === 0 && chatInput.value.trim().length === 0) {
+    sendBtn.disabled = true;
+  }
+};
+
+function renderWelcome() {
+  const welcome = document.getElementById('chat-welcome');
+  if (welcome) welcome.style.display = 'flex';
+}
+
+function hideWelcome() {
+  const welcome = document.getElementById('chat-welcome');
+  if (welcome) welcome.style.display = 'none';
+}
+
+function scrollToBottom() {
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function addUserMessage(text) {
+  hideWelcome();
+  const el = document.createElement('div');
+  el.className = 'chat-message user';
+  el.innerHTML = `<div class="msg-bubble">${escapeHtml(text)}</div>`;
+  chatMessages.appendChild(el);
+  scrollToBottom();
+}
+
+function addTypingIndicator() {
+  const el = document.createElement('div');
+  el.className = 'chat-message assistant';
+  el.id = 'typing-indicator';
+  el.innerHTML = `
+    <div class="typing-indicator">
+      <div class="typing-dot"></div>
+      <div class="typing-dot"></div>
+      <div class="typing-dot"></div>
     </div>
   `;
-  elements.chatMessages.appendChild(loadingDiv);
-  elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+  chatMessages.appendChild(el);
+  scrollToBottom();
+  return el;
 }
 
-function removeLoadingIndicator() {
-  const loadingDiv = document.getElementById('loadingIndicator');
-  if (loadingDiv) {
-    loadingDiv.remove();
+function removeTypingIndicator() {
+  const el = document.getElementById('typing-indicator');
+  if (el) el.remove();
+}
+
+function addAssistantMessage(response) {
+  const {
+    text,
+    latency_ms,
+    tokens_out,
+    tokens_in,
+    conversation_id,
+    message_id,
+    session_id
+  } = response;
+
+  const msgId = message_id || conversation_id || Date.now();
+  const latSec = latency_ms ? (latency_ms / 1000).toFixed(2) + 's' : null;
+  const tokenCount = tokens_out || ((tokens_in || 0) + (tokens_out || 0)) || null;
+
+  const el = document.createElement('div');
+  el.className = 'chat-message assistant';
+  el.dataset.msgId = msgId;
+  el.innerHTML = `
+    <div class="msg-bubble">${renderMarkdown(text)}</div>
+    <div class="msg-meta">
+      ${latSec ? `<span class="msg-badge latency">⚡ ${latSec}</span>` : ''}
+      ${tokenCount ? `<span class="msg-badge tokens">🔤 ${tokenCount} tokens</span>` : ''}
+      <div class="feedback-btns">
+        <button class="feedback-btn" title="Good response" onclick="submitFeedback(${msgId}, 1, this)">👍</button>
+        <button class="feedback-btn" title="Bad response" onclick="submitFeedback(${msgId}, -1, this)">👎</button>
+      </div>
+      ${conversation_id ? `<span class="msg-conv-id">conv:${conversation_id}</span>` : ''}
+    </div>
+  `;
+  chatMessages.appendChild(el);
+  scrollToBottom();
+}
+
+window.submitFeedback = async function(msgId, rating, btn) {
+  try {
+    await api('POST', '/api/feedback', {
+      conversation_id: msgId,
+      rating,
+      session_id: state.sessionId
+    });
+    const container = btn.closest('.feedback-btns');
+    container.querySelectorAll('.feedback-btn').forEach(b => {
+      b.classList.remove('active-up', 'active-down');
+    });
+    btn.classList.add(rating === 1 ? 'active-up' : 'active-down');
+    toast(rating === 1 ? 'Thanks for the positive feedback!' : 'Feedback recorded.', 'info');
+  } catch (err) {
+    toast('Could not save feedback: ' + err.message, 'error');
+  }
+};
+
+async function sendMessage() {
+  const text = chatInput.value.trim();
+  if (!text && state.pendingAttachments.length === 0) return;
+  if (state.isWaiting) return;
+
+  // Ensure session
+  if (!state.sessionId) {
+    state.sessionId = localStorage.getItem(SESSION_KEY) || generateSessionId();
+    localStorage.setItem(SESSION_KEY, state.sessionId);
+  }
+
+  // Reset input
+  const userText = text;
+  chatInput.value = '';
+  chatInput.style.height = 'auto';
+  sendBtn.disabled = true;
+  state.isWaiting = true;
+
+  // Show user message
+  if (userText) addUserMessage(userText);
+
+  // Clear attachments after display
+  const attachments = [...state.pendingAttachments];
+  state.pendingAttachments = [];
+  renderAttachmentPreviews();
+
+  // Typing indicator
+  addTypingIndicator();
+
+  try {
+    const body = {
+      message: userText,
+      session_id: state.sessionId
+    };
+    if (attachments.length) {
+      body.file_ids = attachments.map(a => a.fileId);
+    }
+
+    const data = await api('POST', '/api/chat', body);
+
+    removeTypingIndicator();
+    const responseText = data.response || data.message || data.text || data.content || '(no response)';
+    addAssistantMessage({
+      text: responseText,
+      latency_ms: data.latency_ms || data.latency,
+      tokens_out: data.tokens_out || data.tokens,
+      tokens_in: data.tokens_in,
+      conversation_id: data.conversation_id || data.id,
+      session_id: data.session_id
+    });
+  } catch (err) {
+    removeTypingIndicator();
+    const el = document.createElement('div');
+    el.className = 'chat-message assistant';
+    el.innerHTML = `<div class="msg-bubble" style="border-color:rgba(239,68,68,0.4);">
+      ⚠️ Error: ${escapeHtml(err.message)}
+    </div>`;
+    chatMessages.appendChild(el);
+    scrollToBottom();
+  } finally {
+    state.isWaiting = false;
+    if (chatInput.value.trim().length > 0) sendBtn.disabled = false;
   }
 }
 
-async function initializeVoiceInterface() {
-  if (!window.WebSocket) {
-    console.warn('WebSocket not supported - voice interface disabled');
-    elements.voiceBtn.disabled = true;
+/* ─── INIT ───────────────────────────────────────────────────── */
+(async function init() {
+  // Load personality from localStorage if saved
+  const savedPersonality = localStorage.getItem('alec_personality');
+  if (savedPersonality) {
+    try {
+      Object.assign(state.personality, JSON.parse(savedPersonality));
+    } catch {}
+  }
+
+  // Start auth flow
+  await initAuth();
+})();
+
+/* ─── Memory / Teaching Functions ───────────────────────────── */
+
+async function teachMemory() {
+  const category = document.getElementById('teach-category').value;
+  const key = document.getElementById('teach-key').value.trim();
+  const value = document.getElementById('teach-value').value.trim();
+  const resultEl = document.getElementById('teach-result');
+
+  if (!key || !value) {
+    resultEl.style.color = 'var(--danger-color)';
+    resultEl.textContent = 'Please fill in both the label and the knowledge.';
     return;
   }
 
   try {
-    state.voiceConnection = new WebSocket(CONFIG.VOICE_WS_URL);
-
-    state.voiceConnection.onopen = () => {
-      console.log('🎤 Voice WebSocket connected successfully!');
-      elements.voiceBtn.disabled = false;
-      // Show notification to user that voice is ready
-      showNotification('Voice interface ready - click the mic button to speak!');
-    };
-
-    state.voiceConnection.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        handleVoiceMessage(data);
-      } catch (e) {
-        console.error('Failed to parse voice message:', e);
-      }
-    };
-
-    state.voiceConnection.onerror = (error) => {
-      console.log('⚠️ Voice WebSocket unavailable in browser context');
-      elements.voiceBtn.disabled = true;
-      // Don't show error to user - just disable the button gracefully
-    };
-
-    state.voiceConnection.onclose = () => {
-      console.log('Voice connection closed');
-      elements.voiceBtn.disabled = true;
-    };
-
-  } catch (error) {
-    console.error('Voice interface init failed:', error);
-    elements.voiceBtn.disabled = true;
-  }
-}
-
-function toggleVoiceMode() {
-  if (!state.voiceConnection || state.isListening) {
-    // Stop listening
-    stopVoiceListening();
-  } else {
-    startVoiceListening();
-  }
-}
-
-function startVoiceListening() {
-  console.log('🎤 Starting voice listening...');
-
-  // Check if we have the elements before accessing them
-  if (elements.voiceBtn) {
-    elements.voiceBtn.textContent = '⏹️';
-  }
-
-  if (elements.voiceVisualizer) {
-    elements.voiceVisualizer.classList.remove('hidden');
-  }
-
-  state.isListening = true;
-
-  // Send initial message to server only if connection exists
-  if (state.voiceConnection && state.voiceConnection.readyState === WebSocket.OPEN) {
-    try {
-      state.voiceConnection.send(JSON.stringify({ type: 'start_listening' }));
-    } catch (e) {
-      console.error('Failed to send start listening command:', e);
-    }
-  } else {
-    showNotification('⚠️ Voice interface not ready - please refresh page');
-  }
-}
-
-function stopVoiceListening() {
-  console.log('🔇 Stopping voice listening...');
-
-  if (elements.voiceBtn) {
-    elements.voiceBtn.textContent = '🎤';
-  }
-
-  if (elements.voiceVisualizer) {
-    elements.voiceVisualizer.classList.add('hidden');
-  }
-
-  state.isListening = false;
-
-  // Stop listening only if connection exists and is open
-  if (state.voiceConnection && state.voiceConnection.readyState === WebSocket.OPEN) {
-    try {
-      state.voiceConnection.send(JSON.stringify({ type: 'stop_listening' }));
-    } catch (e) {
-      console.error('Failed to send stop listening command:', e);
-    }
-  }
-}
-
-function handleVoiceMessage(data) {
-  switch (data.type) {
-    case 'welcome':
-      console.log('Voice welcome:', data.message);
-      break;
-
-    case 'transcript':
-      addMessage(`🎤 You said: "${data.text}"`, 'user');
-      // Automatically send to A.L.E.C. for processing
-      setTimeout(() => {
-        state.voiceConnection.send(JSON.stringify({ type: 'forward', text: data.text }));
-      }, 500);
-      break;
-
-    case 'error':
-      console.error('Voice error:', data.message);
-      stopVoiceListening();
-      break;
-
-    default:
-      console.log('Voice message:', data.type, data);
-  }
-}
-
-function quickAsk(question) {
-  elements.welcomeMessage.style.display = 'none';
-  elements.messageInput.value = question;
-  elements.messageInput.focus();
-}
-
-function updateTokenUI() {
-  const tokenStatus = document.getElementById('tokenStatus');
-  if (CONFIG.currentTokenType === CONFIG.TOKEN_TYPES.STOA_ACCESS) {
-    tokenStatus.textContent = '🔒 STOA Access';
-    tokenStatus.style.background = 'rgba(6, 182, 212, 0.2)';
-  } else if (CONFIG.currentTokenType === CONFIG.TOKEN_TYPES.FULL_CAPABILITIES) {
-    tokenStatus.textContent = '✨ Full Capabilities Unlocked';
-    tokenStatus.style.background = 'rgba(139, 92, 246, 0.2)';
-    elements.voiceBtn.disabled = false;
-  }
-}
-
-async function generateToken(tokenType) {
-  try {
-    const response = await fetch(`${CONFIG.API_URL}/api/tokens/generate`, {
+    const resp = await apiFetch('/api/memory/teach', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ type: tokenType })
+      body: JSON.stringify({ category, key, value }),
     });
-
-    const data = await response.json();
-
-    if (data.success) {
-      CONFIG.currentToken = data;
-      CONFIG.currentTokenType = tokenType;
-      localStorage.setItem('alec_token', JSON.stringify(data));
-
-      updateTokenUI();
-
-      // Show success message
-      alert(`✅ ${tokenType === CONFIG.TOKEN_TYPES.STOA_ACCESS ? 'STOA' : 'Full'} capabilities activated!`);
+    if (resp.success) {
+      resultEl.style.color = 'var(--success-color)';
+      resultEl.textContent = `✅ Stored! A.L.E.C. will remember this: [${category}] ${key}`;
+      document.getElementById('teach-key').value = '';
+      document.getElementById('teach-value').value = '';
+      loadMemoryStats();
+      loadAllMemories();
     } else {
-      throw new Error(data.error || 'Failed to generate token');
+      resultEl.style.color = 'var(--danger-color)';
+      resultEl.textContent = `Error: ${resp.error || 'Unknown error'}`;
     }
-  } catch (error) {
-    console.error('Token generation failed:', error);
-    alert(`❌ Token generation failed: ${error.message}`);
+  } catch (e) {
+    resultEl.style.color = 'var(--danger-color)';
+    resultEl.textContent = `Failed: ${e.message}`;
   }
 }
 
-function updateSassSetting(e) {
-  state.settings.sassLevel = e.target.value / 100;
-  document.getElementById('sassValue').textContent = state.settings.sassLevel.toFixed(1);
-  saveSettings();
-}
+async function searchMemory() {
+  const query = document.getElementById('memory-search-input').value.trim();
+  const resultsEl = document.getElementById('memory-search-results');
+  if (!query) return;
 
-function updateInitiativeSetting(e) {
-  state.settings.initiativeMode = e.target.value >= 50;
-  document.getElementById('initiativeValue').textContent = state.settings.initiativeMode ? '1.0' : '0.0';
-  saveSettings();
-}
-
-function loadSettings() {
-  const savedSettings = localStorage.getItem('alec_settings');
-  if (savedSettings) {
-    const settings = JSON.parse(savedSettings);
-    Object.assign(state.settings, settings);
-
-    // Update UI controls
-    document.getElementById('sassLevel').value = state.settings.sassLevel * 100;
-    document.getElementById('initiativeLevel').value = state.settings.initiativeMode ? 80 : 20;
-    document.getElementById('sassValue').textContent = state.settings.sassLevel.toFixed(1);
-    document.getElementById('initiativeValue').textContent = state.settings.initiativeMode ? '1.0' : '0.0';
-  }
-}
-
-function saveSettings() {
-  localStorage.setItem('alec_settings', JSON.stringify(state.settings));
-}
-
-function updateStats(data) {
-  // Update query count
-  const queriesCount = parseInt(document.getElementById('queriesCount').textContent);
-  document.getElementById('queriesCount').textContent = queriesCount + 1;
-
-  // Update confidence score
-  if (data.confidence !== undefined) {
-    const currentConf = parseFloat(document.getElementById('confidenceScore').textContent);
-    // Simple averaging - in production use weighted average
-    const newConf = ((currentConf * (queriesCount || 0)) + data.confidence) / (queriesCount + 1);
-    document.getElementById('confidenceScore').textContent = `${(newConf * 100).toFixed(0)}%`;
-  }
-
-  // Show suggestions if available
-  if (data.suggestions && data.suggestions.length > 0) {
-    updatePatternsCount(data.suggestions.length);
-  }
-}
-
-function updatePatternsCount(count) {
-  const patternsCount = parseInt(document.getElementById('patternsCount').textContent);
-  document.getElementById('patternsCount').textContent = patternsCount + count;
-}
-
-function getConfidenceColor(confidence) {
-  if (confidence >= 0.9) return '#10b981'; // Green
-  if (confidence >= 0.7) return '#f59e0b'; // Yellow
-  return '#ef4444'; // Red
-}
-
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
-
-// Show notification to user
-function showNotification(message) {
-  const existing = document.getElementById('notification-toast');
-  if (existing) {
-    existing.remove();
-  }
-
-  const toast = document.createElement('div');
-  toast.id = 'notification-toast';
-  toast.style.cssText = `
-    position: fixed;
-    top: 80px;
-    right: 20px;
-    background: linear-gradient(135deg, #6366f1, #8b5cf6);
-    color: white;
-    padding: 15px 25px;
-    border-radius: 12px;
-    box-shadow: 0 4px 20px rgba(99, 102, 241, 0.4);
-    z-index: 10000;
-    animation: slideInRight 0.3s ease-out;
-    max-width: 350px;
-    font-size: 14px;
-    line-height: 1.5;
-  `;
-
-  toast.innerHTML = `<strong>🎉 ${message}</strong>`;
-  document.body.appendChild(toast);
-
-  // Auto-remove after 5 seconds
-  setTimeout(() => {
-    toast.style.animation = 'slideOutRight 0.3s ease-out';
-    setTimeout(() => toast.remove(), 300);
-  }, 5000);
-}
-
-/**
- * Check neural network connection status
- */
-async function checkNeuralNetworkStatus() {
   try {
-    const response = await fetch(`${CONFIG.API_URL}/health`);
-    const data = await response.json();
-
-    if (data.status === 'ok') {
-      console.log('✅ Neural Network: Connected and healthy');
-
-      // Update status indicator
-      const statusText = document.getElementById('status-text');
-      if (statusText) {
-        statusText.textContent = `Online - ${data.neuralModel.mode} mode active`;
-      }
-
-      // Show notification about neural network status
-      showNotification(`🧠 Neural Network: ${data.neuralModel.mode} mode - Ready to chat!`);
+    const data = await apiFetch('/api/memory/search', {
+      method: 'POST',
+      body: JSON.stringify({ query, limit: 20 }),
+    });
+    if (data.results && data.results.length > 0) {
+      resultsEl.innerHTML = data.results.map(m => `
+        <div class="card" style="padding:10px;margin-bottom:6px;font-size:13px;">
+          <span class="badge" style="background:var(--primary-color);font-size:11px;">${m.category}</span>
+          <strong style="margin-left:6px;">${escapeHtml(m.key)}</strong>
+          <p style="margin-top:4px;color:var(--text-secondary);">${escapeHtml(m.value)}</p>
+          <small style="color:var(--text-muted);">Referenced ${m.times_referenced || 0} times</small>
+        </div>
+      `).join('');
     } else {
-      console.warn('⚠️ Neural Network not responding properly');
+      resultsEl.innerHTML = '<p style="color:var(--text-muted);">No memories found for that query.</p>';
     }
-  } catch (error) {
-    console.error('❌ Neural network connection check failed:', error);
-    showNotification('⚠️ Neural network temporarily unavailable - retrying...');
+  } catch (e) {
+    resultsEl.innerHTML = `<p style="color:var(--danger-color);">Search failed: ${e.message}</p>`;
   }
 }
 
-// Global function for quick ask buttons
-window.quickAsk = quickAsk;
+async function loadMemoryStats() {
+  try {
+    const data = await apiFetch('/api/memory/stats');
+    const el = document.getElementById('memory-stats-content');
+    if (!el) return;
+    const cats = data.categories || {};
+    el.innerHTML = `
+      <div class="stats-row" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;">
+        <div class="stat-card"><div class="stat-value">${data.total_memories || 0}</div><div class="stat-label">Total Memories</div></div>
+        ${Object.entries(cats).map(([k,v]) => `<div class="stat-card"><div class="stat-value">${v}</div><div class="stat-label">${k}</div></div>`).join('')}
+      </div>
+    `;
+  } catch (e) {
+    console.warn('Memory stats load failed:', e);
+  }
+}
 
-console.log('🎯 A.L.E.C. Frontend loaded successfully - Ready to chat!');
+async function loadAllMemories() {
+  try {
+    const data = await apiFetch('/api/memory/all?limit=100');
+    const el = document.getElementById('memory-list');
+    if (!el) return;
+    const memories = data.memories || [];
+    if (memories.length === 0) {
+      el.innerHTML = '<p style="color:var(--text-muted);padding:12px;">No memories yet. Teach A.L.E.C. something above!</p>';
+      return;
+    }
+    el.innerHTML = memories.map(m => `
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--border-color);">
+        <div style="flex:1;">
+          <span class="badge" style="background:var(--primary-color);font-size:10px;">${m.category}</span>
+          <strong style="margin-left:4px;font-size:13px;">${escapeHtml(m.key)}</strong>
+          <p style="font-size:12px;color:var(--text-secondary);margin-top:2px;">${escapeHtml(m.value).substring(0, 200)}</p>
+        </div>
+        <button onclick="deleteMemory(${m.id})" style="background:none;border:none;color:var(--danger-color);cursor:pointer;font-size:14px;" title="Delete">🗑️</button>
+      </div>
+    `).join('');
+  } catch (e) {
+    console.warn('Memory list load failed:', e);
+  }
+}
+
+async function deleteMemory(id) {
+  if (!confirm('Delete this memory?')) return;
+  try {
+    await apiFetch(`/api/memory/${id}`, { method: 'DELETE' });
+    loadAllMemories();
+    loadMemoryStats();
+  } catch (e) {
+    showToast('Failed to delete memory', 'error');
+  }
+}
+
+// Load memory data when switching to memory panel
+const _origOnPanelSwitch = typeof onPanelSwitch === 'function' ? onPanelSwitch : null;
+if (_origOnPanelSwitch) {
+  const _origFn = onPanelSwitch;
+  onPanelSwitch = function(panelId) {
+    _origFn(panelId);
+    if (panelId === 'memory') {
+      loadMemoryStats();
+      loadAllMemories();
+    }
+  };
+}

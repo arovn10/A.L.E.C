@@ -69,11 +69,45 @@ CREATE TABLE IF NOT EXISTS evolution_log (
     created_at TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS admin_users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    role TEXT DEFAULT 'admin',
+    created_at TEXT DEFAULT (datetime('now')),
+    last_login TEXT
+);
+
+CREATE TABLE IF NOT EXISTS background_tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    status TEXT DEFAULT 'pending',
+    progress REAL DEFAULT 0,
+    result TEXT,
+    error TEXT,
+    started_at TEXT,
+    completed_at TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS uploaded_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename TEXT NOT NULL,
+    original_name TEXT NOT NULL,
+    size_bytes INTEGER DEFAULT 0,
+    mime_type TEXT,
+    processed INTEGER DEFAULT 0,
+    training_examples INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_conv_session ON conversations(session_id);
 CREATE INDEX IF NOT EXISTS idx_conv_created ON conversations(created_at);
 CREATE INDEX IF NOT EXISTS idx_training_run ON training_metrics(run_id);
 CREATE INDEX IF NOT EXISTS idx_queries_domain ON learned_queries(domain);
 CREATE INDEX IF NOT EXISTS idx_evo_type ON evolution_log(event_type);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON background_tasks(status);
 """
 
 

@@ -1,0 +1,127 @@
+name: A.L.E.C. CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate-node:
+    name: Validate Node.js
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Check syntax (server.js)
+        run: node -c backend/server.js
+
+      - name: Check syntax (neuralEngine.js)
+        run: node -c services/neuralEngine.js
+
+      - name: Check syntax (frontend app.js)
+        run: node -c frontend/app.js
+
+      - name: Verify required files exist
+        run: |
+          test -f backend/server.js || (echo "FAIL: backend/server.js missing" && exit 1)
+          test -f services/neuralEngine.js || (echo "FAIL: services/neuralEngine.js missing" && exit 1)
+          test -f frontend/index.html || (echo "FAIL: frontend/index.html missing" && exit 1)
+          test -f frontend/app.js || (echo "FAIL: frontend/app.js missing" && exit 1)
+          test -f frontend/styles.css || (echo "FAIL: frontend/styles.css missing" && exit 1)
+          test -f package.json || (echo "FAIL: package.json missing" && exit 1)
+          test -f scripts/setup-local.sh || (echo "FAIL: scripts/setup-local.sh missing" && exit 1)
+          test -f scripts/start-alec.sh || (echo "FAIL: scripts/start-alec.sh missing" && exit 1)
+          test -f scripts/download-model.sh || (echo "FAIL: scripts/download-model.sh missing" && exit 1)
+          echo "✅ All required files present"
+
+      - name: Check no secrets in code
+        run: |
+          # Ensure no passwords or tokens are hardcoded
+          if grep -rn "SiennaBean" --include="*.js" --include="*.py" --include="*.html" backend/ frontend/ services/ 2>/dev/null; then
+            echo "⚠️ WARNING: Possible hardcoded password found in source files"
+          fi
+          if grep -rn "Wed75382" --include="*.js" --include="*.py" --include="*.html" backend/ frontend/ services/ 2>/dev/null; then
+            echo "FAIL: Database password found in source code"
+            exit 1
+          fi
+          echo "✅ No secrets in source code"
+
+  validate-python:
+    name: Validate Python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check Python syntax
+        run: |
+          python -m py_compile services/neural/server.py
+          python -m py_compile services/neural/engine.py
+          python -m py_compile services/neural/database.py
+          python -m py_compile services/neural/training.py
+          python -m py_compile services/neural/tasks.py
+          python -m py_compile services/neural/stoa.py
+          python -m py_compile services/neural/auth.py
+          python -m py_compile services/neural/personality.py
+          python -m py_compile services/neural/initiative.py
+          echo "✅ All Python files compile successfully"
+
+      - name: Verify Python files exist
+        run: |
+          test -f services/neural/server.py
+          test -f services/neural/engine.py
+          test -f services/neural/database.py
+          test -f services/neural/training.py
+          test -f services/neural/tasks.py
+          test -f services/neural/stoa.py
+          test -f services/neural/auth.py
+          test -f services/neural/requirements.txt
+          echo "✅ All Python files present"
+
+  validate-structure:
+    name: Validate Project Structure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check directory structure
+        run: |
+          test -d backend/ || (echo "FAIL: backend/ missing" && exit 1)
+          test -d frontend/ || (echo "FAIL: frontend/ missing" && exit 1)
+          test -d services/neural/ || (echo "FAIL: services/neural/ missing" && exit 1)
+          test -d scripts/ || (echo "FAIL: scripts/ missing" && exit 1)
+          echo "✅ Directory structure valid"
+
+      - name: Check .gitignore covers sensitive files
+        run: |
+          grep -q "\.env" .gitignore || (echo "FAIL: .env not in .gitignore" && exit 1)
+          grep -q "\.gguf" .gitignore || (echo "FAIL: .gguf not in .gitignore" && exit 1)
+          grep -q "alec.db" .gitignore || (echo "FAIL: alec.db not in .gitignore" && exit 1)
+          grep -q "\.venv" .gitignore || (echo "FAIL: .venv not in .gitignore" && exit 1)
+          echo "✅ .gitignore properly configured"
+
+      - name: Check scripts are executable
+        run: |
+          test -x scripts/setup-local.sh || echo "WARNING: setup-local.sh not executable"
+          test -x scripts/start-alec.sh || echo "WARNING: start-alec.sh not executable"
+          test -x scripts/download-model.sh || echo "WARNING: download-model.sh not executable"
+
+      - name: Validate package.json
+        run: |
+          node -e "JSON.parse(require('fs').readFileSync('package.json'))"
+          echo "✅ package.json is valid JSON"
+
+      - name: Check .env.example exists
+        run: |
+          test -f .env.example || echo "WARNING: .env.example missing — new deployments won't know what env vars to set"

@@ -1,209 +1,761 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>A.L.E.C. - Your Personal AI Companion</title>
-  <link rel="stylesheet" href="styles.css">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>A.L.E.C. — Autonomous Language Embedded Cognition</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%236366f1'/%3E%3Ctext x='50%25' y='55%25' dominant-baseline='middle' text-anchor='middle' fill='white' font-family='system-ui' font-size='14' font-weight='700'%3EA%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <!-- Background Animation -->
-  <div class="background-animation">
-    <div class="neural-network"></div>
-    <div class="pulse-orbit"></div>
+
+<!-- ─── Toast Container ──────────────────────────────────────── -->
+<div id="toast-container"></div>
+
+<!-- ─── Confirm Dialog ──────────────────────────────────────── -->
+<div id="confirm-dialog" class="hidden">
+  <div class="confirm-card">
+    <h3 id="confirm-title">Confirm Action</h3>
+    <p id="confirm-message">Are you sure you want to proceed?</p>
+    <div class="confirm-actions">
+      <button class="btn btn-secondary" id="confirm-cancel">Cancel</button>
+      <button class="btn btn-danger" id="confirm-ok">Confirm</button>
+    </div>
   </div>
+</div>
 
-  <!-- Main Interface Container -->
-  <div class="interface-container">
-    <!-- Header -->
-    <header class="header">
-      <div class="logo-section">
-        <div class="alec-avatar" id="alecAvatar">
-          <div class="avatar-ring"></div>
-          <div class="avatar-core"></div>
-        </div>
-        <div class="header-text">
-          <h1>A.L.E.C.</h1>
-          <p class="subtitle">Adaptive Learning Executive Coordinator</p>
-          <div class="status-indicator" id="statusIndicator">
-            <span class="status-dot"></span>
-            <span class="status-text">Online - Ready to Learn</span>
-          </div>
-        </div>
+<!-- ─── Login Page ───────────────────────────────────────────── -->
+<div id="login-page">
+  <div class="login-card">
+    <div class="login-logo">
+      <div class="login-logo-mark">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+        </svg>
       </div>
-      <div class="header-actions">
-        <button class="icon-btn" id="settingsBtn" title="Settings">⚙️</button>
-        <button class="icon-btn" id="voiceBtn" title="Voice Interface" disabled>🎤</button>
+      <div class="login-title">A.L.E.C.</div>
+      <div class="login-subtitle">Autonomous Language Embedded Cognition</div>
+    </div>
+    <form class="login-form" id="login-form" autocomplete="on">
+      <div class="form-group">
+        <label for="login-email">Email</label>
+        <input
+          type="email"
+          id="login-email"
+          class="form-control"
+          placeholder="arovner@campusrentalsllc.com"
+          autocomplete="email"
+          required
+        />
       </div>
-    </header>
-
-    <!-- Main Chat Area -->
-    <main class="chat-container">
-      <div class="welcome-message" id="welcomeMessage">
-        <h2>Welcome to A.L.E.C.</h2>
-        <p>I'm your personal AI companion, trained on your data and designed to help you innovate.</p>
-        <p><strong>How can I assist you today?</strong></p>
-        <div class="suggestion-chips">
-          <button class="chip" onclick="quickAsk('What are my priorities for today?')">📋 Daily Priorities</button>
-          <button class="chip" onclick="quickAsk('Help me brainstorm ideas for a new project')">💡 Brainstorming</button>
-          <button class="chip" onclick="quickAsk('Analyze this email: [paste content here]')">📧 Email Analysis</button>
-          <button class="chip" onclick="quickAsk('What patterns do you see in my work habits?')">🔍 Pattern Analysis</button>
-        </div>
+      <div class="form-group">
+        <label for="login-password">Password</label>
+        <input
+          type="password"
+          id="login-password"
+          class="form-control"
+          placeholder="••••••••••••"
+          autocomplete="current-password"
+          required
+        />
       </div>
+      <div id="login-error" class="login-error hidden"></div>
+      <button type="submit" class="btn btn-primary btn-lg w-full" id="login-btn">
+        <span id="login-btn-text">Sign In</span>
+        <span id="login-btn-loader" class="hidden">
+          <span class="loading-spinner" style="width:16px;height:16px;border-width:2px;"></span>
+        </span>
+      </button>
+    </form>
+  </div>
+</div>
 
-      <!-- Chat Messages -->
-      <div class="chat-messages" id="chatMessages">
-        <!-- Messages will be dynamically added here -->
-      </div>
+<!-- ─── Sidebar Overlay (mobile) ────────────────────────────── -->
+<div id="sidebar-overlay"></div>
 
-      <!-- Voice Visualizer (hidden by default) -->
-      <div class="voice-visualizer hidden" id="voiceVisualizer">
-        <div class="waveform"></div>
-        <p class="listening-text">🎤 Listening...</p>
-      </div>
+<!-- ─── Dashboard ────────────────────────────────────────────── -->
+<div id="dashboard" class="hidden">
 
-      <!-- Input Area -->
-      <div class="input-container">
-        <div class="input-wrapper">
-          <textarea
-            id="messageInput"
-            placeholder="Type your message to A.L.E.C..."
-            rows="1"
-            autocomplete="off"
-          ></textarea>
-          <button class="send-btn" id="sendBtn">
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="22" y1="2" x2="11" y2="13"></line>
-              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-            </svg>
-          </button>
+  <!-- Sidebar -->
+  <nav id="sidebar">
+    <div class="sidebar-header">
+      <div class="alec-logo">
+        <div class="logo-mark">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
         </div>
-        <div class="input-hints">
-          <span id="tokenStatus" class="token-badge">🔒 STOA Access</span>
-          <span class="hint">Press Enter to send • Shift+Enter for new line</span>
-        </div>
-      </div>
-    </main>
-
-    <!-- Sidebar Panel -->
-    <aside class="sidebar" id="sidebar">
-      <div class="sidebar-header">
-        <h3>📊 A.L.E.C. Insights</h3>
-        <button class="close-sidebar" id="closeSidebar">×</button>
-      </div>
-      <div class="sidebar-content">
-        <!-- Stats Cards -->
-        <div class="stats-grid">
-          <div class="stat-card">
-            <div class="stat-icon">🧠</div>
-            <div class="stat-value" id="queriesCount">0</div>
-            <div class="stat-label">Queries Processed</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon">💬</div>
-            <div class="stat-value" id="patternsCount">0</div>
-            <div class="stat-label">Patterns Detected</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon">🎯</div>
-            <div class="stat-value" id="confidenceScore">85%</div>
-            <div class="stat-label">Avg Confidence</div>
-          </div>
-        </div>
-
-        <!-- Personality Profile -->
-        <div class="profile-section">
-          <h4>Your Communication Style</h4>
-          <div class="personality-bars">
-            <div class="bar-container">
-              <span>Sass Level</span>
-              <div class="bar" style="width: 70%">
-                <div class="bar-fill sass"></div>
-              </div>
-            </div>
-            <div class="bar-container">
-              <span>Initiative Mode</span>
-              <div class="bar" style="width: 80%">
-                <div class="bar-fill initiative"></div>
-              </div>
-            </div>
-            <div class="bar-container">
-              <span>Empathy</span>
-              <div class="bar" style="width: 90%">
-                <div class="bar-fill empathy"></div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Recent Interactions -->
-        <div class="recent-section">
-          <h4>Recent Topics</h4>
-          <ul id="topicList" class="topic-list">
-            <li class="topic-item">📊 Project Management</li>
-            <li class="topic-item">💡 Innovation Ideas</li>
-            <li class="topic-item">📧 Email Analysis</li>
-          </ul>
-        </div>
-      </div>
-    </aside>
-
-    <!-- Settings Modal -->
-    <div class="modal hidden" id="settingsModal">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h2>⚙️ A.L.E.C. Configuration</h2>
-          <button class="close-modal" id="closeSettings">×</button>
-        </div>
-        <div class="modal-body">
-          <!-- Token Management -->
-          <div class="settings-section">
-            <h3>🔐 Access Tokens</h3>
-            <div class="token-controls">
-              <button class="btn-primary" id="generateSTOAToken">Generate STOA Access Token</button>
-              <button class="btn-secondary" id="generateFullToken">Generate Full Capabilities Token</button>
-            </div>
-            <div class="tokens-display" id="tokensDisplay"></div>
-          </div>
-
-          <!-- Personality Settings -->
-          <div class="settings-section">
-            <h3>🎭 Personality Configuration</h3>
-            <label class="setting-label">
-              <span>Sass Level (0-1)</span>
-              <input type="range" id="sassLevel" min="0" max="100" value="70">
-              <output for="sassLevel" id="sassValue">0.7</output>
-            </label>
-            <label class="setting-label">
-              <span>Initiative Mode (0-1)</span>
-              <input type="range" id="initiativeLevel" min="0" max="100" value="80">
-              <output for="initiativeLevel" id="initiativeValue">0.8</output>
-            </label>
-          </div>
-
-          <!-- Data Sources -->
-          <div class="settings-section">
-            <h3>📚 Personal Data Sources</h3>
-            <p style="color: #666; font-size: 14px;">Connect your emails, texts, and documents to personalize A.L.E.C.</p>
-            <button class="btn-outline" id="connectDataSources">Connect Data Sources</button>
-          </div>
-
-          <!-- Neural Network Status -->
-          <div class="settings-section">
-            <h3>🧠 Neural Network Status</h3>
-            <div class="neural-status" id="neuralStatus">
-              Loading...
-            </div>
-          </div>
+        <div class="logo-text">
+          <span class="logo-name">A.L.E.C.</span>
+          <span class="logo-tagline">Neural Engine</span>
         </div>
       </div>
     </div>
-  </div>
 
-  <!-- JavaScript -->
-  <script src="app.js"></script>
+    <div class="sidebar-nav" role="navigation" aria-label="Main navigation">
+      <div class="nav-item active" data-panel="chat" role="button" tabindex="0" aria-label="Chat panel">
+        <span class="nav-icon">💬</span>
+        <span class="nav-label">Chat</span>
+      </div>
+      <div class="nav-item" data-panel="metrics" role="button" tabindex="0" aria-label="Metrics panel">
+        <span class="nav-icon">📊</span>
+        <span class="nav-label">Metrics</span>
+      </div>
+      <div class="nav-item" data-panel="files" role="button" tabindex="0" aria-label="Files panel">
+        <span class="nav-icon">📁</span>
+        <span class="nav-label">Files</span>
+      </div>
+      <div class="nav-item" data-panel="training" role="button" tabindex="0" aria-label="Training panel">
+        <span class="nav-icon">🏋️</span>
+        <span class="nav-label">Training</span>
+      </div>
+      <div class="nav-item" data-panel="skills" role="button" tabindex="0" aria-label="Skills panel">
+        <span class="nav-icon">🔌</span>
+        <span class="nav-label">Skills</span>
+      </div>
+      <div class="nav-item" data-panel="stoa" role="button" tabindex="0" aria-label="Stoa Data panel">
+        <span class="nav-icon">🗄️</span>
+        <span class="nav-label">Stoa Data</span>
+      </div>
+      <div class="nav-item" data-panel="tasks" role="button" tabindex="0" aria-label="Tasks panel">
+        <span class="nav-icon">📋</span>
+        <span class="nav-label">Tasks</span>
+      </div>
+      <div class="nav-item" data-panel="memory" role="button" tabindex="0" aria-label="Memory panel">
+        <span class="nav-icon">🧠</span>
+        <span class="nav-label">Memory</span>
+      </div>
+      <div class="nav-item" data-panel="settings" role="button" tabindex="0" aria-label="Settings panel">
+        <span class="nav-icon">⚙️</span>
+        <span class="nav-label">Settings</span>
+      </div>
+    </div>
+
+    <div class="sidebar-status">
+      <div class="status-label">System Status</div>
+      <div class="status-item">
+        <span class="status-key">Neural</span>
+        <span class="status-val" id="status-neural">
+          <span class="dot dot-off" id="dot-neural"></span>
+          <span id="status-neural-text">—</span>
+        </span>
+      </div>
+      <div class="status-item">
+        <span class="status-key">Model</span>
+        <span class="status-val" id="status-model-name" style="color:var(--text-muted);font-size:0.65rem;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">—</span>
+      </div>
+      <div class="status-item">
+        <span class="status-key">DB</span>
+        <span class="status-val">
+          <span class="dot dot-off" id="dot-db"></span>
+          <span id="status-db-text">—</span>
+        </span>
+      </div>
+      <div class="status-item">
+        <span class="status-key">Stoa</span>
+        <span class="status-val">
+          <span class="dot dot-off" id="dot-stoa"></span>
+          <span id="status-stoa-text">Off</span>
+        </span>
+      </div>
+    </div>
+
+    <div class="sidebar-footer">
+      <div class="sidebar-user">
+        <div class="user-avatar" id="user-avatar">AR</div>
+        <div class="user-info">
+          <div class="user-email" id="user-email-display">—</div>
+          <div class="user-role" id="user-role-display">—</div>
+        </div>
+      </div>
+      <button class="btn btn-ghost w-full" id="logout-btn" style="font-size:0.8rem;justify-content:flex-start;padding:8px 10px;">
+        <span>🚪</span> Logout
+      </button>
+    </div>
+  </nav>
+
+  <!-- Main Content -->
+  <div id="main-content">
+    <!-- Top Bar -->
+    <div class="topbar">
+      <div style="display:flex;align-items:center;gap:12px;">
+        <button class="hamburger" id="hamburger-btn" aria-label="Toggle sidebar">☰</button>
+        <span class="topbar-title" id="topbar-title">Chat</span>
+      </div>
+      <div class="topbar-right">
+        <span id="topbar-model" style="font-size:0.7rem;font-family:'JetBrains Mono',monospace;color:var(--text-dim);background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:3px 8px;">Qwen 7B</span>
+      </div>
+    </div>
+
+    <!-- Panel Area -->
+    <div class="panel-area">
+
+      <!-- ─── CHAT PANEL ──────────────────────────────────── -->
+      <div id="panel-chat" class="panel active" style="display:flex;flex-direction:column;padding:0;">
+        <div class="chat-messages" id="chat-messages">
+          <!-- Welcome shown until first message -->
+          <div class="chat-welcome" id="chat-welcome">
+            <div style="font-size:3rem;">🤖</div>
+            <h2>Hello, I'm A.L.E.C.</h2>
+            <p>Autonomous Language Embedded Cognition — your personal AI, trained on your data and continuously improving.</p>
+            <div class="suggestion-chips" id="suggestion-chips">
+              <div class="chip" data-prompt="What can you help me with?">What can you help me with?</div>
+              <div class="chip" data-prompt="Summarize the latest Stoa data">Summarize Stoa data</div>
+              <div class="chip" data-prompt="What's my model's current performance?">Model performance</div>
+              <div class="chip" data-prompt="Show me recent training metrics">Training metrics</div>
+              <div class="chip" data-prompt="Help me analyze a real estate deal">Analyze a deal</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Chat Input -->
+        <div class="chat-input-area">
+          <div class="attachment-preview" id="attachment-preview"></div>
+          <div class="chat-input-wrapper">
+            <button class="attach-btn" id="attach-btn" title="Attach file" type="button">📎</button>
+            <textarea
+              class="chat-input"
+              id="chat-input"
+              placeholder="Message A.L.E.C.…"
+              rows="1"
+              aria-label="Chat message input"
+            ></textarea>
+            <button class="send-btn" id="send-btn" title="Send message" type="button" disabled>
+              ➤
+            </button>
+          </div>
+          <input type="file" id="file-attach-input" style="display:none;" multiple />
+        </div>
+      </div>
+
+      <!-- ─── METRICS PANEL ────────────────────────────────── -->
+      <div id="panel-metrics" class="panel">
+        <div class="panel-title"><span class="ptitle-icon">📊</span> Metrics Dashboard</div>
+
+        <div class="stats-grid" id="metrics-stats">
+          <div class="stat-card">
+            <div class="stat-label">Total Conversations</div>
+            <div class="stat-value" id="m-total-convos">—</div>
+            <div class="stat-sub">all time</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Avg Tokens / sec</div>
+            <div class="stat-value" id="m-tokens-sec">—</div>
+            <div class="stat-sub">inference speed</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Model Load Time</div>
+            <div class="stat-value" id="m-load-time">—</div>
+            <div class="stat-sub">seconds</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Positive Rating</div>
+            <div class="stat-value" id="m-pos-rating">—</div>
+            <div class="stat-sub">of rated conversations</div>
+          </div>
+        </div>
+
+        <!-- Rating breakdown -->
+        <div class="card mb-24">
+          <div class="card-header">
+            <div class="card-title"><span class="icon">💬</span> Conversation Breakdown</div>
+            <button class="btn btn-ghost btn-sm" id="metrics-refresh-btn" title="Refresh metrics">↻ Refresh</button>
+          </div>
+          <div class="rating-bar" id="rating-bar">
+            <div class="rating-segment pos" id="rbar-pos" style="width:0%"></div>
+            <div class="rating-segment neg" id="rbar-neg" style="width:0%"></div>
+            <div class="rating-segment none" id="rbar-none" style="width:100%"></div>
+          </div>
+          <div class="rating-legend">
+            <div class="legend-item">
+              <div class="legend-dot" style="background:var(--success)"></div>
+              <span id="legend-pos">Positive: 0</span>
+            </div>
+            <div class="legend-item">
+              <div class="legend-dot" style="background:var(--danger)"></div>
+              <span id="legend-neg">Negative: 0</span>
+            </div>
+            <div class="legend-item">
+              <div class="legend-dot" style="background:var(--border)"></div>
+              <span id="legend-none">Unrated: 0</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="metrics-grid">
+          <!-- Training Status -->
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title"><span class="icon">🏋️</span> Training Status</div>
+            </div>
+            <div id="training-status-metrics">
+              <div class="status-item" style="padding:6px 0;">
+                <span class="status-key">Status</span>
+                <span id="ms-is-training" class="badge badge-pending">Idle</span>
+              </div>
+              <div class="status-item" style="padding:6px 0;">
+                <span class="status-key">Run ID</span>
+                <span class="status-val mono" id="ms-run-id">—</span>
+              </div>
+              <div class="status-item" style="padding:6px 0;">
+                <span class="status-key">Progress</span>
+                <span class="status-val mono" id="ms-progress-text">—</span>
+              </div>
+              <div class="progress-bar mt-2" id="ms-progress-bar" style="display:none;">
+                <div class="progress-fill" id="ms-progress-fill" style="width:0%"></div>
+              </div>
+              <div class="status-item" style="padding:6px 0;margin-top:6px;">
+                <span class="status-key">Current Loss</span>
+                <span class="status-val mono" id="ms-loss">—</span>
+              </div>
+              <div class="status-item" style="padding:6px 0;">
+                <span class="status-key">Best Loss</span>
+                <span class="status-val mono" id="ms-best-loss">—</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- System Status -->
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title"><span class="icon">⚡</span> System Status</div>
+            </div>
+            <div id="system-status-metrics">
+              <div class="status-item" style="padding:6px 0;">
+                <span class="status-key">Neural Engine</span>
+                <span class="status-val">
+                  <span class="dot dot-off" id="sys-neural-dot"></span>
+                  <span id="sys-neural-text">—</span>
+                </span>
+              </div>
+              <div class="status-item" style="padding:6px 0;">
+                <span class="status-key">Stoa Connected</span>
+                <span class="status-val">
+                  <span class="dot dot-off" id="sys-stoa-dot"></span>
+                  <span id="sys-stoa-text">—</span>
+                </span>
+              </div>
+              <div class="status-item" style="padding:6px 0;">
+                <span class="status-key">Tasks Running</span>
+                <span class="status-val mono" id="sys-tasks-text">—</span>
+              </div>
+              <div class="status-item" style="padding:6px 0;">
+                <span class="status-key">Database</span>
+                <span class="status-val">
+                  <span class="dot dot-off" id="sys-db-dot"></span>
+                  <span id="sys-db-text">—</span>
+                </span>
+              </div>
+              <div class="status-item" style="padding:6px 0;">
+                <span class="status-key">Model</span>
+                <span class="status-val mono" id="sys-model-text" style="font-size:0.65rem;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">—</span>
+              </div>
+              <div class="status-item" style="padding:6px 0;">
+                <span class="status-key">Last Updated</span>
+                <span class="status-val mono" id="sys-updated" style="font-size:0.65rem;">—</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ─── FILES PANEL ──────────────────────────────────── -->
+      <div id="panel-files" class="panel">
+        <div class="panel-title"><span class="ptitle-icon">📁</span> File Manager</div>
+
+        <!-- Drop Zone -->
+        <div class="drop-zone" id="drop-zone" role="button" aria-label="Upload files">
+          <div class="dz-icon">📂</div>
+          <div class="dz-label">Drop files here or click to upload</div>
+          <div class="dz-sublabel">Supports PDF, TXT, DOCX, CSV, JSON, JSONL</div>
+        </div>
+        <input type="file" id="file-upload-input" style="display:none;" multiple
+          accept=".pdf,.txt,.docx,.csv,.json,.jsonl,.md" />
+
+        <!-- Upload progress -->
+        <div id="upload-progress" class="hidden mb-24" style="padding:12px;background:var(--card-bg);border:1px solid var(--border);border-radius:var(--radius-sm);">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+            <div class="loading-spinner"></div>
+            <span style="font-size:0.8rem;color:var(--text-muted);" id="upload-progress-label">Uploading…</span>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill" id="upload-progress-fill" style="width:0%"></div>
+          </div>
+        </div>
+
+        <!-- File List -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><span class="icon">📋</span> Uploaded Files</div>
+            <button class="btn btn-ghost btn-sm" id="files-refresh-btn">↻ Refresh</button>
+          </div>
+          <div id="files-table-wrap" style="overflow-x:auto;">
+            <table class="data-table" id="files-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Size</th>
+                  <th>Date</th>
+                  <th>Processed</th>
+                  <th>Examples</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="files-tbody">
+                <tr><td colspan="6" style="text-align:center;padding:32px;color:var(--text-dim);">Loading files…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ─── TRAINING PANEL ───────────────────────────────── -->
+      <div id="panel-training" class="panel">
+        <div class="panel-title"><span class="ptitle-icon">🏋️</span> Training</div>
+
+        <!-- Current Status -->
+        <div class="card mb-24" id="training-status-card">
+          <div class="card-header">
+            <div class="card-title"><span class="icon">📈</span> Current Training Run</div>
+            <span class="badge badge-pending" id="train-status-badge">Idle</span>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
+            <div class="info-item">
+              <div class="info-label">Run ID</div>
+              <div class="info-value" id="train-run-id">—</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">Step</div>
+              <div class="info-value" id="train-step">—</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">Current Loss</div>
+              <div class="info-value" id="train-loss">—</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">Best Loss</div>
+              <div class="info-value" id="train-best-loss">—</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">ETA</div>
+              <div class="info-value" id="train-eta">—</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">Dataset Size</div>
+              <div class="info-value" id="train-dataset-size">—</div>
+            </div>
+          </div>
+          <div style="margin-bottom:8px;font-size:0.75rem;color:var(--text-dim);" id="train-progress-label">Progress: —</div>
+          <div class="progress-bar">
+            <div class="progress-fill" id="train-progress-fill" style="width:0%"></div>
+          </div>
+        </div>
+
+        <!-- Start Training -->
+        <div class="card mb-24">
+          <div class="card-header">
+            <div class="card-title"><span class="icon">🚀</span> Start Training Run</div>
+          </div>
+          <div class="training-config">
+            <div class="form-group">
+              <label>Learning Rate</label>
+              <input type="number" class="form-control" id="train-lr" value="0.0002" step="0.0001" min="0.00001" max="0.01" />
+            </div>
+            <div class="form-group">
+              <label>Max Steps</label>
+              <input type="number" class="form-control" id="train-steps" value="100" min="10" max="10000" />
+            </div>
+            <div class="form-group">
+              <label>LoRA Rank</label>
+              <input type="number" class="form-control" id="train-lora-rank" value="16" min="4" max="64" step="4" />
+            </div>
+          </div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;">
+            <button class="btn btn-primary" id="start-training-btn">
+              <span>🏋️</span> Start Training
+            </button>
+            <button class="btn btn-secondary" id="export-training-btn">
+              <span>📤</span> Export Training Data
+            </button>
+          </div>
+        </div>
+
+        <!-- LoRA Adapters -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><span class="icon">🔧</span> LoRA Adapters</div>
+            <button class="btn btn-ghost btn-sm" id="adapters-refresh-btn">↻ Refresh</button>
+          </div>
+          <div id="adapters-list">
+            <div style="text-align:center;padding:24px;color:var(--text-dim);font-size:0.8rem;">Loading adapters…</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ─── SKILLS PANEL ─────────────────────────────────── -->
+      <div id="panel-skills" class="panel">
+        <div class="panel-title"><span class="ptitle-icon">🔌</span> MCP Skills</div>
+
+        <!-- Add MCP Server -->
+        <div class="card mb-24">
+          <div class="card-header">
+            <div class="card-title"><span class="icon">➕</span> Add MCP Server</div>
+          </div>
+          <div class="inline-form">
+            <input type="url" class="form-control" id="mcp-url-input" placeholder="mcp://server-url or https://…" />
+            <button class="btn btn-accent" id="mcp-connect-btn">Connect</button>
+          </div>
+        </div>
+
+        <!-- Installed Skills -->
+        <div class="section-header mb-16">
+          <div class="section-title"><span>🔧</span> Installed Skills</div>
+          <button class="btn btn-ghost btn-sm" id="skills-refresh-btn">↻ Refresh</button>
+        </div>
+        <div id="installed-skills-list" class="mb-24">
+          <div style="text-align:center;padding:24px;color:var(--text-dim);font-size:0.8rem;">Loading…</div>
+        </div>
+
+        <!-- Available Skills -->
+        <div class="section-header mb-16">
+          <div class="section-title"><span>📦</span> Available Skills</div>
+        </div>
+        <div id="available-skills-list">
+          <div style="text-align:center;padding:24px;color:var(--text-dim);font-size:0.8rem;">Loading…</div>
+        </div>
+      </div>
+
+      <!-- ─── STOA DATA PANEL ──────────────────────────────── -->
+      <div id="panel-stoa" class="panel">
+        <div class="panel-title"><span class="ptitle-icon">🗄️</span> Stoa Data</div>
+
+        <!-- Connection Status -->
+        <div class="card mb-24" id="stoa-status-card">
+          <div class="card-header">
+            <div class="card-title"><span class="icon">🔗</span> Connection Status</div>
+            <span class="badge badge-disconnected" id="stoa-status-badge">Disconnected</span>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
+            <div class="info-item">
+              <div class="info-label">Database</div>
+              <div class="info-value" id="stoa-db-name">—</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">Last Sync</div>
+              <div class="info-value" id="stoa-last-sync">—</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">Training Examples</div>
+              <div class="info-value" id="stoa-training-examples">—</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">Tables Available</div>
+              <div class="info-value" id="stoa-table-count">—</div>
+            </div>
+          </div>
+          <button class="btn btn-primary" id="stoa-sync-btn">
+            <span>🔄</span> Sync Now
+          </button>
+        </div>
+
+        <!-- Tables -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title"><span class="icon">📋</span> Tables</div>
+              <button class="btn btn-ghost btn-sm" id="stoa-tables-refresh-btn">↻ Refresh</button>
+            </div>
+            <div class="table-list" id="stoa-table-list">
+              <div style="padding:24px;text-align:center;color:var(--text-dim);font-size:0.8rem;">Loading tables…</div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title"><span class="icon">👁️</span> Schema Preview</div>
+              <span id="stoa-selected-table" style="font-size:0.7rem;color:var(--text-dim);font-family:'JetBrains Mono',monospace;">Select a table →</span>
+            </div>
+            <div class="schema-preview" id="stoa-schema-preview">Select a table to see its schema and sample data.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ─── TASKS PANEL ──────────────────────────────────── -->
+      <div id="panel-tasks" class="panel">
+        <div class="panel-title"><span class="ptitle-icon">📋</span> Background Tasks</div>
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><span class="icon">⚡</span> Task Queue</div>
+            <button class="btn btn-ghost btn-sm" id="tasks-refresh-btn">↻ Refresh</button>
+          </div>
+          <div id="tasks-list">
+            <div style="text-align:center;padding:32px;color:var(--text-dim);font-size:0.8rem;">Loading tasks…</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ─── SETTINGS PANEL ───────────────────────────────── -->
+      <div id="panel-settings" class="panel">
+
+      <!-- MEMORY PANEL -->
+      <div id="panel-memory" class="panel">
+        <div class="panel-title"><span class="ptitle-icon">🧠</span> Memory &amp; Knowledge</div>
+
+        <!-- Teach A.L.E.C. -->
+        <div class="card">
+          <div class="card-header">Teach A.L.E.C.</div>
+          <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px;">Tell A.L.E.C. something it will remember forever. No retraining needed — instant recall.</p>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+            <select id="teach-category" class="input-field">
+              <option value="fact">Fact</option>
+              <option value="person">Person</option>
+              <option value="property">Property</option>
+              <option value="preference">Preference</option>
+              <option value="correction">Correction</option>
+              <option value="company">Company</option>
+            </select>
+            <input type="text" id="teach-key" class="input-field" placeholder="Short label (e.g. stoa_location)">
+          </div>
+          <textarea id="teach-value" class="input-field" rows="3" placeholder="What should A.L.E.C. remember? e.g. 'Stoa Group is based in Hammond, Louisiana'" style="width:100%;resize:vertical;"></textarea>
+          <button class="btn-primary" style="margin-top:8px;" onclick="teachMemory()">Teach A.L.E.C.</button>
+          <div id="teach-result" style="margin-top:8px;font-size:13px;color:var(--success-color);"></div>
+        </div>
+
+        <!-- Search Memory -->
+        <div class="card">
+          <div class="card-header">Search Memory</div>
+          <div style="display:flex;gap:8px;">
+            <input type="text" id="memory-search-input" class="input-field" placeholder="Search A.L.E.C.'s memory..." style="flex:1;">
+            <button class="btn-primary" onclick="searchMemory()">Search</button>
+          </div>
+          <div id="memory-search-results" style="margin-top:12px;"></div>
+        </div>
+
+        <!-- Memory Stats -->
+        <div class="card">
+          <div class="card-header">Memory Stats</div>
+          <div id="memory-stats-content">Loading...</div>
+        </div>
+
+        <!-- All Memories -->
+        <div class="card">
+          <div class="card-header">All Memories <button class="btn-outline" style="float:right;font-size:11px;padding:4px 8px;" onclick="loadAllMemories()">Refresh</button></div>
+          <div id="memory-list" style="max-height:400px;overflow-y:auto;"></div>
+        </div>
+      </div>
+
+        <div class="panel-title"><span class="ptitle-icon">⚙️</span> Settings</div>
+
+        <div class="settings-grid">
+          <!-- Personality Sliders -->
+          <div class="card">
+            <div class="card-title" style="margin-bottom:16px;"><span class="icon">🎭</span> Personality</div>
+            <div class="slider-group" id="personality-sliders">
+              <!-- Generated by JS -->
+            </div>
+            <button class="btn btn-primary btn-sm mt-4" id="save-personality-btn">Save Personality</button>
+          </div>
+
+          <!-- Model Config -->
+          <div class="card">
+            <div class="card-title" style="margin-bottom:16px;"><span class="icon">🤖</span> Model Configuration</div>
+            <div class="info-grid" id="model-info-grid">
+              <div class="info-item">
+                <div class="info-label">Model Name</div>
+                <div class="info-value" id="cfg-model-name">—</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">Backend</div>
+                <div class="info-value" id="cfg-backend">—</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">Context Length</div>
+                <div class="info-value" id="cfg-ctx-len">—</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">Temperature</div>
+                <div class="info-value" id="cfg-temperature">—</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">Top-P</div>
+                <div class="info-value" id="cfg-top-p">—</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">GPU Layers</div>
+                <div class="info-value" id="cfg-gpu-layers">—</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">Tokens / sec</div>
+                <div class="info-value" id="cfg-tps">—</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">Model Loaded</div>
+                <div class="info-value" id="cfg-loaded">—</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- DB Status -->
+          <div class="card">
+            <div class="card-title" style="margin-bottom:16px;"><span class="icon">🗄️</span> Database Status</div>
+            <div class="info-grid">
+              <div class="info-item">
+                <div class="info-label">Type</div>
+                <div class="info-value" id="db-type">—</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">Status</div>
+                <div class="info-value" id="db-status-text" style="display:flex;align-items:center;gap:6px;">
+                  <span class="dot dot-off" id="db-status-dot"></span>
+                  <span id="db-status-label">—</span>
+                </div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">Host</div>
+                <div class="info-value" id="db-host">—</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">Name</div>
+                <div class="info-value" id="db-name-val">—</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Admin Section -->
+          <div class="card">
+            <div class="card-title" style="margin-bottom:16px;"><span class="icon">👤</span> Admin Info</div>
+            <div class="info-grid">
+              <div class="info-item">
+                <div class="info-label">Email</div>
+                <div class="info-value" id="admin-email">—</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">Role</div>
+                <div class="info-value" id="admin-role">—</div>
+              </div>
+              <div class="info-item" style="grid-column:1/-1;">
+                <div class="info-label">Last Login</div>
+                <div class="info-value" id="admin-last-login">—</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Danger Zone -->
+        <div class="danger-zone mt-4">
+          <h4>⚠️ Danger Zone</h4>
+          <p style="font-size:0.8rem;color:var(--text-muted);margin-bottom:12px;">
+            These actions are irreversible. Proceed with caution.
+          </p>
+          <button class="btn btn-danger" id="reset-data-btn">
+            <span>🗑️</span> Reset All Data
+          </button>
+        </div>
+      </div>
+
+    </div><!-- end .panel-area -->
+  </div><!-- end #main-content -->
+</div><!-- end #dashboard -->
+
+<script src="app.js"></script>
 </body>
 </html>
