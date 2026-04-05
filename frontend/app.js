@@ -573,7 +573,7 @@ async function loadModelInfo() {
     document.getElementById('cfg-loaded').textContent = info.loaded ? 'Yes ✓' : 'No';
 
     // DB section
-    const dbType = info.database || info.db_type || '—';
+    const dbType = info.database || info.db_type || 'SQLite';
     document.getElementById('db-type').textContent = dbType;
     const isAzure = dbType.toLowerCase().includes('azure') || dbType.toLowerCase().includes('sql');
     document.getElementById('db-host').textContent = isAzure ? 'stoagroupdb.database.windows.net' : 'local';
@@ -669,7 +669,7 @@ async function updateMetricsTrainingSection(trainingData) {
     }
 
     document.getElementById('ms-loss').textContent = data.current_loss ? data.current_loss.toFixed(4) : '—';
-    document.getElementById('ms-best-loss').textContent = data.best_loss ? data.best_loss.toFixed(4) : '—';
+    document.getElementById('ms-best-loss').textContent = (data.best_loss && data.best_loss < 999999) ? data.best_loss.toFixed(4) : 'N/A';
   } catch {}
 }
 
@@ -810,7 +810,7 @@ async function loadTrainingStatus() {
     const total = data.total_steps || data.max_steps || 0;
     document.getElementById('train-step').textContent = total ? `${step} / ${total}` : '—';
     document.getElementById('train-loss').textContent = data.current_loss ? data.current_loss.toFixed(4) : '—';
-    document.getElementById('train-best-loss').textContent = data.best_loss ? data.best_loss.toFixed(4) : '—';
+    document.getElementById('train-best-loss').textContent = (data.best_loss && data.best_loss < 999999) ? data.best_loss.toFixed(4) : 'N/A';
     document.getElementById('train-dataset-size').textContent = data.dataset_size?.toLocaleString() || '—';
 
     // ETA
@@ -1017,7 +1017,7 @@ async function loadStoaTables() {
     const data = await api('GET', '/api/stoa/tables');
     const tables = Array.isArray(data) ? data : (data.tables || []);
 
-    if (!tables.length) {
+    document.getElementById('stoa-table-count').textContent = tables.length || '—';       if (!tables.length) {
       container.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-dim);font-size:0.8rem;">No tables found. Check Stoa connection.</div>';
       return;
     }
