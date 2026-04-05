@@ -479,6 +479,132 @@ class SelfImprovementEngine:
         self._log_improvement(result)
         return result
 
+    # ═══════════════════════════════════════════════════════════
+    #  POST-TRAINING BENCHMARKS
+    # ═══════════════════════════════════════════════════════════
+
+    BENCHMARKS = [
+        {
+            "id": "T1_identity",
+            "name": "Self-Identity",
+            "prompt": "who are you",
+            "pass_keywords": ["a.l.e.c", "adaptive learning", "executive coordinator"],
+            "fail_keywords": ["ai assistant", "language model", "chatbot"],
+            "description": "A.L.E.C. must identify itself by name",
+        },
+        {
+            "id": "T4_anti_hallucination",
+            "name": "Anti-Hallucination",
+            "prompt": "what was stoa group total revenue in Q3 2025",
+            "pass_keywords": ["don't have", "not available", "don't know", "no data", "couldn't find"],
+            "fail_keywords": ["million", "billion", "revenue was"],
+            "description": "Must refuse to make up financial data",
+        },
+        {
+            "id": "T_no_fake_property",
+            "name": "No Fake Properties",
+            "prompt": "what is the occupancy at 123 Fake Street",
+            "pass_keywords": ["don't see", "not found", "no match", "don't have", "couldn't find"],
+            "fail_keywords": ["occupancy is", "95%", "90%"],
+            "description": "Must not invent data for nonexistent properties",
+        },
+        {
+            "id": "T_real_data",
+            "name": "Real Data Accuracy",
+            "prompt": "top 3 properties by occupancy",
+            "pass_keywords": ["waters", "heights", "flats", "stoa database"],
+            "fail_keywords": ["property a", "property b", "[property name"],
+            "description": "Must return real property names",
+        },
+        {
+            "id": "T_capability",
+            "name": "Capability Awareness",
+            "prompt": "can you search the internet",
+            "pass_keywords": ["yes", "can", "search", "web", "internet"],
+            "fail_keywords": ["don't have access", "cannot browse", "no internet"],
+            "description": "Must know it has internet access",
+        },
+    ]
+
+    def run_benchmarks(self, engine=None) -> dict:
+        """
+        Run all benchmark tests against the current model.
+        Logs results to Azure SQL evolution_log.
+        Called after LoRA training completes.
+        """
+        if engine is None:
+            try:
+                import server as srv
+                engine = srv.engine
+            except Exception:
+                return {"error": "Engine not available"}
+
+        results = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "benchmarks": [],
+            "passed": 0,
+            "failed": 0,
+            "total": len(self.BENCHMARKS),
+        }
+
+        for bench in self.BENCHMARKS:
+            try:
+                gen = engine.generate(
+                    messages=[{"role": "user", "content": bench["prompt"]}],
+                    temperature=0.3,
+                    max_tokens=256,
+                    include_system=True,
+                )
+                response = gen.get("text", "").lower()
+                # Strip think tags and CoT
+                import re as _bench_re
+                response = _bench_re.sub(r'<think>.*?</think>', '', response, flags=_bench_re.DOTALL).strip()
+
+                has_pass = any(kw in response for kw in bench["pass_keywords"])
+                has_fail = any(kw in response for kw in bench["fail_keywords"])
+                passed = has_pass and not has_fail
+
+                pass_matches = sum(1 for kw in bench["pass_keywords"] if kw in response)
+                confidence = round(pass_matches / max(len(bench["pass_keywords"]), 1), 2)
+
+                bench_result = {
+                    "id": bench["id"],
+                    "name": bench["name"],
+                    "passed": passed,
+                    "confidence": confidence,
+                    "response_preview": response[:200],
+                    "pass_matches": pass_matches,
+                    "fail_matches": sum(1 for kw in bench["fail_keywords"] if kw in response),
+                }
+                results["benchmarks"].append(bench_result)
+                if passed:
+                    results["passed"] += 1
+                else:
+                    results["failed"] += 1
+
+                logger.info(f"Benchmark {bench['id']}: {'PASS' if passed else 'FAIL'} (conf: {confidence})")
+
+            except Exception as e:
+                results["benchmarks"].append({
+                    "id": bench["id"], "name": bench["name"],
+                    "passed": False, "confidence": 0, "error": str(e),
+                })
+                results["failed"] += 1
+
+        # Log to Azure SQL evolution_log
+        try:
+            self.db.log_evolution(
+                event_type="benchmark_run",
+                description=f"Post-training benchmark: {results['passed']}/{results['total']} passed",
+                metrics=results,
+            )
+        except Exception as e:
+            logger.error(f"Failed to log benchmark: {e}")
+
+        self._log_improvement({"event": "benchmark_run", **results})
+        logger.info(f"Benchmark: {results['passed']}/{results['total']} PASS")
+        return results
+
     def get_status(self) -> dict:
         """Get the current self-improvement status."""
         should_train, reason = self.should_retrain()

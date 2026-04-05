@@ -275,6 +275,31 @@ class ALECTrainer:
             self.status.is_training = False
             logger.info(f"[{run_id}] Training complete!")
 
+            # Auto-run benchmarks after training completes
+            try:
+                import server as srv
+                if hasattr(srv, 'self_improver') and srv.self_improver:
+                    logger.info(f"[{run_id}] Running post-training benchmarks...")
+                    bench = srv.self_improver.run_benchmarks()
+                    logger.info(f"[{run_id}] Benchmarks: {bench.get('passed',0)}/{bench.get('total',0)} passed")
+                    # Email results if autonomy is available
+                    if hasattr(srv, 'autonomy') and srv.autonomy and srv.autonomy.email_configured:
+                        srv.autonomy.send_email(
+                            f"Training Complete + Benchmark: {bench.get('passed',0)}/{bench.get('total',0)} passed",
+                            f"LoRA training run {run_id} completed.\n"
+                            f"Best loss: {self.status.best_loss}\n\n"
+                            f"Post-training benchmark results:\n" +
+                            "\n".join(
+                                f"  {'PASS' if b.get('passed') else 'FAIL'} [{b.get('confidence',0):.0%}] {b.get('name')}: {b.get('response_preview','')[:80]}"
+                                for b in bench.get('benchmarks', [])
+                            ) +
+                            f"\n\nTotal: {bench.get('passed',0)}/{bench.get('total',0)} passed\n\n" +
+                            f"Full results logged to evolution_log.\n" +
+                            f"View: /api/self-improve/benchmark-history"
+                        )
+            except Exception as bench_err:
+                logger.error(f"[{run_id}] Post-training benchmark failed: {bench_err}")
+
         except Exception as e:
             logger.error(f"[{run_id}] Training failed: {e}")
             self.status.is_training = False

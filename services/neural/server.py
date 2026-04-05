@@ -1102,6 +1102,19 @@ def score_conversation(req: dict):
         return {"score": 0}
     return {"score": self_improver.score_conversation(req)}
 
+@app.post("/self-improve/benchmark")
+def run_benchmarks():
+    """Run post-training benchmarks and log results to evolution_log."""
+    if not self_improver:
+        raise HTTPException(status_code=503, detail="Self-improvement engine not initialized")
+    return self_improver.run_benchmarks(engine=engine)
+
+@app.get("/self-improve/benchmark-history")
+def benchmark_history():
+    """Get all past benchmark results from evolution_log."""
+    entries = db.get_evolution_log(event_type="benchmark_run", limit=50)
+    return {"runs": entries, "total": len(entries)}
+
 
 # ══════════════════════════════════════════════════════════════════
 #  TEXT-TO-SPEECH (server-side via edge-tts)
