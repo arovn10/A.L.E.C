@@ -211,6 +211,13 @@ class QueryPlanner:
             "who are you", "what can you", "help me", "hello", "hey alec",
             "thank", "thanks", "good job", "nice", "great",
             "can you see", "do you have access", "are you able",
+            "search the web", "search the internet", "google ", "look up",
+            "browse ", "latest news", "find out", "what is the weather",
+            "stock price", "current events", "today's news",
+            "qwen", "llama", "model release", "ai news",
+            "turn on", "turn off", "lights", "brightness",
+            "email ", "send me", "send a report",
+            "improve yourself", "your code", "edit ",
         ]
         if any(pat in lower for pat in non_data_patterns):
             return False
