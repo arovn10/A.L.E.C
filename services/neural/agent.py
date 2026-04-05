@@ -126,10 +126,29 @@ class WebSearchTool(AgentTool):
 
 
 class HomeAssistantTool(AgentTool):
-    """Control smart home devices via Home Assistant."""
+    """Control smart home devices via Home Assistant REST API."""
     name = "smart_home"
-    description = "Control smart home devices — lights, locks, thermostats, cameras. Turn things on/off, check status, set temperature."
-    parameters = {"action": "What to do (e.g., 'turn on living room lights', 'lock front door', 'set thermostat to 72')"}
+    description = (
+        "Control smart home devices via Home Assistant. "
+        "Turn lights on/off, set brightness, check device states, control media players. "
+        "Known devices: living_room lights, hue_play_1, hue_play_2, floor_lamp_1, floor_lamp_2, "
+        "kitchen (h612d), guest_room, family_room_2 (Chromecast TV)."
+    )
+    parameters = {"action": "What to do (e.g., 'turn off living room lights', 'set kitchen brightness to 50')"}
+
+    # Map friendly names to entity IDs
+    ENTITY_MAP = {
+        "living room": "light.living_room",
+        "hue play 1": "light.hue_play_1",
+        "hue play 2": "light.hue_play_2",
+        "floor lamp 1": "light.floor_lamp_1",
+        "floor lamp 2": "light.floor_lamp_2",
+        "kitchen": "light.h612d",
+        "guest room": "light.guest_room",
+        "tv": "media_player.family_room_2",
+        "family room": "media_player.family_room_2",
+        "chromecast": "media_player.family_room_2",
+    }
 
     def execute(self, action: str = "", **kwargs) -> str:
         ha_url = os.getenv("HA_URL", "")
@@ -137,27 +156,98 @@ class HomeAssistantTool(AgentTool):
         if not ha_url or not ha_token:
             return "Home Assistant not configured. Set HA_URL and HA_TOKEN in .env."
 
-        # Parse action into HA API calls
         lower = action.lower()
         try:
             import urllib.request
             headers = {"Authorization": f"Bearer {ha_token}", "Content-Type": "application/json"}
 
-            if any(w in lower for w in ["status", "state", "check", "what"]):
-                # Get states
-                req = urllib.request.Request(f"{ha_url}/api/states", headers=headers)
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    states = json.loads(resp.read())
-                # Filter to relevant entities
-                relevant = [s for s in states if any(w in s.get("entity_id", "") for w in lower.split())][:10]
-                if not relevant:
-                    relevant = states[:10]
-                parts = ["Smart home status:"]
-                for s in relevant:
-                    parts.append(f"- {s['attributes'].get('friendly_name', s['entity_id'])}: {s['state']}")
-                return "\n".join(parts)
-            else:
-                return f"I understand the smart home command '{action}' but the specific action parser needs to be configured. Available via Home Assistant at {ha_url}."
+            # Find the target entity
+            entity_id = None
+            for name, eid in self.ENTITY_MAP.items():
+                if name in lower:
+                    entity_id = eid
+                    break
+
+            # STATUS CHECK
+            if any(w in lower for w in ["status", "state", "check", "what", "are the", "is the"]):
+                if entity_id:
+                    req = urllib.request.Request(f"{ha_url}/api/states/{entity_id}", headers=headers)
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        state = json.loads(resp.read())
+                    name = state.get('attributes', {}).get('friendly_name', entity_id)
+                    s = state.get('state', 'unknown')
+                    brightness = state.get('attributes', {}).get('brightness')
+                    br_pct = f" ({round(brightness/255*100)}%)" if brightness else ""
+                    return f"{name}: {s}{br_pct}"
+                else:
+                    # Get all light states
+                    req = urllib.request.Request(f"{ha_url}/api/states", headers=headers)
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        all_states = json.loads(resp.read())
+                    lights = [s for s in all_states if s['entity_id'].startswith('light.')]
+                    parts = ["Light status:"]
+                    for s in lights:
+                        name = s.get('attributes', {}).get('friendly_name', s['entity_id'])
+                        brightness = s.get('attributes', {}).get('brightness')
+                        br_pct = f" ({round(brightness/255*100)}%)" if brightness else ""
+                        parts.append(f"  {name}: {s['state']}{br_pct}")
+                    return "\n".join(parts)
+
+            # TURN ON
+            if any(w in lower for w in ["turn on", "switch on", "enable"]):
+                if not entity_id:
+                    return f"Not sure which device. Known: {', '.join(self.ENTITY_MAP.keys())}"
+                domain = entity_id.split('.')[0]
+                data = json.dumps({"entity_id": entity_id}).encode()
+                req = urllib.request.Request(
+                    f"{ha_url}/api/services/{domain}/turn_on",
+                    data=data, headers=headers, method='POST',
+                )
+                urllib.request.urlopen(req, timeout=10)
+                return f"Turned on {entity_id.split('.')[1].replace('_', ' ').title()}"
+
+            # TURN OFF
+            if any(w in lower for w in ["turn off", "switch off", "disable", "shut off"]):
+                if not entity_id:
+                    return f"Not sure which device. Known: {', '.join(self.ENTITY_MAP.keys())}"
+                domain = entity_id.split('.')[0]
+                data = json.dumps({"entity_id": entity_id}).encode()
+                req = urllib.request.Request(
+                    f"{ha_url}/api/services/{domain}/turn_off",
+                    data=data, headers=headers, method='POST',
+                )
+                urllib.request.urlopen(req, timeout=10)
+                return f"Turned off {entity_id.split('.')[1].replace('_', ' ').title()}"
+
+            # SET BRIGHTNESS
+            import re as _re
+            brightness_match = _re.search(r'(?:brightness|bright|dim).*?(\d+)', lower)
+            if brightness_match and entity_id and entity_id.startswith('light.'):
+                pct = int(brightness_match.group(1))
+                brightness_val = max(0, min(255, round(pct / 100 * 255)))
+                data = json.dumps({"entity_id": entity_id, "brightness": brightness_val}).encode()
+                req = urllib.request.Request(
+                    f"{ha_url}/api/services/light/turn_on",
+                    data=data, headers=headers, method='POST',
+                )
+                urllib.request.urlopen(req, timeout=10)
+                return f"Set {entity_id.split('.')[1].replace('_', ' ').title()} brightness to {pct}%"
+
+            # TOGGLE
+            if "toggle" in lower:
+                if not entity_id:
+                    return f"Not sure which device. Known: {', '.join(self.ENTITY_MAP.keys())}"
+                domain = entity_id.split('.')[0]
+                data = json.dumps({"entity_id": entity_id}).encode()
+                req = urllib.request.Request(
+                    f"{ha_url}/api/services/{domain}/toggle",
+                    data=data, headers=headers, method='POST',
+                )
+                urllib.request.urlopen(req, timeout=10)
+                return f"Toggled {entity_id.split('.')[1].replace('_', ' ').title()}"
+
+            return f"I understood '{action}' but couldn't determine the specific command. Try: 'turn on/off [device]', 'set [device] brightness to [%]', or 'check status'."
+
         except Exception as e:
             return f"Home Assistant error: {e}"
 
