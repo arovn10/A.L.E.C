@@ -270,6 +270,37 @@ def delete_user(email: str):
         raise HTTPException(status_code=400, detail=result["error"])
     return result
 
+class TrustDeviceRequest(BaseModel):
+    device_id: str
+    user_email: str
+    ip_address: str = ""
+    user_agent_hash: str = ""
+    device_name: str = ""
+
+class CheckDeviceRequest(BaseModel):
+    device_id: str
+
+@app.post("/auth/device/trust")
+def trust_device(req: TrustDeviceRequest):
+    result = auth_manager.trust_device(req.device_id, req.user_email, req.ip_address, req.user_agent_hash, req.device_name)
+    return result
+
+@app.post("/auth/device/check")
+def check_device(req: CheckDeviceRequest):
+    result = auth_manager.check_trusted_device(req.device_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Device not trusted")
+    access_level = auth_manager.determine_access_level(result["user"]["email"])
+    return {**result, "access_level": access_level}
+
+@app.get("/auth/devices")
+def list_devices():
+    return {"devices": auth_manager.list_trusted_devices()}
+
+@app.delete("/auth/device/{device_id}")
+def revoke_device(device_id: str):
+    return auth_manager.revoke_device(device_id)
+
 @app.post("/auth/domo")
 def domo_auth():
     """Auto-authenticate for Domo embeds — STOA_ACCESS only."""

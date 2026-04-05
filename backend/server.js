@@ -244,17 +244,34 @@ app.post('/api/auth/login', async (req, res) => {
       tokenType,
     };
 
-    const token = jwt.sign(jwtPayload, process.env.JWT_SECRET, { expiresIn: '24h' });
+    const token = jwt.sign(jwtPayload, process.env.JWT_SECRET, { expiresIn: '7d' });
+
+    // Trust this device so it stays logged in across restarts
+    const deviceId = req.body.device_id || req.headers['x-device-id'] || `dev_${Date.now()}`;
+    const ipAddr = req.ip || req.connection?.remoteAddress || '';
+    try {
+      await proxyToNeural('/auth/device/trust', {
+        method: 'POST',
+        body: {
+          device_id: deviceId,
+          user_email: jwtPayload.email,
+          ip_address: ipAddr,
+          user_agent_hash: require('crypto').createHash('md5').update(req.headers['user-agent'] || '').digest('hex'),
+          device_name: req.body.device_name || req.headers['user-agent']?.slice(0, 50) || 'Unknown',
+        },
+      });
+    } catch {} // Non-critical
 
     res.json({
       success: true,
       token,
       tokenType,
+      device_id: deviceId,
       access_level: data.access_level,
       email: jwtPayload.email,
       role: jwtPayload.role,
       user: user,
-      expiresIn: '24h',
+      expiresIn: '7d',
     });
   } catch (error) {
     const status = error.status || 500;
@@ -1096,6 +1113,56 @@ if (voiceServer) {
 // ════════════════════════════════════════════════════════════════
 //  USER MANAGEMENT (Owner only)
 // ════════════════════════════════════════════════════════════════
+
+// Device-based auto-login (no auth required — this IS the auth)
+app.post('/api/auth/device/check', async (req, res) => {
+  try {
+    const { device_id } = req.body;
+    if (!device_id) return res.status(400).json({ error: 'device_id required' });
+
+    const data = await proxyToNeural('/auth/device/check', {
+      method: 'POST',
+      body: { device_id },
+    });
+
+    // Device is trusted — issue a fresh JWT
+    const user = data.user || {};
+    let tokenType = 'STOA_ACCESS';
+    if (data.access_level === 'OWNER') tokenType = 'OWNER';
+    else if (data.access_level === 'FULL_CAPABILITIES') tokenType = 'FULL_CAPABILITIES';
+
+    const jwtPayload = {
+      userId: user.id,
+      email: user.email,
+      role: user.role || 'viewer',
+      tokenType,
+    };
+    const token = jwt.sign(jwtPayload, process.env.JWT_SECRET, { expiresIn: '7d' });
+
+    res.json({
+      success: true,
+      token,
+      tokenType,
+      device_id,
+      access_level: data.access_level,
+      email: user.email,
+      role: user.role,
+      user,
+    });
+  } catch (error) {
+    res.status(404).json({ trusted: false });
+  }
+});
+
+app.get('/api/auth/devices', authenticateToken, requireFullCapabilities, async (req, res) => {
+  const data = await proxyToNeural('/auth/devices');
+  res.json(data);
+});
+
+app.delete('/api/auth/device/:deviceId', authenticateToken, requireFullCapabilities, async (req, res) => {
+  const data = await proxyToNeural(`/auth/device/${req.params.deviceId}`, { method: 'DELETE' });
+  res.json(data);
+});
 
 app.get('/api/auth/users', authenticateToken, requireFullCapabilities, async (req, res) => {
   const data = await proxyToNeural('/auth/users');

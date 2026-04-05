@@ -48,10 +48,31 @@ def verify_password(password: str, stored_hash: str) -> bool:
 
 
 class AuthManager:
-    """Manages admin users in the database."""
+    """Manages admin users and trusted devices in the database."""
+
+    DEVICE_TABLE_SQL = """
+    CREATE TABLE IF NOT EXISTS trusted_devices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id TEXT UNIQUE NOT NULL,
+        user_email TEXT NOT NULL,
+        ip_address TEXT,
+        user_agent_hash TEXT,
+        device_name TEXT,
+        last_seen TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+    );
+    """
 
     def __init__(self, db):
         self.db = db
+        # Ensure trusted_devices table exists
+        conn = self.db._sqlite_conn
+        if conn:
+            try:
+                conn.executescript(self.DEVICE_TABLE_SQL)
+                conn.commit()
+            except Exception:
+                pass
 
     def seed_admin(self, email: str, password: str):
         """Create the default admin user if it doesn't exist."""
@@ -163,6 +184,71 @@ class AuthManager:
         )
         row = cursor.fetchone()
         return dict(row) if row else None
+
+    # ── Trusted Devices ──────────────────────────────────────────
+
+    def trust_device(self, device_id: str, user_email: str, ip_address: str = "",
+                     user_agent_hash: str = "", device_name: str = "") -> dict:
+        """Register a device as trusted. It stays logged in across restarts."""
+        conn = self.db._sqlite_conn
+        if not conn:
+            return {"error": "Database not available"}
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            conn.execute("""
+                INSERT INTO trusted_devices (device_id, user_email, ip_address, user_agent_hash, device_name, last_seen)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(device_id) DO UPDATE SET
+                    user_email = excluded.user_email,
+                    ip_address = excluded.ip_address,
+                    last_seen = excluded.last_seen
+            """, (device_id, user_email, ip_address, user_agent_hash, device_name, now))
+            conn.commit()
+            logger.info(f"Trusted device registered: {device_id} for {user_email}")
+            return {"success": True, "device_id": device_id}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def check_trusted_device(self, device_id: str) -> Optional[dict]:
+        """Check if a device is trusted. Returns user info if trusted."""
+        conn = self.db._sqlite_conn
+        if not conn:
+            return None
+        cursor = conn.execute(
+            "SELECT * FROM trusted_devices WHERE device_id = ?", (device_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        device = dict(row)
+        # Update last_seen
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute("UPDATE trusted_devices SET last_seen = ? WHERE device_id = ?", (now, device_id))
+        conn.commit()
+        # Get the user
+        user = self._get_user_by_email(device["user_email"])
+        if not user:
+            return None
+        return {
+            "user": {"id": user["id"], "email": user["email"], "role": user["role"]},
+            "device_id": device_id,
+            "device_name": device.get("device_name", ""),
+        }
+
+    def revoke_device(self, device_id: str) -> dict:
+        conn = self.db._sqlite_conn
+        if conn:
+            conn.execute("DELETE FROM trusted_devices WHERE device_id = ?", (device_id,))
+            conn.commit()
+            return {"success": True}
+        return {"error": "Database not available"}
+
+    def list_trusted_devices(self) -> list[dict]:
+        conn = self.db._sqlite_conn
+        if not conn:
+            return []
+        cursor = conn.execute("SELECT device_id, user_email, ip_address, device_name, last_seen, created_at FROM trusted_devices ORDER BY last_seen DESC")
+        return [dict(row) for row in cursor.fetchall()]
 
     def is_owner(self, email: str) -> bool:
         """Check if this email is the owner/creator of A.L.E.C."""

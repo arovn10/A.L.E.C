@@ -271,7 +271,9 @@ function showDashboard(userData) {
 }
 
 async function login(email, password, isDomoEmbed = false) {
-  const body = { email, password };
+  const deviceId = localStorage.getItem('alec_device_id') || 'dev_' + Date.now();
+  localStorage.setItem('alec_device_id', deviceId);
+  const body = { email, password, device_id: deviceId };
   if (isDomoEmbed) body.is_domo_embed = true;
 
   const data = await api('POST', '/api/auth/login', body);
@@ -308,17 +310,41 @@ async function initAuth() {
     }
   }
 
-  // Check localStorage
+  // Generate a persistent device ID
+  let deviceId = localStorage.getItem('alec_device_id');
+  if (!deviceId) {
+    deviceId = 'dev_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    localStorage.setItem('alec_device_id', deviceId);
+  }
+
+  // Check if this device is trusted (survives server restarts)
+  try {
+    const resp = await fetch('/api/auth/device/check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_id: deviceId }),
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.success && data.token) {
+        state.token = data.token;
+        localStorage.setItem(TOKEN_KEY, data.token);
+        showDashboard(data);
+        return;
+      }
+    }
+  } catch {} // Device not trusted, fall through
+
+  // Check localStorage token
   const stored = localStorage.getItem(TOKEN_KEY);
   if (stored) {
     state.token = stored;
     const valid = await validateStoredToken(stored);
     if (valid) {
-      // Decode token for display (JWT payload is base64)
       let userData = { email: 'Loading…', role: 'admin' };
       try {
         const payload = JSON.parse(atob(stored.split('.')[1]));
-        userData = { email: payload.email || payload.sub || '—', role: payload.role || 'admin' };
+        userData = { email: payload.email || payload.sub || '—', role: payload.role || 'admin', tokenType: payload.tokenType };
       } catch {}
       showDashboard(userData);
       return;
