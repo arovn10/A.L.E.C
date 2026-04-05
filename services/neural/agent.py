@@ -150,6 +150,29 @@ class HomeAssistantTool(AgentTool):
         "chromecast": "media_player.family_room_2",
     }
 
+    def _log_ha_command(self, entity_id: str, action_type: str, result: str, params: dict = None):
+        """Log every HA command to Azure SQL evolution_log for pattern learning."""
+        try:
+            import server as srv
+            if hasattr(srv, 'db') and srv.db:
+                from datetime import datetime, timezone
+                metrics = {
+                    "entity_id": entity_id,
+                    "action": action_type,
+                    "result": result[:200],
+                    "params": params or {},
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "hour": datetime.now().hour,
+                    "weekday": datetime.now().strftime('%A'),
+                }
+                srv.db.log_evolution(
+                    event_type="smart_home_command",
+                    description=f"{action_type} {entity_id}",
+                    metrics=metrics,
+                )
+        except Exception as e:
+            logger.debug(f"HA log failed: {e}")
+
     def execute(self, action: str = "", **kwargs) -> str:
         ha_url = os.getenv("HA_URL", "")
         ha_token = os.getenv("HA_TOKEN", "")
@@ -204,7 +227,9 @@ class HomeAssistantTool(AgentTool):
                     data=data, headers=headers, method='POST',
                 )
                 urllib.request.urlopen(req, timeout=10)
-                return f"Turned on {entity_id.split('.')[1].replace('_', ' ').title()}"
+                result = f"Turned on {entity_id.split('.')[1].replace('_', ' ').title()}"
+                self._log_ha_command(entity_id, "turn_on", result)
+                return result
 
             # TURN OFF
             if any(w in lower for w in ["turn off", "turn_off", "switch off", "disable", "shut off", "off"]):
@@ -217,7 +242,9 @@ class HomeAssistantTool(AgentTool):
                     data=data, headers=headers, method='POST',
                 )
                 urllib.request.urlopen(req, timeout=10)
-                return f"Turned off {entity_id.split('.')[1].replace('_', ' ').title()}"
+                result = f"Turned off {entity_id.split('.')[1].replace('_', ' ').title()}"
+                self._log_ha_command(entity_id, "turn_off", result)
+                return result
 
             # SET BRIGHTNESS
             import re as _re
@@ -231,7 +258,9 @@ class HomeAssistantTool(AgentTool):
                     data=data, headers=headers, method='POST',
                 )
                 urllib.request.urlopen(req, timeout=10)
-                return f"Set {entity_id.split('.')[1].replace('_', ' ').title()} brightness to {pct}%"
+                result = f"Set {entity_id.split('.')[1].replace('_', ' ').title()} brightness to {pct}%"
+                self._log_ha_command(entity_id, "set_brightness", result, {"brightness_pct": pct})
+                return result
 
             # TOGGLE
             if "toggle" in lower:
@@ -244,7 +273,9 @@ class HomeAssistantTool(AgentTool):
                     data=data, headers=headers, method='POST',
                 )
                 urllib.request.urlopen(req, timeout=10)
-                return f"Toggled {entity_id.split('.')[1].replace('_', ' ').title()}"
+                result = f"Toggled {entity_id.split('.')[1].replace('_', ' ').title()}"
+                self._log_ha_command(entity_id, "toggle", result)
+                return result
 
             return f"I understood '{action}' but couldn't determine the specific command. Try: 'turn on/off [device]', 'set [device] brightness to [%]', or 'check status'."
 
