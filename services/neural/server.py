@@ -331,6 +331,19 @@ def domo_auth():
 #  CHAT COMPLETIONS (OpenAI-compatible)
 # ══════════════════════════════════════════════════════════════════
 
+import re as _re
+
+def strip_think_tags(text: str) -> str:
+    """Remove <think>...</think> blocks from Qwen3 responses.
+    Qwen3 uses thinking mode by default — the reasoning is useful internally
+    but should never be shown to the user."""
+    # Remove <think>...</think> blocks (including multiline)
+    cleaned = _re.sub(r'<think>.*?</think>', '', text, flags=_re.DOTALL)
+    # Also remove orphaned <think> or </think> tags
+    cleaned = cleaned.replace('<think>', '').replace('</think>', '')
+    # Clean up leading whitespace/newlines left behind
+    return cleaned.strip()
+
 @app.post("/v1/chat/completions")
 async def chat_completions(req: ChatRequest):
     if not engine.model_loaded:
@@ -417,26 +430,59 @@ async def chat_completions(req: ChatRequest):
             media_type="text/event-stream",
         )
 
-    result = engine.generate(
-        messages=messages,
-        temperature=req.temperature,
-        max_tokens=req.max_tokens,
-        top_p=req.top_p,
-        top_k=req.top_k,
-        stream=False,
-    )
+    # ── AGENT LOOP: route through the tool-calling agent ──
+    # The agent decides: respond directly OR call tools (stoa_query,
+    # memory, web_search, self_edit, etc.) then respond with real data.
+    start_time = time.time()
+    if agent:
+        try:
+            agent_result = agent.run(
+                user_message=user_msg,
+                messages=messages,
+                session_id=session_id,
+            )
+            response_text = strip_think_tags(agent_result.get("text", ""))
+            tool_calls = agent_result.get("tool_calls", [])
+            latency_ms = agent_result.get("latency_ms", round((time.time() - start_time) * 1000))
+            prompt_tokens = agent_result.get("prompt_tokens", 0)
+            completion_tokens = agent_result.get("completion_tokens", 0)
 
-    user_msg = next((m.content for m in req.messages if m.role == "user"), "")
+            if tool_calls:
+                logger.info(f"Agent used {len(tool_calls)} tools: {[tc['tool'] for tc in tool_calls]}")
+        except Exception as e:
+            logger.error(f"Agent loop failed, falling back to direct generation: {e}")
+            result = engine.generate(
+                messages=messages, temperature=req.temperature,
+                max_tokens=req.max_tokens, top_p=req.top_p, top_k=req.top_k, stream=False,
+            )
+            response_text = strip_think_tags(result["text"])
+            tool_calls = []
+            latency_ms = result["latency_ms"]
+            prompt_tokens = result["prompt_tokens"]
+            completion_tokens = result["completion_tokens"]
+    else:
+        # No agent — direct generation
+        result = engine.generate(
+            messages=messages, temperature=req.temperature,
+            max_tokens=req.max_tokens, top_p=req.top_p, top_k=req.top_k, stream=False,
+        )
+        response_text = strip_think_tags(result["text"])
+        tool_calls = []
+        latency_ms = result["latency_ms"]
+        prompt_tokens = result["prompt_tokens"]
+        completion_tokens = result["completion_tokens"]
+
+    # Log the conversation
     try:
         conv_id = db.log_conversation(
             session_id=session_id,
             user_message=user_msg,
-            alec_response=result["text"],
+            alec_response=response_text,
             confidence=0.0,
-            model_used="alec-v2",
-            tokens_in=result["prompt_tokens"],
-            tokens_out=result["completion_tokens"],
-            latency_ms=result["latency_ms"],
+            model_used="alec-v2" + (f"+{len(tool_calls)}tools" if tool_calls else ""),
+            tokens_in=prompt_tokens,
+            tokens_out=completion_tokens,
+            latency_ms=latency_ms,
         )
     except Exception as e:
         logger.warning(f"Failed to log conversation: {e}")
@@ -449,16 +495,17 @@ async def chat_completions(req: ChatRequest):
         "model": "alec-v2",
         "choices": [{
             "index": 0,
-            "message": {"role": "assistant", "content": result["text"]},
-            "finish_reason": result["finish_reason"],
+            "message": {"role": "assistant", "content": response_text},
+            "finish_reason": "stop",
         }],
         "usage": {
-            "prompt_tokens": result["prompt_tokens"],
-            "completion_tokens": result["completion_tokens"],
-            "total_tokens": result["total_tokens"],
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
         },
         "conversation_id": conv_id,
-        "latency_ms": result["latency_ms"],
+        "latency_ms": latency_ms,
+        "tool_calls": [tc["tool"] for tc in tool_calls] if tool_calls else [],
     }
 
 
