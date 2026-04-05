@@ -20,6 +20,21 @@ logger = logging.getLogger("alec.skills")
 
 SKILLS_FILE = Path(__file__).resolve().parent.parent.parent / "data" / "skills.json"
 
+
+def _check_imessage_access() -> bool:
+    """Check if we can actually READ the iMessage database, not just if the file exists."""
+    import sqlite3
+    db_path = Path.home() / "Library" / "Messages" / "chat.db"
+    if not db_path.exists():
+        return False
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn.execute("SELECT COUNT(*) FROM message")
+        conn.close()
+        return True
+    except Exception:
+        return False
+
 # ══════════════════════════════════════════════════════════════════
 #  BUILT-IN SKILL DEFINITIONS
 # ══════════════════════════════════════════════════════════════════
@@ -28,12 +43,15 @@ AVAILABLE_SKILLS = {
     "imessage": {
         "id": "imessage",
         "name": "iMessage",
-        "description": "Read iMessage conversations to learn your communication style. Requires Full Disk Access on macOS.",
+        "description": "Read iMessage conversations to learn your communication style and natural language patterns.",
         "icon": "💬",
         "category": "connector",
         "platform": "macos",
-        "requires_config": False,
-        "setup_instructions": "Go to System Settings > Privacy & Security > Full Disk Access, and enable it for Terminal or your Python installation.",
+        "requires_config": True,
+        "config_fields": [
+            {"key": "IMESSAGE_ENABLED", "label": "Enable iMessage Sync", "type": "select", "options": ["yes", "no"]},
+        ],
+        "setup_instructions": "Step 1: Go to System Settings > Privacy & Security > Full Disk Access. Step 2: Click + and add Terminal (or the Python binary at services/neural/.venv/bin/python3). Step 3: Click Configure above and set to 'yes'.",
         "endpoints": {
             "status": "/connectors/imessage/status",
             "sync": "/connectors/imessage/sync",
@@ -218,7 +236,7 @@ class SkillsRegistry:
 
         # Check env vars for skills configured via .env
         env_checks = {
-            "imessage": lambda: os.path.exists(os.path.expanduser("~/Library/Messages/chat.db")),
+            "imessage": lambda: _check_imessage_access(),
             "gmail": lambda: bool(os.getenv("GMAIL_EMAIL") and os.getenv("GMAIL_APP_PASSWORD")) or bool(config.get("GMAIL_EMAIL")),
             "home_assistant": lambda: bool(os.getenv("HOME_ASSISTANT_URL") and os.getenv("HOME_ASSISTANT_ACCESS_TOKEN")) or bool(config.get("HOME_ASSISTANT_URL")),
             "stoa_database": lambda: bool(os.getenv("STOA_DB_HOST") and os.getenv("STOA_DB_PASSWORD")) or bool(config.get("STOA_DB_HOST")),
