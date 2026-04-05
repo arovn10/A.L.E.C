@@ -25,10 +25,30 @@ logs/*.log
 .DS_Store
 Thumbs.db
 
-# Model files (large binary files)
+# ── Model files (large binaries — never commit) ─────────────────
 data/models/*.bin
 data/models/*.gguf
+data/models/*.safetensors
+data/models/lora/
+data/models/checkpoints/
 !data/models/.gitkeep
+
+# ── Python ───────────────────────────────────────────────────────
+services/neural/.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+
+# ── SQLite fallback database ─────────────────────────────────────
+data/alec.db
+data/alec.db-journal
+data/alec.db-wal
+
+# ── Training data (personal / sensitive) ─────────────────────────
+data/sft/*.jsonl
+data/sft/*.json
 
 # Token files (sensitive)
 tokens/*.pem
@@ -37,6 +57,7 @@ tokens/*.pem
 chat/*
 history/*
 logs/*
+data/context/*
 
 # Docker
 .docker/

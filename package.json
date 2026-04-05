@@ -1,11 +1,15 @@
 {
-  "name": "a-l-e-c-personal-ai",
-  "version": "1.0.0",
-  "description": "Adaptive Learning Executive Companion - Your Personal AI Assistant",
+  "name": "a-l-e-c",
+  "version": "2.0.0",
+  "description": "A.L.E.C. — Autonomous Language Embedded Cognition: Self-improving AI agent with local LLM inference and LoRA fine-tuning",
   "main": "backend/server.js",
   "scripts": {
     "start": "node backend/server.js",
     "dev": "nodemon backend/server.js",
+    "neural": "cd services/neural && source .venv/bin/activate && python server.py",
+    "setup": "bash scripts/setup-local.sh",
+    "download-model": "bash scripts/download-model.sh",
+    "start:full": "bash scripts/start-alec.sh",
     "build": "echo 'No build step required'",
     "test": "jest"
   },
@@ -14,10 +18,13 @@
     "llm",
     "personal-assistant",
     "adaptive-learning",
-    "voice-interface"
+    "lora",
+    "qwen",
+    "local-inference",
+    "self-improving"
   ],
-  "author": "Your Name",
-  "license": "MIT",
+  "author": "Alec Rovner",
+  "license": "PROPRIETARY",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.25.0",
     "cors": "^2.8.5",

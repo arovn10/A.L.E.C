@@ -1,184 +1,215 @@
 /**
- * Neural Engine - Core Intelligence for A.L.E.C.
+ * A.L.E.C. Neural Engine Bridge
  *
- * Features:
- * - 35B parameter LLM base (Llama 3.1 or Mistral Large)
- * - Personal context awareness
- * - Personality simulation with sass and initiative
- * - Adaptive learning from interactions
+ * Calls the Python FastAPI neural engine on localhost:8000.
+ * Replaces the mock LLM with real Qwen2.5-Coder-7B inference.
  */
 
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
-
-// Mock LLM response generator for testing
-function generateMockResponse(query, personality, sassLevel, initiativeMode) {
-  const responses = {
-    greeting: [
-      "Hey there! I'm A.L.E.C., your personal AI companion. How can I help you innovate today? 😊",
-      "Hello! Ready to tackle some challenges together? I've got my sass mode on and ready to assist!",
-      "Greetings, human! Let's make something amazing happen. What's on your mind?"
-    ],
-    capabilities: [
-      "I can help you with:\n- Analyzing your data (emails, texts, documents)\n- Smart home device control\n- Project management and planning\n- Brainstorming innovative ideas\n- Pattern detection in your work habits\n- Voice interaction (try speaking!)\n- And much more!\n\nWhat would you like to explore?",
-      "I'm your personal AI assistant with these capabilities:\n🧠 Adaptive learning from YOUR data\n💬 Natural voice conversation\n🏠 Smart home integration\n📊 Data analysis and insights\n🔮 Proactive suggestions based on patterns\n\nAsk me anything!",
-      "Think of me as your JARVIS - but trained specifically on YOU. I can:\n- Remember our conversations and learn from them\n- Control your smart home devices\n- Analyze your emails and documents for insights\n- Provide witty, personalized responses\n- Suggest improvements based on your behavior patterns"
-    ],
-    default: [
-      `I hear you say: "${query}". Let me think about that...`,
-      "Interesting question! Based on what I know about you, here's my take...",
-      "Hmm, let me analyze that through the lens of our past interactions..."
-    ]
-  };
-
-  // Select response based on query content
-  const lowerQuery = query.toLowerCase();
-  let category = 'default';
-
-  if (lowerQuery.includes('hello') || lowerQuery.includes('hi ') || lowerQuery.includes('hey')) {
-    category = 'greeting';
-  } else if (lowerQuery.includes('what can you do') || lowerQuery.includes('capabilities') || lowerQuery.includes('help me')) {
-    category = 'capabilities';
-  }
-
-  const responseText = responses[category][Math.floor(Math.random() * responses[category].length)];
-
-  // Add personality injection
-  if (sassLevel > 0.5 && Math.random() > 0.7) {
-    return `${responseText}\n\n💬 SASS MODE: You know what they say about asking questions - better to just try it yourself! But fine, I'll help you out. 😏`;
-  }
-
-  // Add initiative suggestions if enabled
-  if (initiativeMode && Math.random() > 0.5) {
-    const suggestions = [
-      "💡 Pro tip: Would you like me to analyze your recent emails for patterns?",
-      "🚀 Suggestion: Want me to check your smart home devices status?",
-      "📊 Insight: Based on our chat history, you seem interested in data analysis. Shall we dive deeper?",
-      "🎯 Action item: I noticed you've been asking about capabilities. Want to try voice interaction?"
-    ];
-    return `${responseText}\n\n${suggestions[Math.floor(Math.random() * suggestions.length)]}`;
-  }
-
-  return responseText;
-}
+const NEURAL_URL = `http://localhost:${process.env.NEURAL_PORT || 8000}`;
 
 class NeuralEngine {
   constructor() {
-    this.server = null;
-    this.modelLoaded = true; // Always loaded for mock mode
-    this.personalContexts = new Map();
-    this.interactionHistory = [];
+    this.neuralUrl = NEURAL_URL;
+    this.modelLoaded = false;
     this.personalityTraits = {
       sass: 0.7,
       initiative: 0.8,
       empathy: 0.9,
       creativity: 0.85,
-      precision: 0.95
+      precision: 0.95,
     };
     this.stats = {
       queriesProcessed: 0,
       avgConfidence: 0,
-      trainingIterations: 0
+      trainingIterations: 0,
     };
   }
 
+  /**
+   * Check if the Python neural engine is up and the model is loaded.
+   */
   async initialize() {
-    console.log('🧠 Initializing Neural Engine (Mock Mode)...');
-
-    // Load existing personal contexts if available
-    const contextPath = path.join(__dirname, '../data/context');
-    if (fs.existsSync(contextPath)) {
-      const files = fs.readdirSync(contextPath);
-      if (files.length > 0) {
-        console.log(`📚 Found ${files.length} existing user contexts`);
-        for (const file of files) {
-          const userId = file.replace('.json', '');
-          try {
-            const data = JSON.parse(fs.readFileSync(path.join(contextPath, file)));
-            this.personalContexts.set(userId, data);
-          } catch (e) {
-            console.error(`Error loading context ${file}:`, e);
-          }
-        }
-      }
+    try {
+      const resp = await fetch(`${this.neuralUrl}/health`);
+      const data = await resp.json();
+      this.modelLoaded = data.model_loaded === true;
+      console.log(
+        this.modelLoaded
+          ? '🧠 Neural engine connected — model loaded'
+          : '⚠️  Neural engine running but model not loaded (run scripts/download-model.sh)'
+      );
+    } catch {
+      console.warn(
+        '⚠️  Python neural engine not reachable at', this.neuralUrl,
+        '— start it with: cd services/neural && python server.py'
+      );
+      this.modelLoaded = false;
     }
-
-    console.log('✅ Neural Engine ready - Mock LLM initialized');
   }
 
+  /**
+   * Send a chat query to the Python neural engine.
+   */
   async processQuery({ query, context = {}, personality = 'companion', sassLevel = 0.7, initiativeMode = true }) {
-    if (!this.modelLoaded) {
-      throw new Error('Neural engine not initialized');
-    }
-
     this.stats.queriesProcessed++;
 
-    // Calculate confidence based on query complexity
-    const confidence = Math.min(0.95, 0.7 + (query.length / 100));
+    // Build messages array
+    const messages = [];
+    if (context.history && Array.isArray(context.history)) {
+      messages.push(...context.history);
+    }
+    messages.push({ role: 'user', content: query });
 
-    // Generate response using mock LLM
-    const responseText = generateMockResponse(query, personality, sassLevel, initiativeMode);
+    try {
+      const resp = await fetch(`${this.neuralUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'alec-local',
+          messages,
+          temperature: 0.6 + sassLevel * 0.3, // sass -> higher temperature
+          max_tokens: 1024,
+          session_id: context.sessionId || undefined,
+        }),
+      });
 
-    // Log interaction for learning
-    await this.logInteraction({ query, response: responseText, context });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || `Neural engine returned ${resp.status}`);
+      }
 
-    return {
-      text: responseText,
-      confidence: Math.round(confidence * 100) / 100,
-      personality: personality,
-      suggestions: initiativeMode ? [
-        "Would you like me to analyze your recent emails?",
-        "Want to try voice interaction now?",
-        "Shall we check your smart home devices?"
-      ] : [],
-      timestamp: new Date().toISOString()
-    };
+      const data = await resp.json();
+      const choice = data.choices?.[0];
+
+      return {
+        text: choice?.message?.content || 'I had trouble generating a response.',
+        confidence: 0.85,
+        personality,
+        suggestions: initiativeMode
+          ? [
+              'Would you like me to analyze your recent data?',
+              'Want me to check something in the database?',
+              'Shall we kick off a training run?',
+            ]
+          : [],
+        conversationId: data.conversation_id,
+        usage: data.usage,
+        latencyMs: data.latency_ms,
+        timestamp: new Date().toISOString(),
+      };
+    } catch (error) {
+      console.error('Neural engine call failed:', error.message);
+
+      // Graceful fallback — tell the user what happened
+      return {
+        text: `I'm having trouble connecting to my neural engine right now. Error: ${error.message}. Make sure the Python server is running on port ${process.env.NEURAL_PORT || 8000}.`,
+        confidence: 0,
+        personality,
+        suggestions: ['Try running: cd services/neural && python server.py'],
+        timestamp: new Date().toISOString(),
+      };
+    }
   }
 
-  async logInteraction({ query, response, context }) {
-    this.interactionHistory.push({
-      timestamp: Date.now(),
-      query,
-      response,
-      context
-    });
-
-    // Keep last 100 interactions in memory
-    if (this.interactionHistory.length > 100) {
-      this.interactionHistory.shift();
-    }
-
-    // Save to disk periodically
-    if (this.interactionHistory.length % 5 === 0) {
-      await this.saveInteractionLog();
+  /**
+   * Submit feedback for a conversation.
+   */
+  async submitFeedback(conversationId, rating, feedback = '') {
+    try {
+      const resp = await fetch(`${this.neuralUrl}/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversation_id: conversationId,
+          rating,
+          feedback,
+        }),
+      });
+      return await resp.json();
+    } catch (error) {
+      console.error('Feedback submission failed:', error.message);
+      return { success: false, error: error.message };
     }
   }
 
-  async saveInteractionLog() {
-    const logPath = path.join(__dirname, '../logs/interactions.json');
-    fs.writeFileSync(logPath, JSON.stringify(this.interactionHistory));
+  /**
+   * Start a LoRA training run.
+   */
+  async startTraining(dataPath, config) {
+    try {
+      const resp = await fetch(`${this.neuralUrl}/training/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data_path: dataPath, config }),
+      });
+      return await resp.json();
+    } catch (error) {
+      console.error('Training start failed:', error.message);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Get training status.
+   */
+  async getTrainingStatus() {
+    try {
+      const resp = await fetch(`${this.neuralUrl}/training/status`);
+      return await resp.json();
+    } catch (error) {
+      return { is_training: false, error: error.message };
+    }
+  }
+
+  /**
+   * Export rated conversations for training.
+   */
+  async exportTrainingData() {
+    try {
+      const resp = await fetch(`${this.neuralUrl}/training/export`, {
+        method: 'POST',
+      });
+      return await resp.json();
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Get conversation history from the database.
+   */
+  async getConversationHistory(limit = 50) {
+    try {
+      const resp = await fetch(`${this.neuralUrl}/conversations?limit=${limit}`);
+      return await resp.json();
+    } catch (error) {
+      return { conversations: [], error: error.message };
+    }
+  }
+
+  /**
+   * Get model info from the Python engine.
+   */
+  async getModelInfo() {
+    try {
+      const resp = await fetch(`${this.neuralUrl}/model/info`);
+      return await resp.json();
+    } catch {
+      return { loaded: false, error: 'Neural engine not reachable' };
+    }
+  }
+
+  /**
+   * Trigger retrain (calls training/start with default config).
+   */
+  async retrain() {
+    this.stats.trainingIterations++;
+    return this.startTraining();
   }
 
   async loadPersonalContext(userId) {
-    try {
-      const contextPath = path.join(__dirname, `../data/context/${userId}.json`);
-      if (fs.existsSync(contextPath)) {
-        const context = JSON.parse(fs.readFileSync(contextPath));
-        this.personalContexts.set(userId, context);
-        console.log(`📚 Loaded personal context for user ${userId}`);
-      }
-    } catch (error) {
-      console.error('Error loading personal context:', error);
-    }
-  }
-
-  async retrain() {
-    if (!this.modelLoaded) return;
-
-    console.log('🔁 Retraining neural network...');
-    this.stats.trainingIterations++;
-    console.log(`✅ Training iteration ${this.stats.trainingIterations} complete`);
+    // Personal context is now managed in the Python engine's database layer
+    console.log(`📚 Personal context for ${userId} managed by neural engine DB`);
   }
 
   getStats() {
@@ -186,7 +217,7 @@ class NeuralEngine {
       ...this.stats,
       modelsLoaded: this.modelLoaded ? 1 : 0,
       personalityTraits: this.personalityTraits,
-      activeContexts: this.personalContexts.size
+      neuralUrl: this.neuralUrl,
     };
   }
 
@@ -195,7 +226,7 @@ class NeuralEngine {
       loaded: this.modelLoaded,
       stats: this.stats,
       personality: this.personalityTraits,
-      mode: 'mock' // For testing purposes
+      mode: this.modelLoaded ? 'neural' : 'offline',
     };
   }
 }
