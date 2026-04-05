@@ -117,25 +117,40 @@ const isDomo = (req) => {
 
 // ── Helper: proxy request to Python neural engine ───────────────
 async function proxyToNeural(path, options = {}) {
-  const { method = 'GET', body = null, query = '' } = options;
+  const { method = 'GET', body = null, query = '', timeoutMs = 300000 } = options;
   const url = `${NEURAL_URL}${path}${query ? '?' + query : ''}`;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   const fetchOptions = {
     method,
     headers: { 'Content-Type': 'application/json' },
+    signal: controller.signal,
   };
   if (body !== null) {
     fetchOptions.body = JSON.stringify(body);
   }
 
-  const resp = await fetch(url, fetchOptions);
-  if (!resp.ok) {
-    const errBody = await resp.json().catch(() => ({}));
-    const err = new Error(errBody.detail || errBody.error || `Neural engine returned ${resp.status}`);
-    err.status = resp.status;
+  try {
+    const resp = await fetch(url, fetchOptions);
+    clearTimeout(timeout);
+    if (!resp.ok) {
+      const errBody = await resp.json().catch(() => ({}));
+      const err = new Error(errBody.detail || errBody.error || `Neural engine returned ${resp.status}`);
+      err.status = resp.status;
+      throw err;
+    }
+    return resp.json();
+  } catch (err) {
+    clearTimeout(timeout);
+    if (err.name === 'AbortError') {
+      const e = new Error('Neural engine request timed out (5 min)');
+      e.status = 504;
+      throw e;
+    }
     throw err;
   }
-  return resp.json();
 }
 
 // ── Authentication Middleware ────────────────────────────────────
