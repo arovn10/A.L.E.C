@@ -41,9 +41,12 @@ trainer = ALECTrainer(db=db)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load model on startup, clean up on shutdown."""
-    model_path = os.getenv(
-        "MODEL_PATH", "../../data/models/qwen2.5-coder-7b-instruct-q4_k_m.gguf"
+    # Resolve MODEL_PATH relative to project root (two dirs up from services/neural/)
+    raw_path = os.getenv(
+        "MODEL_PATH", "data/models/qwen2.5-coder-7b-instruct-q4_k_m.gguf"
     )
+    project_root = Path(__file__).resolve().parent.parent.parent
+    model_path = str(project_root / raw_path) if not os.path.isabs(raw_path) else raw_path
     n_ctx = int(os.getenv("MODEL_CONTEXT_LENGTH", "4096"))
     n_gpu = int(os.getenv("N_GPU_LAYERS", "-1"))
 
@@ -305,10 +308,12 @@ if __name__ == "__main__":
     import uvicorn
 
     port = int(os.getenv("NEURAL_PORT", "8000"))
+    is_dev = os.getenv("NODE_ENV") == "development"
     uvicorn.run(
         "server:app",
         host="0.0.0.0",
         port=port,
-        reload=os.getenv("NODE_ENV") == "development",
+        reload=is_dev,
+        reload_excludes=[".*", ".venv/*", "__pycache__/*", "*.pyc"] if is_dev else None,
         log_level="info",
     )
