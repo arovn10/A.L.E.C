@@ -185,7 +185,7 @@ class QueryPlanner:
 
         # For time-series tables (have ReportDate/Date column), default to latest data
         date_cols_available = [c for c in columns if c.lower() in ("reportdate", "date", "created_at", "createdat", "computedat")]
-        if date_cols_available and not where_parts:
+        if date_cols_available:
             # Get latest date's data unless user asked about a specific time
             time_words = {"history", "trend", "over time", "last year", "monthly", "weekly", "daily", "all time"}
             if not any(tw in lower for tw in time_words):
