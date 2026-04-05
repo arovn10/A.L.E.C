@@ -1036,6 +1036,45 @@ def score_conversation(req: dict):
 
 
 # ══════════════════════════════════════════════════════════════════
+#  TEXT-TO-SPEECH (server-side via edge-tts)
+# ══════════════════════════════════════════════════════════════════
+
+# A.L.E.C.'s voice: en-AU-WilliamNeural (Australian male, confident)
+ALEC_VOICE = os.getenv("ALEC_VOICE", "en-AU-WilliamNeural")
+
+@app.post("/tts")
+async def text_to_speech(req: dict):
+    """Convert text to speech audio. Returns MP3 bytes."""
+    text = req.get("text", "")
+    if not text:
+        raise HTTPException(status_code=400, detail="'text' required")
+
+    voice = req.get("voice", ALEC_VOICE)
+
+    try:
+        import edge_tts
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        communicate = edge_tts.Communicate(text, voice)
+        await communicate.save(tmp_path)
+
+        from fastapi.responses import FileResponse
+        return FileResponse(
+            tmp_path,
+            media_type="audio/mpeg",
+            filename="alec_speech.mp3",
+            background=None,  # Don't delete immediately
+        )
+    except ImportError:
+        raise HTTPException(status_code=503, detail="edge-tts not installed. Run: pip install edge-tts")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"TTS failed: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════
 #  AUTONOMY
 # ══════════════════════════════════════════════════════════════════
 

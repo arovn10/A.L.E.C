@@ -1819,60 +1819,83 @@ function _loadVoiceState() {
 }
 
 // ── TTS: speak A.L.E.C.'s response out loud ──
-function speakResponse(text) {
-  if (!window.speechSynthesis) return;
-  // Cancel anything currently speaking
-  window.speechSynthesis.cancel();
+// Active audio element for stopping playback
+let _ttsAudio = null;
 
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = 'en-AU';  // Australian accent per personality directive
-  utterance.rate = 1.0;
-  utterance.pitch = 1.0;
-
-  // Try to find an Australian or British English voice
-  const voices = window.speechSynthesis.getVoices();
-  const preferred = voices.find(v => v.lang === 'en-AU')
-    || voices.find(v => v.lang === 'en-GB')
-    || voices.find(v => v.lang.startsWith('en'));
-  if (preferred) utterance.voice = preferred;
-
+async function speakResponse(text) {
+  // Server-side TTS via edge-tts (works in iframes, HA panels, everywhere)
+  // Falls back to browser speechSynthesis if server TTS fails
   _voiceSpeaking = true;
 
-  // Safety timeout: if onend never fires (mobile browsers, TTS blocked),
-  // force-resume the wake word loop after a reasonable time
+  // Stop any current playback
+  if (_ttsAudio) {
+    _ttsAudio.pause();
+    _ttsAudio = null;
+  }
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
+
+  const _resumeLoop = () => {
+    _voiceSpeaking = false;
+    if (_voiceListening && !_voiceCommandMode) {
+      setTimeout(_startWakeWordLoop, 500);
+    }
+  };
+
+  // Safety timeout
   const safetyTimeout = setTimeout(() => {
-    if (_voiceSpeaking) {
-      _voiceSpeaking = false;
-      if (_voiceListening && !_voiceCommandMode) {
-        setTimeout(_startWakeWordLoop, 500);
-      }
-    }
-  }, Math.max(5000, text.length * 80)); // ~80ms per char, min 5s
+    if (_voiceSpeaking) _resumeLoop();
+  }, Math.max(8000, text.length * 100));
 
-  utterance.onend = () => {
+  try {
+    // Server-side TTS via edge-tts (Australian male voice, works in iframes)
+    const audioResp = await fetch('/api/tts', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${state.token}`,
+      },
+      body: JSON.stringify({ text }),
+    });
+
+    if (audioResp.ok) {
+      const blob = await audioResp.blob();
+      const url = URL.createObjectURL(blob);
+      _ttsAudio = new Audio(url);
+      _ttsAudio.onended = () => {
+        clearTimeout(safetyTimeout);
+        URL.revokeObjectURL(url);
+        _ttsAudio = null;
+        _resumeLoop();
+      };
+      _ttsAudio.onerror = () => {
+        clearTimeout(safetyTimeout);
+        _ttsAudio = null;
+        _resumeLoop();
+      };
+      await _ttsAudio.play();
+      return;
+    }
+  } catch {
+    // Server TTS failed, fall through to browser TTS
+  }
+
+  // Fallback: browser speechSynthesis
+  if (window.speechSynthesis) {
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'en-AU';
+    utterance.rate = 1.0;
+    const voices = window.speechSynthesis.getVoices();
+    const preferred = voices.find(v => v.lang === 'en-AU')
+      || voices.find(v => v.lang === 'en-GB')
+      || voices.find(v => v.lang.startsWith('en'));
+    if (preferred) utterance.voice = preferred;
+    utterance.onend = () => { clearTimeout(safetyTimeout); _resumeLoop(); };
+    utterance.onerror = () => { clearTimeout(safetyTimeout); _resumeLoop(); };
+    window.speechSynthesis.speak(utterance);
+  } else {
     clearTimeout(safetyTimeout);
-    _voiceSpeaking = false;
-    // Resume wake word listening after speaking
-    if (_voiceListening && !_voiceCommandMode) {
-      setTimeout(_startWakeWordLoop, 500);
-    }
-  };
-  utterance.onerror = () => {
-    clearTimeout(safetyTimeout);
-    _voiceSpeaking = false;
-    // Resume wake word even on TTS error
-    if (_voiceListening && !_voiceCommandMode) {
-      setTimeout(_startWakeWordLoop, 500);
-    }
-  };
-
-  window.speechSynthesis.speak(utterance);
-}
-
-// Preload voices (Chrome loads them async)
-if (window.speechSynthesis) {
-  window.speechSynthesis.getVoices();
-  window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
+    _resumeLoop();
+  }
 }
 
 // ── STT: Wake word detection + command capture ──

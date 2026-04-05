@@ -33,3 +33,4 @@ cryptography>=42.0.0            # AES encryption for data at rest
 
 # Utilities
 huggingface-hub>=0.23.0         # Model downloads
+edge-tts>=7.0

@@ -1372,6 +1372,25 @@ app.post('/api/stoa/reload-planner', authenticateToken, requireFullCapabilities,
   res.json(data);
 });
 
+// TTS endpoint — streams MP3 audio from Python edge-tts
+app.post('/api/tts', authenticateToken, async (req, res) => {
+  try {
+    const resp = await fetch(`${NEURAL_URL}/tts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req.body),
+    });
+    if (!resp.ok) {
+      return res.status(resp.status).json({ error: 'TTS failed' });
+    }
+    res.set('Content-Type', 'audio/mpeg');
+    const buffer = await resp.arrayBuffer();
+    res.send(Buffer.from(buffer));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/connectors/status', authenticateToken, requireFullCapabilities, async (req, res) => {
   const data = await proxyToNeural('/connectors/status');
   res.json(data);
