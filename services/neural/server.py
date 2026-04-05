@@ -44,6 +44,7 @@ from excel import ExcelEngine
 from initiative import InitiativeEngine
 from memory import ALECMemory
 from query_planner import QueryPlanner
+from agent import ALECAgent
 from connectors import ConnectorManager
 from encryption import get_encryptor
 from skills_registry import SkillsRegistry
@@ -66,6 +67,7 @@ excel_engine = ExcelEngine()
 initiative = InitiativeEngine(db=db)
 memory = ALECMemory()
 query_planner = QueryPlanner(stoa)
+agent = None  # Initialized after engine loads
 connectors = ConnectorManager()
 skills = SkillsRegistry()
 
@@ -93,6 +95,11 @@ async def lifespan(app: FastAPI):
         )
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
+
+    # 1b. Initialize agent (tool-calling loop)
+    global agent
+    agent = ALECAgent(engine=engine, query_planner=query_planner, memory_module=memory)
+    logger.info(f"Agent initialized with {len(agent.tools)} tools: {list(agent.tools.keys())}")
 
     # 2. Seed admin user
     admin_email = os.getenv("ADMIN_EMAIL", "arovner@campusrentalsllc.com")
