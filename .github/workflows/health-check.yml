@@ -2,145 +2,54 @@ name: A.L.E.C. Health Check
 
 on:
   schedule:
-    # Every 15 minutes
-    - cron: '*/15 * * * *'
-  workflow_dispatch: # Manual trigger
+    - cron: '0 */6 * * *'  # Every 6 hours (not every 15 min — saves Actions minutes)
+  workflow_dispatch:
 
 jobs:
   health-check:
     name: Ping A.L.E.C.
     runs-on: ubuntu-latest
     steps:
-      - name: Check A.L.E.C. via Vercel proxy
+      - name: Check A.L.E.C. via Tailscale Funnel
         id: health
         run: |
           HTTP_CODE=$(curl -s -o /tmp/health.json -w "%{http_code}" \
-            "https://a-l-e-c.vercel.app/api/health" \
+            "https://macbook-pro.tail97cec9.ts.net/" \
             --max-time 15 || echo "000")
-          
+
           echo "http_code=$HTTP_CODE" >> $GITHUB_OUTPUT
-          
+
           if [ "$HTTP_CODE" = "200" ]; then
-            echo "✅ A.L.E.C. is online"
-            cat /tmp/health.json | python3 -m json.tool 2>/dev/null || true
+            echo "A.L.E.C. is UP (HTTP $HTTP_CODE)"
           else
-            echo "❌ A.L.E.C. is OFFLINE (HTTP $HTTP_CODE)"
-            cat /tmp/health.json 2>/dev/null || true
+            echo "A.L.E.C. is DOWN (HTTP $HTTP_CODE)"
           fi
 
-      - name: Auto-restart via Tailscale SSH
+      - name: Alert if down
         if: steps.health.outputs.http_code != '200'
-        env:
-          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
-        run: |
-          # Install Tailscale on the runner
-          curl -fsSL https://tailscale.com/install.sh | sh
-          
-          # Connect to tailnet using ephemeral auth key
-          sudo tailscale up --auth-key="$TAILSCALE_AUTH_KEY" --hostname=alec-health-runner --accept-routes
-          
-          # Wait for connection
-          sleep 5
-          tailscale status
-          
-          # SSH into the Mac and restart A.L.E.C.
-          echo "🔄 Attempting auto-restart via Tailscale SSH..."
-          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
-            alec@macbook-pro.tail97cec9.ts.net \
-            'cd ~/Desktop/App\ Development/A.l.E.C && \
-             kill $(lsof -ti:3001) 2>/dev/null; \
-             kill $(lsof -ti:8000) 2>/dev/null; \
-             sleep 2; \
-             source services/neural/.venv/bin/activate && \
-             nohup bash scripts/start-alec.sh > /tmp/alec-restart.log 2>&1 &' \
-          && echo "✅ Restart command sent" \
-          || echo "❌ SSH failed — Mac may be off or SSH not enabled"
-          
-          # Wait and verify restart
-          echo "Waiting 30s for A.L.E.C. to boot..."
-          sleep 30
-          
-          VERIFY=$(curl -s -o /dev/null -w "%{http_code}" \
-            "https://macbook-pro.tail97cec9.ts.net/health" \
-            --max-time 10 || echo "000")
-          
-          if [ "$VERIFY" = "200" ]; then
-            echo "✅ A.L.E.C. successfully restarted!"
-            echo "restart_success=true" >> $GITHUB_OUTPUT
-          else
-            echo "❌ Restart may have failed (HTTP $VERIFY)"
-            echo "restart_success=false" >> $GITHUB_OUTPUT
-          fi
-        id: restart
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.ALERT_GMAIL_USER }}
+          password: ${{ secrets.ALERT_GMAIL_APP_PASSWORD }}
+          subject: "A.L.E.C. is DOWN — HTTP ${{ steps.health.outputs.http_code }}"
+          to: ${{ secrets.ALERT_EMAIL_TO }}
+          from: "A.L.E.C. Health <${{ secrets.ALERT_GMAIL_USER }}>"
+          body: |
+            A.L.E.C. health check FAILED.
 
-      - name: Send alert email
-        if: steps.health.outputs.http_code != '200'
-        env:
-          GMAIL_USER: ${{ secrets.ALERT_GMAIL_USER }}
-          GMAIL_APP_PASSWORD: ${{ secrets.ALERT_GMAIL_APP_PASSWORD }}
-          ALERT_TO: ${{ secrets.ALERT_EMAIL_TO }}
-          RESTART_RESULT: ${{ steps.restart.outputs.restart_success }}
-        run: |
-          python3 << 'PYEOF'
-          import smtplib, os
-          from email.mime.text import MIMEText
-          from datetime import datetime
+            Status: HTTP ${{ steps.health.outputs.http_code }}
+            URL: https://macbook-pro.tail97cec9.ts.net/
+            Time: ${{ github.event.schedule || 'manual' }}
 
-          user = os.environ.get("GMAIL_USER", "")
-          pwd = os.environ.get("GMAIL_APP_PASSWORD", "")
-          to = os.environ.get("ALERT_TO", user)
-          restarted = os.environ.get("RESTART_RESULT", "false") == "true"
+            Possible causes:
+            - Mac is off or sleeping
+            - Node.js server crashed
+            - Tailscale Funnel not running
 
-          if not user or not pwd:
-              print("⚠️ No Gmail credentials — skipping email")
-              exit(0)
-
-          if restarted:
-              subject = "⚠️ A.L.E.C. went offline — auto-restarted successfully"
-              body = f"""A.L.E.C. Health Check
-
-A.L.E.C. was not responding and was automatically restarted via Tailscale SSH.
-
-Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}
-Status: ✅ Back online after auto-restart
-
-No action needed — A.L.E.C. recovered on its own.
-
-— A.L.E.C. Monitoring System"""
-          else:
-              subject = "🚨 A.L.E.C. is OFFLINE — auto-restart FAILED"
-              body = f"""🚨 A.L.E.C. Health Check CRITICAL
-
-A.L.E.C. is not responding and auto-restart via Tailscale SSH failed.
-
-Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}
-Status: ❌ Offline, manual intervention needed
-
-Possible causes:
-1. Mac is powered off or asleep
-2. Tailscale is disconnected
-3. SSH not enabled on the Mac
-4. Network issue
-
-To fix manually:
-  Open Terminal on the Mac and run:
-  cd ~/Desktop/App\\ Development/A.l.E.C
-  kill $(lsof -ti:3001) 2>/dev/null; kill $(lsof -ti:8000) 2>/dev/null
-  bash scripts/start-alec.sh
-  tailscale funnel --bg 3001
-
-— A.L.E.C. Monitoring System"""
-
-          msg = MIMEText(body)
-          msg["Subject"] = subject
-          msg["From"] = user
-          msg["To"] = to
-
-          try:
-              with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-                  server.login(user, pwd)
-                  server.send_message(msg)
-              print(f"📧 Alert sent to {to}")
-          except Exception as e:
-              print(f"Email failed: {e}")
-          PYEOF
+            Fix:
+            cd ~/Desktop/App\ Development/A.l.E.C
+            bash scripts/start-alec.sh
+            tailscale funnel --bg 3001
+          content_type: text/plain
