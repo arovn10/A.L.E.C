@@ -13,6 +13,8 @@ logs/*.log
 .env
 .env.local
 .env.production
+.env.backup
+.env.bak
 .secrets
 
 # IDE
@@ -20,6 +22,11 @@ logs/*.log
 .idea/
 *.swp
 *.swo
+
+# ── Claude Code / Continue (local to each dev machine) ──────────
+.claude/
+.continue/
+.project_memory.md
 
 # OS
 .DS_Store
@@ -31,6 +38,7 @@ data/models/*.gguf
 data/models/*.safetensors
 data/models/lora/
 data/models/checkpoints/
+data/models/models--*/
 !data/models/.gitkeep
 
 # ── Python ───────────────────────────────────────────────────────
@@ -50,6 +58,8 @@ data/memory.db
 data/memory.db-*
 data/skills.json
 data/goals.json
+data/local-alec.db
+data/query_cache.json
 
 # ── SQLite fallback database ─────────────────────────────────────
 data/alec.db
@@ -59,6 +69,9 @@ data/alec.db-wal
 # ── Training data (personal / sensitive) ─────────────────────────
 data/sft/*.jsonl
 data/sft/*.json
+data/*.jsonl
+data/STOA_TRAINING*.jsonl
+data/al-e-c-stoa-training*.jsonl
 
 # Token files (sensitive)
 tokens/*.pem
@@ -71,6 +84,15 @@ data/context/*
 
 # Docker
 .docker/
+
+# ── Backups and old versions ─────────────────────────────────────
+*.backup
+*.bak
+backend/server_complete.js
+backend/server_complete.js.bak
+
+# ── Nested repo / duplicate folder ──────────────────────────────
+A.L.E.C/
 
 # Temporary files
 tmp/
