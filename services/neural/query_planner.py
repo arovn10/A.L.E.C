@@ -107,6 +107,21 @@ class QueryPlanner:
             if words & re_terms and any(kw in table_lower for kw in ["leasing", "property", "project", "unit"]):
                 score += 8
 
+            # PRIORITY TABLES: DailyPropertyMetrics is the main property dashboard table.
+            # It has OccupancyPct, AvgLeasedRent, TotalUnits, Velocity, etc.
+            # Always prefer it for property-level questions.
+            priority_tables = {
+                "leasing.dailypropertymetrics": 25,   # Main property dashboard
+                "leasing.propertylist": 10,            # Property directory
+                "leasing.portfoliounitdetails": 8,     # Unit-level detail
+                "core.project": 8,                     # Project/deal info
+                "banking.loan": 5,                     # Loan data
+                "contracts.contract": 5,               # Contract data
+            }
+            bonus = priority_tables.get(table_lower, 0)
+            if bonus and score > 0:
+                score += bonus
+
             if score > 0:
                 scored.append((table, score))
 
