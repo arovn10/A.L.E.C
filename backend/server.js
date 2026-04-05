@@ -227,12 +227,13 @@ app.post('/api/auth/login', async (req, res) => {
       body: { email, password, is_domo_embed },
     });
 
-    // Python returns token_type + user info; wrap in our JWT
-    const tokenType = data.token_type === 'FULL_CAPABILITIES' ? 'FULL_CAPABILITIES' : 'STOA_ACCESS';
+    // Python returns {success, user: {id, email, role}, access_level}
+    const user = data.user || {};
+    const tokenType = data.access_level === 'FULL_CAPABILITIES' ? 'FULL_CAPABILITIES' : 'STOA_ACCESS';
     const jwtPayload = {
-      userId: data.user_id || email,
-      email: data.email || email,
-      role: data.role || 'viewer',
+      userId: user.id || email,
+      email: user.email || email,
+      role: user.role || 'viewer',
       tokenType,
     };
 
@@ -242,8 +243,10 @@ app.post('/api/auth/login', async (req, res) => {
       success: true,
       token,
       tokenType,
+      access_level: data.access_level,
       email: jwtPayload.email,
       role: jwtPayload.role,
+      user: user,
       expiresIn: '24h',
     });
   } catch (error) {

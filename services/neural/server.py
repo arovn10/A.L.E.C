@@ -20,6 +20,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+import math
+
+def json_safe(obj):
+    """Recursively replace inf/nan with None for JSON serialization."""
+    if isinstance(obj, dict):
+        return {k: json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [json_safe(v) for v in obj]
+    if isinstance(obj, float) and (math.isinf(obj) or math.isnan(obj)):
+        return None
+    return obj
 
 load_dotenv()
 
@@ -430,7 +441,7 @@ def start_training(req: TrainingRequest):
 
 @app.get("/training/status")
 def training_status():
-    return trainer.get_status()
+    return json_safe(trainer.get_status())
 
 @app.get("/training/adapters")
 def list_adapters():
@@ -546,7 +557,7 @@ def metrics_dashboard():
     training_info = trainer.get_status()
     adapters = trainer.get_available_adapters()
 
-    return {
+    return json_safe({
         "engine": engine_info,
         "conversations": {
             "total": len(all_convos),
@@ -566,7 +577,7 @@ def metrics_dashboard():
             "running": len([t for t in task_runner.tasks.values() if t.status == "running"]),
             "recent": task_runner.list_tasks(limit=10),
         },
-    }
+    })
 
 
 # ══════════════════════════════════════════════════════════════════
