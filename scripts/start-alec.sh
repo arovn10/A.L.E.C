@@ -21,6 +21,12 @@ NODE_PORT=${PORT:-3001}
 VENV_DIR="$PROJECT_DIR/services/neural/.venv"
 
 echo "🧠 Starting A.L.E.C. — Adaptive Learning Executive Coordinator"
+
+# Start Tailscale Funnel for remote access (non-blocking, ignore if not available)
+if command -v tailscale &> /dev/null; then
+    tailscale funnel $NODE_PORT &>/dev/null &
+    echo "🌐 Tailscale Funnel active — remote access via a-l-e-c.vercel.app"
+fi
 echo ""
 
 # Check if venv exists
