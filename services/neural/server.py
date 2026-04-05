@@ -490,39 +490,28 @@ async def chat_completions(req: ChatRequest):
             else:
                 messages.insert(0, memory_msg)
 
-        # ── STOA DATA: query real data and return DIRECTLY (bypass LLM) ──
-        # The 7B model can't reliably use injected table data — it hallucinates
-        # fake values like "Property A" instead of reading real data. So when
-        # the query planner finds results, we format and return them directly.
-        stoa_response = query_planner.get_direct_response(user_msg)
-        if stoa_response:
-            logger.info(f"Stoa direct response ({len(stoa_response)} chars) — bypassing LLM")
-            try:
-                conv_id = db.log_conversation(
-                    session_id=session_id,
-                    user_message=user_msg,
-                    alec_response=stoa_response,
-                    confidence=0.95,
-                    model_used="stoa-query-planner",
-                    tokens_in=0,
-                    tokens_out=0,
-                    latency_ms=0,
-                )
-            except Exception:
-                conv_id = None
-            return {
-                "id": f"chatcmpl-stoa-{uuid.uuid4().hex[:8]}",
-                "object": "chat.completion",
-                "model": "alec-v2",
-                "choices": [{
-                    "index": 0,
-                    "message": {"role": "assistant", "content": stoa_response},
-                    "finish_reason": "stop",
-                }],
-                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-                "conversation_id": conv_id,
-                "latency_ms": 0,
+        # ── STOA DATA: query DB and inject results as LLM context ──
+        # Instead of bypassing the LLM, we feed the raw data INTO the model
+        # so it can reason about it — compare vs budget, flag anomalies,
+        # filter to just what was asked, and add insights.
+        stoa_context = query_planner.get_data_context(user_msg)
+        if stoa_context:
+            logger.info(f"Stoa context injected ({len(stoa_context)} chars) — LLM will reason about it")
+            insight_prompt = {
+                "role": "system",
+                "content": (
+                    f"{stoa_context}\n\n"
+                    "INSTRUCTIONS FOR RESPONDING:\n"
+                    "1. Answer ONLY what the user asked. If they asked for occupancy, give occupancy — not 30 columns.\n"
+                    "2. Add brief INSIGHTS: compare vs budget, flag if above/below target, note trends.\n"
+                    "3. Be concise. One sentence per metric unless the user asked for detail.\n"
+                    "4. Use the EXACT numbers from the data above. Do NOT make up values.\n"
+                    "5. Format: 'From the Stoa database:' then the answer with insight.\n"
+                    "6. Example good answer: 'Heights at Picardy occupancy is 69.4%, which is 0.9% below the 70.3% budget target — you\'re 2 units short.'\n"
+                    "7. Example bad answer: dumping all 30 columns when they asked for one metric.\n"
+                ),
             }
+            messages.append(insight_prompt)
 
         # ── CURIOSITY: detect teaching moments and store them ──
         lower_msg = user_msg.lower()
@@ -559,6 +548,9 @@ async def chat_completions(req: ChatRequest):
     # Detect if this message needs tools
     needs_tools = any(kw in lower_msg for kw in [
         "change ", "edit ", "fix ", "update ", "modify ",  # self_edit
+        "repair", "fix yourself", "fix your", "improve your",  # self-repair
+        "self_edit", "commit", "push",                       # explicit tool
+        "improve yourself", "upgrade ", "your code",         # self-improvement
         "remember ", "what did i tell", "recall ",          # memory
         "search ", "look up", "find out", "google ",        # web_search
         "internet", "browse", "web ", "news ", "latest ",   # web_search
@@ -567,8 +559,6 @@ async def chat_completions(req: ChatRequest):
         "dim ", "brightness", "lamp", "guest room",         # smart_home
         "calculate ", "compute ", "run code", "execute",     # execute_code
         "email ", "send me", "send a report",               # send_email
-        "self_edit", "commit", "push",                       # explicit tool
-        "improve yourself", "upgrade ", "your code",         # self-improvement
         "can you ", "do you have access", "are you able",    # capability questions
         "schwab", "acorns", "robinhood", "fidelity",          # brokerage integration
         "brokerage", "portfolio", "my stocks", "investment",   # finance integrations

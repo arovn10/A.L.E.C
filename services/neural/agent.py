@@ -56,7 +56,9 @@ class StoaQueryTool(AgentTool):
         self.query_planner = query_planner
 
     def execute(self, query: str = "", **kwargs) -> str:
-        result = self.query_planner.get_direct_response(query)
+        # Use get_data_context (compact key-value format for LLM reasoning)
+        # not get_direct_response (pre-formatted, no reasoning possible)
+        result = self.query_planner.get_data_context(query)
         if result:
             return result
         return "No matching data found in the Stoa database for that query."

@@ -206,7 +206,7 @@ class QueryPlanner:
         # NOT a data query if it's a memory/preference/command statement
         non_data_patterns = [
             "remember ", "forget ", "my favorite", "i prefer", "i like",
-            "i want you to", "change ", "update ", "fix ", "make ",
+            "i want you to", "change ", "update ", "make ",
             "turn on", "turn off", "set ", "schedule ", "remind ",
             "who are you", "what can you", "help me", "hello", "hey alec",
             "thank", "thanks", "good job", "nice", "great",
@@ -218,6 +218,10 @@ class QueryPlanner:
             "turn on", "turn off", "lights", "brightness",
             "email ", "send me", "send a report",
             "improve yourself", "your code", "edit ",
+            # Self-repair / self-edit requests — NOT data queries
+            "fix yourself", "fix your", "repair yourself", "repair your",
+            "improve your", "self_edit", "trigger a self",
+            "commit", "push", "deploy",
         ]
         if any(pat in lower for pat in non_data_patterns):
             return False
@@ -445,8 +449,29 @@ class QueryPlanner:
         self.successful_queries += 1
         return self._format_direct_response(user_message, rows, source_table)
 
+    @staticmethod
+    def _format_value(val, col_name: str) -> str:
+        """Format a single value for display."""
+        if val is None:
+            return "N/A"
+        if isinstance(val, float):
+            clow = col_name.lower()
+            if 'pct' in clow or 'rate' in clow or clow == 'occupancypct':
+                return f"{val:.1f}%"
+            elif 'rent' in clow or 'amount' in clow or 'revenue' in clow or 'budget' in clow:
+                return f"${val:,.2f}"
+            else:
+                return f"{val:,.1f}"
+        elif isinstance(val, int):
+            return f"{val:,}"
+        return str(val)
+
     def _format_direct_response(self, user_message: str, rows: list[dict], source: str) -> str:
-        """Format query results as a natural language response."""
+        """Format query results as a natural language response.
+        
+        KEY PRINCIPLE: if the user asked for a specific metric, return ONLY that
+        metric. Don't dump the entire row. Short, concise answers.
+        """
         lower = user_message.lower()
         cols = list(rows[0].keys()) if rows else []
 
@@ -457,19 +482,30 @@ class QueryPlanner:
             name_col = next((c for c in cols if 'name' in c.lower() or 'property' in c.lower()), None)
 
         # Figure out the metric they care about
+        # "just X", "only X", "what is the X" all signal a specific metric request
         metric_col = None
         metric_label = "value"
         metric_map = {
             'occupancy': ('OccupancyPct', 'occupancy'),
-            'occ': ('OccupancyPct', 'occupancy'),
+            'occ ': ('OccupancyPct', 'occupancy'),
+            'occupancy pct': ('OccupancyPct', 'occupancy'),
             'rent': ('AvgLeasedRent', 'average leased rent'),
+            'average rent': ('AvgLeasedRent', 'average leased rent'),
+            'avg rent': ('AvgLeasedRent', 'average leased rent'),
             'units': ('TotalUnits', 'total units'),
+            'total units': ('TotalUnits', 'total units'),
             'vacancy': ('AvailableUnits', 'available units'),
             'available': ('AvailableUnits', 'available units'),
             'velocity': ('Velocity28dNew', '28-day lease velocity'),
             'leased': ('LeasedPct', 'leased percentage'),
+            'leased pct': ('LeasedPct', 'leased percentage'),
             'budget': ('BudgetedOccupancy', 'budgeted occupancy'),
+            'budgeted': ('BudgetedOccupancy', 'budgeted occupancy'),
             'revenue': ('RevOSF', 'revenue per occupied SF'),
+            'noi': ('RevOSF', 'revenue per occupied SF'),
+            'trade out': ('TradeOutPct', 'trade-out percentage'),
+            'rent growth': ('RentGrowth3MoPct', '3-month rent growth'),
+            'look ahead': ('OccupancyLookAhead4Weeks', '4-week occupancy look-ahead'),
         }
         for keyword, (col_name, label) in metric_map.items():
             if keyword in lower:
@@ -495,26 +531,25 @@ class QueryPlanner:
         is_ranking = any(kw in lower for kw in ['top', 'best', 'highest', 'lowest', 'worst', 'bottom', 'all', 'list', 'show', 'every'])
 
         if is_specific and len(rows) <= 3:
-            # Specific property query — detailed view
+            # Specific property query
+            # If the user asked for a SPECIFIC metric, return ONLY that metric.
+            # If they asked a general question, show the full detail view.
             for row in rows:
                 pname = row.get(name_col, 'Unknown') if name_col else 'Unknown'
-                parts.append(f"**{pname}**")
-                for col, val in row.items():
-                    if val is not None and str(val).strip() and col != name_col:
-                        # Format percentages nicely
-                        display_val = val
-                        if isinstance(val, float):
-                            if 'pct' in col.lower() or 'rate' in col.lower() or col.lower() == 'occupancypct':
-                                display_val = f"{val:.1f}%"
-                            elif 'rent' in col.lower() or 'amount' in col.lower() or 'revenue' in col.lower():
-                                display_val = f"${val:,.2f}"
-                            else:
-                                display_val = f"{val:,.1f}"
-                        elif isinstance(val, int):
-                            display_val = f"{val:,}"
-                        # Human-readable column name
-                        col_display = re.sub(r'([A-Z])', r' \1', col).strip()
-                        parts.append(f"  {col_display}: {display_val}")
+
+                if metric_col and metric_col in row:
+                    # User asked for a specific metric — concise answer
+                    val = row.get(metric_col)
+                    display_val = self._format_value(val, metric_col)
+                    parts.append(f"**{pname}** — {metric_label}: {display_val}")
+                else:
+                    # General question — show all fields
+                    parts.append(f"**{pname}**")
+                    for col, val in row.items():
+                        if val is not None and str(val).strip() and col != name_col:
+                            display_val = self._format_value(val, col)
+                            col_display = re.sub(r'([A-Z])', r' \1', col).strip()
+                            parts.append(f"  {col_display}: {display_val}")
                 parts.append("")
         else:
             # Ranking / list view
@@ -524,17 +559,7 @@ class QueryPlanner:
                     pname = row.get(name_col, f'Row {i+1}') if name_col else f'Row {i+1}'
                     val = row.get(metric_col)
                     if val is not None:
-                        if isinstance(val, float):
-                            if 'pct' in metric_col.lower() or 'rate' in metric_col.lower() or 'occupancy' in metric_col.lower():
-                                display = f"{val:.1f}%"
-                            elif 'rent' in metric_col.lower() or 'amount' in metric_col.lower():
-                                display = f"${val:,.2f}"
-                            else:
-                                display = f"{val:,.1f}"
-                        elif isinstance(val, int):
-                            display = f"{val:,}"
-                        else:
-                            display = str(val)
+                        display = self._format_value(val, metric_col)
                         parts.append(f"{i+1}. **{pname}** — {metric_label}: {display}")
                     else:
                         parts.append(f"{i+1}. **{pname}**")
