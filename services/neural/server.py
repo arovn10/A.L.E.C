@@ -382,14 +382,24 @@ def domo_auth():
 import re as _re
 
 def strip_think_tags(text: str) -> str:
-    """Remove <think>...</think> blocks from Qwen3 responses.
-    Qwen3 uses thinking mode by default — the reasoning is useful internally
-    but should never be shown to the user."""
+    """Remove <think>...</think> blocks and chain-of-thought reasoning from responses.
+    Qwen3 uses thinking mode by default — the reasoning should never be shown."""
     # Remove <think>...</think> blocks (including multiline)
     cleaned = _re.sub(r'<think>.*?</think>', '', text, flags=_re.DOTALL)
-    # Also remove orphaned <think> or </think> tags
+    # Remove orphaned <think> or </think> tags
     cleaned = cleaned.replace('<think>', '').replace('</think>', '')
-    # Clean up leading whitespace/newlines left behind
+    # Remove chain-of-thought that leaks without think tags
+    # Qwen3 sometimes starts with "Okay, the user..." or "Let me think..."
+    cot_patterns = [
+        r'^Okay,? the user[^\.]*\.\s*',
+        r'^Let me (?:think|see|check|analyze)[^\.]*\.\s*',
+        r'^I need to [^\.]*\.\s*',
+        r'^The user (?:wants|asked|is asking)[^\.]*\.\s*',
+        r'^First,? (?:let me|I\'ll|I should|I need)[^\.]*\.\s*',
+        r'^Now,? (?:let me|I\'ll|I should|I need)[^\.]*\.\s*',
+    ]
+    for pat in cot_patterns:
+        cleaned = _re.sub(pat, '', cleaned, flags=_re.IGNORECASE)
     return cleaned.strip()
 
 @app.post("/v1/chat/completions")
