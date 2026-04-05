@@ -129,10 +129,13 @@ class QueryPlanner:
         named = re.findall(r'(?:the |at |about |for )([A-Z][a-z]+(?: [A-Za-z]+)*)', user_message)
         search_terms = quoted + named
         
-        # Also check common property keywords
-        for kw in ["heights", "picardy", "campus", "stoa"]:
+        # Also check common property keywords (NOT generic terms like "stoa" which mean the DB)
+        generic_terms = {"stoa", "data", "database", "property", "properties", "all", "every", "list", "show"}
+        for kw in ["heights", "picardy", "campus", "bluebonnet", "crestview", "waters"]:
             if kw in lower and kw not in [s.lower() for s in search_terms]:
                 search_terms.append(kw)
+        # Filter out generic terms that aren't actual property names
+        search_terms = [t for t in search_terms if t.lower() not in generic_terms]
 
         if search_terms and name_cols:
             for col in name_cols[:2]:
@@ -142,8 +145,15 @@ class QueryPlanner:
         # Detect ordering intent
         order = ""
         if any(w in lower for w in ["highest", "top", "best", "most", "maximum", "max"]):
-            # Find numeric columns to sort by
-            num_cols = [c for c in columns if any(kw in c.lower() for kw in ["rate", "occupancy", "total", "amount", "count", "revenue", "income", "price", "rent"])]
+            # Find numeric columns to sort by — prioritize columns that match the user's question
+            user_words = set(re.findall(r'[a-z]{3,}', lower))
+            # First try to find a column matching what the user asked about
+            num_cols = [c for c in columns if any(uw in c.lower() for uw in user_words if uw not in generic_terms)]
+            # Filter to likely numeric columns
+            num_cols = [c for c in num_cols if any(kw in c.lower() for kw in ["rate", "pct", "occupancy", "total", "amount", "count", "revenue", "income", "price", "rent", "units", "avg", "velocity", "delta", "budget", "variance"])]
+            # Fallback to any numeric-looking column
+            if not num_cols:
+                num_cols = [c for c in columns if any(kw in c.lower() for kw in ["rate", "pct", "occupancy", "total", "amount", "count", "revenue", "income", "price", "rent"])]
             if num_cols:
                 order = f"ORDER BY [{num_cols[0]}] DESC"
         elif any(w in lower for w in ["lowest", "bottom", "worst", "least", "minimum", "min"]):
@@ -158,9 +168,20 @@ class QueryPlanner:
         if not order:
             order = "ORDER BY 1 DESC"
 
-        where_clause = f"WHERE {' OR '.join(where_parts)}" if where_parts else ""
+        # For time-series tables (have ReportDate/Date column), default to latest data
+        date_cols_available = [c for c in columns if c.lower() in ("reportdate", "date", "created_at", "createdat", "computedat")]
+        if date_cols_available and not where_parts:
+            # Get latest date's data unless user asked about a specific time
+            time_words = {"history", "trend", "over time", "last year", "monthly", "weekly", "daily", "all time"}
+            if not any(tw in lower for tw in time_words):
+                dcol = date_cols_available[0]
+                where_parts.append(f"[{dcol}] = (SELECT MAX([{dcol}]) FROM [{table.split('.')[0]}].[{table.split('.')[1] if '.' in table else table}])")
+
+        where_clause = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+        schema_name = table.split('.')[0]
+        table_name = table.split('.')[1] if '.' in table else table
         
-        return f"SELECT TOP 15 * FROM [{table.split('.')[0]}].[{table.split('.')[1] if '.' in table else table}] {where_clause} {order}"
+        return f"SELECT TOP 15 * FROM [{schema_name}].[{table_name}] {where_clause} {order}"
 
     def should_query_stoa(self, user_message: str) -> bool:
         """Check if this message warrants a database query."""
@@ -265,33 +286,53 @@ class QueryPlanner:
         return self._format_results(all_results)
 
     def _format_results(self, all_results: list[dict]) -> str:
-        """Format query results into a context string for the LLM."""
-        parts = [
-            "[STOA DATABASE — REAL DATA from stoagroupDB. Present this data to the user.]",
-            "[DO NOT make up data. Only use what's in the tables below.]",
-            "",
-        ]
+        """Format query results as a pre-written answer the LLM can relay directly.
+        
+        Small models (7B) can't reliably parse markdown tables and extract answers.
+        Instead, we format the data as a ready-to-use narrative so the model just
+        needs to pass it through with minimal interpretation.
+        """
+        parts = []
+        parts.append("[STOA DATABASE QUERY RESULTS — THIS IS REAL DATA. Read it back to the user EXACTLY as shown. Do NOT substitute placeholders or make up values.]")
+        parts.append("")
 
         for result in all_results:
             rows = result.get("rows", [])
             if not rows:
                 continue
-            cols = list(rows[0].keys())
             rtype = result.get("type", "data")
-            parts.append(f"### {rtype} ({len(rows)} rows)")
-            # Header
-            parts.append("| " + " | ".join(str(c) for c in cols[:12]) + " |")
-            parts.append("| " + " | ".join("---" for _ in cols[:12]) + " |")
-            for row in rows:
-                vals = []
-                for c in cols[:12]:
-                    v = str(row.get(c, "") or "")
-                    if len(v) > 35:
-                        v = v[:35] + "…"
-                    vals.append(v)
-                parts.append("| " + " | ".join(vals) + " |")
+            parts.append(f"Source table: {rtype} — {len(rows)} rows returned.")
             parts.append("")
 
+            # Format each row as key: value pairs (much easier for small models)
+            for i, row in enumerate(rows[:10]):
+                parts.append(f"Row {i+1}:")
+                for col, val in row.items():
+                    if val is not None and str(val).strip():
+                        clean = str(val).strip()
+                        if len(clean) > 80:
+                            clean = clean[:80] + "…"
+                        parts.append(f"  {col}: {clean}")
+                parts.append("")
+
+            # Also provide a one-line summary per row for quick reference
+            parts.append("SUMMARY (use this to answer the user):")
+            for i, row in enumerate(rows[:10]):
+                # Pick the most meaningful columns for a summary line
+                summary_parts = []
+                for col, val in row.items():
+                    if val is not None and str(val).strip():
+                        clow = col.lower()
+                        # Prioritize name/property/description and numeric fields
+                        if any(kw in clow for kw in ["name", "property", "project", "title", "description",
+                                                      "rate", "pct", "occupancy", "rent", "total", "amount",
+                                                      "units", "count", "price", "noi", "revenue"]):
+                            summary_parts.append(f"{col}={val}")
+                if summary_parts:
+                    parts.append(f"  {i+1}. {', '.join(summary_parts[:8])}")
+            parts.append("")
+
+        parts.append("[END OF DATABASE RESULTS. Present the above data naturally. Say 'From the Stoa database:' then give the facts.]")
         return "\n".join(parts)
 
     def get_stats(self) -> dict:
