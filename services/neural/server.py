@@ -44,6 +44,8 @@ from excel import ExcelEngine
 from initiative import InitiativeEngine
 from memory import ALECMemory
 from query_planner import QueryPlanner
+from connectors import ConnectorManager
+from encryption import get_encryptor
 
 # ── Logging ──────────────────────────────────────────────────────
 logging.basicConfig(
@@ -63,6 +65,7 @@ excel_engine = ExcelEngine()
 initiative = InitiativeEngine(db=db)
 memory = ALECMemory()
 query_planner = QueryPlanner(stoa)
+connectors = ConnectorManager()
 
 
 @asynccontextmanager
@@ -702,6 +705,51 @@ def initiative_analyze():
 @app.get("/initiative/suggest-skills")
 def initiative_suggest_skills():
     return {"suggestions": initiative.suggest_skills()}
+
+
+# ══════════════════════════════════════════════════════════════════
+#  CONNECTORS (iMessage, Gmail)
+# ══════════════════════════════════════════════════════════════════
+
+@app.get("/connectors/status")
+def connectors_status():
+    return connectors.get_all_status()
+
+@app.post("/connectors/imessage/sync")
+def imessage_sync():
+    task_id = task_runner.run_task(
+        "iMessage Sync",
+        lambda task_info=None: connectors.imessage.generate_training_data(),
+    )
+    return {"success": True, "task_id": task_id}
+
+@app.get("/connectors/imessage/messages")
+def imessage_messages(limit: int = 50, days: int = 30):
+    return {"messages": connectors.imessage.get_recent_messages(limit=limit, days=days)}
+
+@app.get("/connectors/imessage/conversations")
+def imessage_conversations(limit: int = 20):
+    return {"conversations": connectors.imessage.get_conversations(limit=limit)}
+
+@app.post("/connectors/gmail/sync")
+def gmail_sync():
+    task_id = task_runner.run_task(
+        "Gmail Sync",
+        lambda task_info=None: connectors.gmail.generate_training_data(),
+    )
+    return {"success": True, "task_id": task_id}
+
+@app.get("/connectors/gmail/emails")
+def gmail_emails(limit: int = 50):
+    return {"emails": connectors.gmail.get_recent_emails(limit=limit)}
+
+@app.post("/connectors/sync-all")
+def sync_all_connectors():
+    task_id = task_runner.run_task(
+        "Sync All Connectors",
+        lambda task_info=None: connectors.sync_all(),
+    )
+    return {"success": True, "task_id": task_id}
 
 
 # ══════════════════════════════════════════════════════════════════

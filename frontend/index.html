@@ -236,22 +236,22 @@
           <div class="stat-card">
             <div class="stat-label">Total Conversations</div>
             <div class="stat-value" id="m-total-convos">—</div>
-            <div class="stat-sub">all time</div>
+            <div class="stat-sub">All messages exchanged with A.L.E.C.</div>
           </div>
           <div class="stat-card">
             <div class="stat-label">Avg Tokens / sec</div>
             <div class="stat-value" id="m-tokens-sec">—</div>
-            <div class="stat-sub">inference speed</div>
+            <div class="stat-sub">How fast A.L.E.C. generates responses</div>
           </div>
           <div class="stat-card">
             <div class="stat-label">Model Load Time</div>
             <div class="stat-value" id="m-load-time">—</div>
-            <div class="stat-sub">seconds</div>
+            <div class="stat-sub">Time to load the neural network into memory</div>
           </div>
           <div class="stat-card">
             <div class="stat-label">Positive Rating</div>
             <div class="stat-value" id="m-pos-rating">—</div>
-            <div class="stat-sub">of rated conversations</div>
+            <div class="stat-sub">Percentage of rated responses marked as good</div>
           </div>
         </div>
 
@@ -372,6 +372,10 @@
         <input type="file" id="file-upload-input" style="display:none;" multiple
           accept=".pdf,.txt,.docx,.csv,.json,.jsonl,.md" />
 
+        <p style="font-size:0.75rem;color:var(--text-dim);margin-bottom:16px;display:flex;align-items:center;gap:6px;">
+          <span>🔒</span> Files are encrypted at rest and processed into training data for A.L.E.C.
+        </p>
+
         <!-- Upload progress -->
         <div id="upload-progress" class="hidden mb-24" style="padding:12px;background:var(--card-bg);border:1px solid var(--border);border-radius:var(--radius-sm);">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
@@ -413,26 +417,28 @@
       <div id="panel-training" class="panel">
         <div class="panel-title"><span class="ptitle-icon">🏋️</span> Training</div>
 
+        <p style="font-size:0.875rem;color:var(--text-muted);margin-bottom:20px;line-height:1.6;">Training makes A.L.E.C. smarter by fine-tuning the model on your conversations and data. Export rated conversations first, then start a training run.</p>
+
         <!-- Current Status -->
         <div class="card mb-24" id="training-status-card">
           <div class="card-header">
             <div class="card-title"><span class="icon">📈</span> Current Training Run</div>
-            <span class="badge badge-pending" id="train-status-badge">Idle</span>
+            <span class="badge badge-pending" id="train-status-badge" title="Whether A.L.E.C. is currently being fine-tuned">Idle</span>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
-            <div class="info-item">
+            <div class="info-item" title="Unique identifier for this training session">
               <div class="info-label">Run ID</div>
               <div class="info-value" id="train-run-id">—</div>
             </div>
-            <div class="info-item">
+            <div class="info-item" title="How far through the current training run">
               <div class="info-label">Step</div>
               <div class="info-value" id="train-step">—</div>
             </div>
-            <div class="info-item">
+            <div class="info-item" title="Lower is better — measures how well A.L.E.C. is learning">
               <div class="info-label">Current Loss</div>
               <div class="info-value" id="train-loss">—</div>
             </div>
-            <div class="info-item">
+            <div class="info-item" title="The lowest loss achieved in this run">
               <div class="info-label">Best Loss</div>
               <div class="info-value" id="train-best-loss">—</div>
             </div>
@@ -445,7 +451,7 @@
               <div class="info-value" id="train-dataset-size">—</div>
             </div>
           </div>
-          <div style="margin-bottom:8px;font-size:0.75rem;color:var(--text-dim);" id="train-progress-label">Progress: —</div>
+          <div style="margin-bottom:8px;font-size:0.75rem;color:var(--text-dim);" id="train-progress-label" title="How far through the current training run">Progress: —</div>
           <div class="progress-bar">
             <div class="progress-fill" id="train-progress-fill" style="width:0%"></div>
           </div>

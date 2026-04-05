@@ -220,6 +220,15 @@ function showDashboard(userData) {
   // Store owner state
   state.isOwner = isOwner;
 
+  // Non-owners only see Chat and Stoa Data
+  if (!isOwner) {
+    const adminOnlyPanels = ['metrics', 'files', 'training', 'skills', 'tasks', 'memory', 'settings'];
+    adminOnlyPanels.forEach(p => {
+      const navItem = document.querySelector(`.nav-item[data-panel="${p}"]`);
+      if (navItem) navItem.style.display = 'none';
+    });
+  }
+
   // Admin section in settings
   document.getElementById('admin-email').textContent = maskedEmail;
   document.getElementById('admin-role').textContent = displayRole;
@@ -499,25 +508,27 @@ async function loadMetrics() {
 
     // Top stats
     document.getElementById('m-total-convos').textContent =
-      (data.total_conversations ?? data.conversations?.total ?? 0).toLocaleString();
+      (data.conversations?.total ?? data.total_conversations ?? 0).toLocaleString();
 
-    const tps = data.tokens_per_second || data.engine?.tokens_per_second;
+    const engineStats = data.engine?.stats || {};
+    const tps = engineStats.avg_tokens_per_sec ?? data.tokens_per_second ?? data.engine?.tokens_per_second;
     document.getElementById('m-tokens-sec').textContent =
-      tps ? tps.toFixed(1) : '—';
+      tps != null ? Number(tps).toFixed(1) : '—';
 
-    const loadTime = data.model_load_time || data.engine?.load_time_seconds;
+    const loadTime = engineStats.model_load_time ?? data.model_load_time ?? data.engine?.load_time_seconds;
     document.getElementById('m-load-time').textContent =
-      loadTime ? loadTime.toFixed(2) + 's' : '—';
+      loadTime != null ? loadTime.toFixed(2) + 's' : '—';
 
-    const pos = data.positive_ratings || data.conversations?.positive || 0;
-    const neg = data.negative_ratings || data.conversations?.negative || 0;
-    const total = data.total_conversations || data.conversations?.total || 0;
-    const rated = pos + neg;
+    const convs = data.conversations || {};
+    const pos = convs.positive ?? data.positive_ratings ?? 0;
+    const neg = convs.negative ?? data.negative_ratings ?? 0;
+    const total = convs.total ?? data.total_conversations ?? 0;
+    const rated = convs.rated ?? (pos + neg);
     const posPercent = rated > 0 ? Math.round((pos / rated) * 100) : 0;
     document.getElementById('m-pos-rating').textContent = rated > 0 ? posPercent + '%' : '—';
 
     // Rating bar
-    const unrated = total - rated;
+    const unrated = total - (pos + neg);
     if (total > 0) {
       document.getElementById('rbar-pos').style.width = ((pos / total) * 100) + '%';
       document.getElementById('rbar-neg').style.width = ((neg / total) * 100) + '%';
@@ -529,23 +540,24 @@ async function loadMetrics() {
 
     // System status in metrics
     const engine = data.engine || {};
-    const loaded = engine.loaded || data.neural_engine_loaded;
+    const loaded = engine.loaded ?? data.neural_engine_loaded;
     setDot('sys-neural-dot', loaded);
     document.getElementById('sys-neural-text').textContent = loaded ? 'Loaded' : 'Not Loaded';
 
-    const stoaConn = data.stoa_connected || engine.stoa_connected;
+    const stoaConn = data.stoa?.connected ?? data.stoa_connected ?? engine.stoa_connected;
     setDot('sys-stoa-dot', stoaConn);
     document.getElementById('sys-stoa-text').textContent = stoaConn ? 'Yes' : 'No';
 
-    document.getElementById('sys-tasks-text').textContent = data.tasks_running ?? '—';
+    document.getElementById('sys-tasks-text').textContent = data.tasks?.running ?? data.tasks_running ?? '—';
     setDot('sys-db-dot', true);
     document.getElementById('sys-db-text').textContent = data.database || 'SQLite';
     document.getElementById('sys-model-text').textContent =
       (engine.model_name || data.model_name || '—').split('/').pop();
     document.getElementById('sys-updated').textContent = new Date().toLocaleTimeString();
 
-    // Training section
-    updateMetricsTrainingSection(data.training);
+    // Training section — API nests status under data.training.status
+    const trainingPayload = data.training?.status ?? data.training;
+    updateMetricsTrainingSection(trainingPayload);
   } catch (err) {
     // API offline
   }

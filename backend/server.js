@@ -1212,6 +1212,42 @@ app.get('/api/initiative/suggest-skills', authenticateToken, async (req, res) =>
 });
 
 // ════════════════════════════════════════════════════════════════
+//  CONNECTORS (iMessage, Gmail)
+// ════════════════════════════════════════════════════════════════
+
+app.get('/api/connectors/status', authenticateToken, requireFullCapabilities, async (req, res) => {
+  const data = await proxyToNeural('/connectors/status');
+  res.json(data);
+});
+
+app.post('/api/connectors/imessage/sync', authenticateToken, requireFullCapabilities, async (req, res) => {
+  const data = await proxyToNeural('/connectors/imessage/sync', { method: 'POST' });
+  res.json(data);
+});
+
+app.get('/api/connectors/imessage/messages', authenticateToken, requireFullCapabilities, async (req, res) => {
+  const limit = req.query.limit || 50;
+  const days = req.query.days || 30;
+  const data = await proxyToNeural(`/connectors/imessage/messages?limit=${limit}&days=${days}`);
+  res.json(data);
+});
+
+app.get('/api/connectors/imessage/conversations', authenticateToken, requireFullCapabilities, async (req, res) => {
+  const data = await proxyToNeural('/connectors/imessage/conversations');
+  res.json(data);
+});
+
+app.post('/api/connectors/gmail/sync', authenticateToken, requireFullCapabilities, async (req, res) => {
+  const data = await proxyToNeural('/connectors/gmail/sync', { method: 'POST' });
+  res.json(data);
+});
+
+app.post('/api/connectors/sync-all', authenticateToken, requireFullCapabilities, async (req, res) => {
+  const data = await proxyToNeural('/connectors/sync-all', { method: 'POST' });
+  res.json(data);
+});
+
+// ════════════════════════════════════════════════════════════════
 //  START SERVER
 // ════════════════════════════════════════════════════════════════
 

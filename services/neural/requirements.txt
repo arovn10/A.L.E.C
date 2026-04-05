@@ -27,8 +27,9 @@ pymssql>=2.2.0                  # Azure SQL fallback (no unixodbc needed)
 pandas>=2.2.0
 openpyxl>=3.1.0                 # .xlsx support
 
-# Auth
+# Auth & Encryption
 bcrypt>=4.1.0                   # Password hashing (optional, PBKDF2 fallback)
+cryptography>=42.0.0            # AES encryption for data at rest
 
 # Utilities
 huggingface-hub>=0.23.0         # Model downloads

@@ -599,10 +599,13 @@ a:hover { color: var(--primary-hover); }
   padding: 24px;
   display: none;
   animation: fadeIn 0.2s ease;
+  z-index: 1;
+  background: var(--bg);
 }
 
 .panel.active {
   display: block;
+  z-index: 2;
 }
 
 .panel.active[style*="flex"] {
