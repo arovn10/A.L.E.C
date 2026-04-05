@@ -199,8 +199,22 @@ class QueryPlanner:
         return f"SELECT TOP 15 * FROM [{schema_name}].[{table_name}] {where_clause} {order}"
 
     def should_query_stoa(self, user_message: str) -> bool:
-        """Check if this message warrants a database query."""
+        """Check if this message warrants a database query.
+        Must distinguish data questions from memory/preference/command statements."""
         lower = user_message.lower()
+
+        # NOT a data query if it's a memory/preference/command statement
+        non_data_patterns = [
+            "remember ", "forget ", "my favorite", "i prefer", "i like",
+            "i want you to", "change ", "update ", "fix ", "make ",
+            "turn on", "turn off", "set ", "schedule ", "remind ",
+            "who are you", "what can you", "help me", "hello", "hey alec",
+            "thank", "thanks", "good job", "nice", "great",
+            "can you see", "do you have access", "are you able",
+        ]
+        if any(pat in lower for pat in non_data_patterns):
+            return False
+
         stoa_keywords = [
             "property", "properties", "occupancy", "noi", "rent", "lease",
             "loan", "bank", "deal", "contract", "vendor", "stoa", "campus",
