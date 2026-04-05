@@ -1314,7 +1314,7 @@ async function sendMessage() {
       latency_ms: data.latency_ms || data.latency,
       tokens_out: data.tokens_out || data.tokens,
       tokens_in: data.tokens_in,
-      conversation_id: data.conversation_id || data.id,
+      conversation_id: data.conversationId || data.conversation_id || data.id,
       session_id: data.session_id
     });
   } catch (err) {
@@ -1586,3 +1586,14 @@ if (typeof state !== 'undefined' && !state.isOwner) {
   const umSection = document.getElementById('user-management-section');
   if (umSection) umSection.style.display = 'none';
 }
+
+/* ─── Settings Panel: Owner-Only Protection ─────────────────── */
+// Override panel switch to block non-owners from settings
+const _origSwitchPanel = switchPanel;
+switchPanel = function(panelId) {
+  if (panelId === 'settings' && !state.isOwner) {
+    toast('Settings are only accessible by the owner.', 'error');
+    return;
+  }
+  _origSwitchPanel(panelId);
+};

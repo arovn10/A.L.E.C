@@ -43,6 +43,7 @@ from auth import AuthManager
 from excel import ExcelEngine
 from initiative import InitiativeEngine
 from memory import ALECMemory
+from query_planner import QueryPlanner
 
 # ── Logging ──────────────────────────────────────────────────────
 logging.basicConfig(
@@ -61,6 +62,7 @@ auth_manager = AuthManager(db=db)
 excel_engine = ExcelEngine()
 initiative = InitiativeEngine(db=db)
 memory = ALECMemory()
+query_planner = QueryPlanner(stoa)
 
 
 @asynccontextmanager
@@ -303,6 +305,21 @@ async def chat_completions(req: ChatRequest):
                 messages.insert(1, memory_msg)
             else:
                 messages.insert(0, memory_msg)
+
+        # ── STOA DATA INJECTION: query real data before LLM responds ──
+        stoa_context = query_planner.get_data_context(user_msg)
+        if stoa_context:
+            stoa_msg = {
+                "role": "system",
+                "content": stoa_context,
+            }
+            # Insert after system + memory messages
+            insert_pos = 1
+            for i, m in enumerate(messages):
+                if m["role"] == "system":
+                    insert_pos = i + 1
+            messages.insert(insert_pos, stoa_msg)
+            logger.info(f"Injected Stoa data context ({len(stoa_context)} chars)")
 
         # ── CURIOSITY: detect teaching moments and store them ──
         lower_msg = user_msg.lower()

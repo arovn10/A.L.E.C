@@ -351,15 +351,16 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
  */
 app.post('/api/feedback', authenticateToken, async (req, res) => {
   try {
-    const { conversationId, rating, feedback } = req.body;
+    const convId = req.body.conversationId || req.body.conversation_id;
+    const { rating, feedback } = req.body;
 
-    if (!conversationId || rating === undefined) {
+    if (!convId || rating === undefined) {
       return res.status(400).json({ error: 'conversationId and rating are required' });
     }
 
     const data = await proxyToNeural('/feedback', {
       method: 'POST',
-      body: { conversation_id: conversationId, rating, feedback: feedback || '' },
+      body: { conversation_id: convId, rating, feedback: feedback || '' },
     });
 
     res.json({ success: true, ...data });
