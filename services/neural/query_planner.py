@@ -164,7 +164,10 @@ class QueryPlanner:
                 return None
 
         if not self.should_query_stoa(user_message):
+            logger.debug(f"Not a Stoa query: {user_message[:50]}")
             return None
+        
+        logger.info(f"Stoa query detected: {user_message[:80]}")
 
         lower = user_message.lower()
         self.query_count += 1

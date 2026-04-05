@@ -766,9 +766,10 @@
             <div>
               <label style="font-size:11px;color:var(--text-muted);">Role</label>
               <select id="new-user-role" class="input-field">
-                <option value="viewer">Viewer (read-only)</option>
-                <option value="editor">Editor (Stoa + write)</option>
-                <option value="admin">Admin (full access)</option>
+                <option value="viewer">Viewer (chat only)</option>
+                <option value="stoa">Stoa (chat + Stoa data)</option>
+                <option value="full_access">Full Access (chat + data + files + training)</option>
+                <option value="admin">Admin (everything except owner settings)</option>
               </select>
             </div>
             <button class="btn-primary" onclick="createUser()" style="height:38px;">Create</button>

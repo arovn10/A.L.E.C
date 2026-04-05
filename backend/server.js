@@ -155,12 +155,15 @@ const authenticateToken = (req, res, next) => {
   try {
     const verified = jwt.verify(token, process.env.JWT_SECRET);
 
-    if (verified.tokenType === 'STOA_ACCESS') {
-      req.user = { ...verified, scope: ['stoa_data'] };
+    if (verified.tokenType === 'OWNER') {
+      req.user = { ...verified, scope: ['owner', 'full_access', 'neural_training', 'smart_home', 'stoa_data', 'user_management', 'connectors'] };
     } else if (verified.tokenType === 'FULL_CAPABILITIES') {
-      req.user = { ...verified, scope: ['full_access', 'neural_training', 'smart_home'] };
+      req.user = { ...verified, scope: ['full_access', 'neural_training', 'smart_home', 'stoa_data'] };
+    } else if (verified.tokenType === 'STOA_ACCESS') {
+      req.user = { ...verified, scope: ['stoa_data', 'chat'] };
     } else {
-      return res.status(403).json({ error: 'Invalid token type' });
+      // Default: chat only
+      req.user = { ...verified, scope: ['chat'] };
     }
 
     next();
@@ -229,7 +232,11 @@ app.post('/api/auth/login', async (req, res) => {
 
     // Python returns {success, user: {id, email, role}, access_level}
     const user = data.user || {};
-    const tokenType = data.access_level === 'FULL_CAPABILITIES' ? 'FULL_CAPABILITIES' : 'STOA_ACCESS';
+    // Map access_level from Python to JWT tokenType
+    let tokenType = 'STOA_ACCESS';
+    if (data.access_level === 'OWNER') tokenType = 'OWNER';
+    else if (data.access_level === 'FULL_CAPABILITIES') tokenType = 'FULL_CAPABILITIES';
+    else if (data.access_level === 'STOA_ACCESS') tokenType = 'STOA_ACCESS';
     const jwtPayload = {
       userId: user.id || email,
       email: user.email || email,

@@ -210,9 +210,12 @@ function showDashboard(userData) {
   // Update sidebar user info
   const email = userData.email || userData.user?.email || '—';
   const rawRole = userData.role || userData.user?.role || userData.access_level || '—';
-  // Owner detection — never expose full email in UI
-  const isOwner = email.toLowerCase().includes('campusrentalsllc') || rawRole === 'admin' || userData.access_level === 'FULL_CAPABILITIES';
-  const displayRole = isOwner ? 'OWNER' : rawRole.toUpperCase();
+  // Access level detection
+  const accessLevel = userData.access_level || userData.tokenType || rawRole;
+  const isOwner = accessLevel === 'OWNER' || email.toLowerCase().includes('campusrentalsllc');
+  const isAdmin = isOwner || accessLevel === 'FULL_CAPABILITIES' || rawRole === 'admin';
+  const isStoa = accessLevel === 'STOA_ACCESS' || rawRole === 'stoa';
+  const displayRole = isOwner ? 'OWNER' : isAdmin ? 'ADMIN' : isStoa ? 'STOA' : 'VIEWER';
   const maskedEmail = email.includes('@') ? email.split('@')[0].slice(0,3) + '***@' + email.split('@')[1] : email;
   document.getElementById('user-email-display').textContent = maskedEmail;
   document.getElementById('user-role-display').textContent = displayRole;
@@ -220,12 +223,29 @@ function showDashboard(userData) {
   // Store owner state
   state.isOwner = isOwner;
 
-  // Non-owners only see Chat and Stoa Data
+  // Panel visibility by access level
+  state.isAdmin = isAdmin;
+  const ownerOnly = ['settings', 'memory'];  // Only owner can see
+  const adminPanels = ['metrics', 'files', 'training', 'skills', 'tasks'];  // Admin+
+  const stoaPanels = ['stoa'];  // Stoa+ can see
+  // Everyone sees: chat
+
   if (!isOwner) {
-    const adminOnlyPanels = ['metrics', 'files', 'training', 'skills', 'tasks', 'memory', 'settings'];
-    adminOnlyPanels.forEach(p => {
-      const navItem = document.querySelector(`.nav-item[data-panel="${p}"]`);
-      if (navItem) navItem.style.display = 'none';
+    ownerOnly.forEach(p => {
+      const el = document.querySelector(`.nav-item[data-panel="${p}"]`);
+      if (el) el.style.display = 'none';
+    });
+  }
+  if (!isAdmin) {
+    adminPanels.forEach(p => {
+      const el = document.querySelector(`.nav-item[data-panel="${p}"]`);
+      if (el) el.style.display = 'none';
+    });
+  }
+  if (!isStoa && !isAdmin && !isOwner) {
+    stoaPanels.forEach(p => {
+      const el = document.querySelector(`.nav-item[data-panel="${p}"]`);
+      if (el) el.style.display = 'none';
     });
   }
 
@@ -1309,9 +1329,16 @@ async function sendMessage() {
   addTypingIndicator();
 
   try {
+    // Build conversation history for continuity
+    if (!state.chatHistory) state.chatHistory = [];
+    state.chatHistory.push({ role: 'user', content: userText });
+    // Keep last 20 messages for context (10 exchanges)
+    if (state.chatHistory.length > 20) state.chatHistory = state.chatHistory.slice(-20);
+
     const body = {
       message: userText,
-      session_id: state.sessionId
+      messages: state.chatHistory,
+      session_id: state.sessionId,
     };
     if (attachments.length) {
       body.file_ids = attachments.map(a => a.fileId);
@@ -1321,6 +1348,10 @@ async function sendMessage() {
 
     removeTypingIndicator();
     const responseText = data.response || data.message || data.text || data.content || '(no response)';
+    // Store assistant response in history for continuity
+    if (!state.chatHistory) state.chatHistory = [];
+    state.chatHistory.push({ role: 'assistant', content: responseText });
+    if (state.chatHistory.length > 20) state.chatHistory = state.chatHistory.slice(-20);
     addAssistantMessage({
       text: responseText,
       latency_ms: data.latency_ms || data.latency,

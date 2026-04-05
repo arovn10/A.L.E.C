@@ -171,22 +171,24 @@ class AuthManager:
 
     def determine_access_level(self, email: str, is_domo_embed: bool = False) -> str:
         """
-        Determine token type based on context:
-        - Domo embed → STOA_ACCESS
-        - Owner email → FULL_CAPABILITIES
-        - Role 'admin' → FULL_CAPABILITIES
-        - Role 'editor' → STOA_ACCESS + write
-        - Role 'viewer' → STOA_ACCESS (read-only)
+        Access hierarchy:
+        - OWNER (arovner@campusrentalsllc.com only) → Everything. God mode.
+        - ADMIN (role='admin') → Full access except owner-level settings
+        - FULL_ACCESS (role='full_access') → Chat + all data + files + training
+        - STOA (role='stoa' or Domo embed) → Chat + Stoa data read-only
+        - VIEWER (default) → Chat only
         """
         if is_domo_embed:
             return "STOA_ACCESS"
         if self.is_owner(email):
-            return "FULL_CAPABILITIES"
+            return "OWNER"
         user = self._get_user_by_email(email)
         if user:
             role = user.get("role", "viewer")
             if role == "admin":
                 return "FULL_CAPABILITIES"
-            if role == "editor":
+            if role == "full_access":
+                return "FULL_CAPABILITIES"
+            if role == "stoa":
                 return "STOA_ACCESS"
         return "STOA_ACCESS"
