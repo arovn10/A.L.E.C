@@ -458,6 +458,7 @@ function onPanelSwitch(panelId) {
     case 'skills':   loadSkills(); break;
     case 'stoa':     loadStoaStatus(); loadStoaTables(); break;
     case 'tasks':    loadTasks(); break;
+      case 'memory':   loadMemoryStats(); loadAllMemories(); break;
     case 'finance':  loadLinkedAccounts(); loadPortfolio(); break;
     case 'settings': loadModelInfo(); buildPersonalitySliders(); break;
   }
