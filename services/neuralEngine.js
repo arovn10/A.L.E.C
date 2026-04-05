@@ -68,7 +68,7 @@ class NeuralEngine {
           model: 'alec-local',
           messages,
           temperature: 0.6 + sassLevel * 0.3, // sass -> higher temperature
-          max_tokens: 1024,
+          max_tokens: 4096,
           session_id: context.sessionId || undefined,
         }),
       });

@@ -98,7 +98,7 @@ async def lifespan(app: FastAPI):
     )
     project_root = Path(__file__).resolve().parent.parent.parent
     model_path = str(project_root / raw_path) if not os.path.isabs(raw_path) else raw_path
-    n_ctx = int(os.getenv("MODEL_CONTEXT_LENGTH", "4096"))
+    n_ctx = int(os.getenv("MODEL_CONTEXT_LENGTH", "16384"))
     n_gpu = int(os.getenv("N_GPU_LAYERS", "-1"))
 
     # 1. Load model
@@ -211,7 +211,7 @@ class ChatRequest(BaseModel):
     model: str = "alec-v2"
     messages: list[ChatMessage]
     temperature: float = 0.7
-    max_tokens: int = 1024
+    max_tokens: int = 4096
     top_p: float = 0.9
     top_k: int = 40
     stream: bool = False

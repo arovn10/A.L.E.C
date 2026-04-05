@@ -43,7 +43,7 @@ class ALECEngine:
     def load_model(
         self,
         model_path: Optional[str] = None,
-        n_ctx: int = 4096,
+        n_ctx: int = 16384,
         n_gpu_layers: int = -1,
         n_threads: Optional[int] = None,
     ):
@@ -91,7 +91,7 @@ class ALECEngine:
         self,
         messages: list[dict],
         temperature: float = 0.7,
-        max_tokens: int = 1024,
+        max_tokens: int = 4096,
         top_p: float = 0.9,
         top_k: int = 40,
         stream: bool = False,

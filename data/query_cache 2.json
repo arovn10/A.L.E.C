@@ -1,0 +1,5 @@
+{
+  "what was the revenue of stoa group in q": "SELECT TOP 15 * FROM [dbo].[stoa_group_knowledge] WHERE [created_at] = (SELECT MAX([created_at]) FROM [dbo].[stoa_group_knowledge]) ORDER BY 1 DESC",
+  "top  properties by occupancy": "SELECT TOP 15 * FROM [leasing].[DailyPropertyMetrics] WHERE [ReportDate] = (SELECT MAX([ReportDate]) FROM [leasing].[DailyPropertyMetrics]) ORDER BY [OccupancyPct] DESC",
+  "whats the occupancy at bluebonnet": "SELECT TOP 15 * FROM [leasing].[DailyPropertyMetrics] WHERE [Property] LIKE '%bluebonnet%' AND [PropertyNorm] LIKE '%bluebonnet%' AND [ReportDate] = (SELECT MAX([ReportDate]) FROM [leasing].[DailyPropertyMetrics]) ORDER BY 1 DESC"
+}

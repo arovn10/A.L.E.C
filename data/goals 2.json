@@ -1,0 +1,56 @@
+[
+  {
+    "id": "accuracy",
+    "title": "Zero Hallucination",
+    "description": "Never make up data. Every fact must come from a real source. Track hallucination rate and drive it to zero.",
+    "metric": "hallucination_rate",
+    "target": 0.0,
+    "current": 0.75,
+    "priority": "critical"
+  },
+  {
+    "id": "knowledge",
+    "title": "Master the Stoa Portfolio",
+    "description": "Know every property, every metric, every trend in the Stoa database. Be able to answer any real estate question instantly.",
+    "metric": "stoa_query_success_rate",
+    "target": 0.95,
+    "current": 0.0,
+    "priority": "high"
+  },
+  {
+    "id": "speed",
+    "title": "Sub-5-Second Responses",
+    "description": "Respond to simple questions in under 5 seconds. Data queries under 3 seconds. Complex tool chains under 30 seconds.",
+    "metric": "avg_latency_ms",
+    "target": 5000,
+    "current": null,
+    "priority": "high"
+  },
+  {
+    "id": "autonomy",
+    "title": "Full Autonomy",
+    "description": "Handle all routine tasks without human intervention. Proactively monitor, report, and fix issues.",
+    "metric": "autonomous_actions_per_day",
+    "target": 10,
+    "current": 0,
+    "priority": "medium"
+  },
+  {
+    "id": "self_improvement",
+    "title": "Continuous Self-Improvement",
+    "description": "Generate training data daily. Retrain weekly. Track improvement in response quality over time.",
+    "metric": "training_batches_generated",
+    "target": 100,
+    "current": 0,
+    "priority": "high"
+  },
+  {
+    "id": "frontier",
+    "title": "Stay at the Frontier",
+    "description": "Monitor new AI models, tools, and techniques weekly. Propose upgrades when something better is available. Goal: match or exceed the capabilities of the best AI assistants.",
+    "metric": "research_reports_sent",
+    "target": 52,
+    "current": 0,
+    "priority": "medium"
+  }
+]

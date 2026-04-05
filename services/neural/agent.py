@@ -33,7 +33,7 @@ from typing import Optional
 
 logger = logging.getLogger("alec.agent")
 
-MAX_AGENT_STEPS = 3  # Max tool calls per message (3 steps = read + edit + commit)
+MAX_AGENT_STEPS = 5  # Max tool calls per message (3 steps = read + edit + commit)
 
 
 class AgentTool:
@@ -1017,7 +1017,7 @@ class ALECAgent:
         for step in range(MAX_AGENT_STEPS):
             # Generate response — use fewer tokens for tool-routing steps
             # First step gets more tokens, subsequent steps are just tool calls
-            step_max_tokens = 512 if step == 0 else 256
+            step_max_tokens = 2048 if step == 0 else 1024
             result = self.engine.generate(
                 messages=agent_messages,
                 temperature=0.3,  # Lower temp for tool routing
