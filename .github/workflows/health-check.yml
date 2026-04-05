@@ -1,0 +1,83 @@
+name: A.L.E.C. Health Check
+
+on:
+  schedule:
+    # Every 15 minutes
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # Manual trigger
+
+jobs:
+  health-check:
+    name: Ping A.L.E.C.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check A.L.E.C. via Vercel proxy
+        id: health
+        run: |
+          HTTP_CODE=$(curl -s -o /tmp/health.json -w "%{http_code}" \
+            "https://a-l-e-c.vercel.app/api/health" \
+            --max-time 15 || echo "000")
+          
+          echo "http_code=$HTTP_CODE" >> $GITHUB_OUTPUT
+          
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ A.L.E.C. is online"
+            cat /tmp/health.json | python3 -m json.tool 2>/dev/null || true
+          else
+            echo "❌ A.L.E.C. is OFFLINE (HTTP $HTTP_CODE)"
+            cat /tmp/health.json 2>/dev/null || true
+          fi
+
+      - name: Send alert email if offline
+        if: steps.health.outputs.http_code != '200'
+        env:
+          GMAIL_USER: ${{ secrets.ALERT_GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.ALERT_GMAIL_APP_PASSWORD }}
+          ALERT_TO: ${{ secrets.ALERT_EMAIL_TO }}
+        run: |
+          python3 << 'PYEOF'
+          import smtplib, os
+          from email.mime.text import MIMEText
+          from datetime import datetime
+
+          user = os.environ.get("GMAIL_USER", "")
+          pwd = os.environ.get("GMAIL_APP_PASSWORD", "")
+          to = os.environ.get("ALERT_TO", user)
+
+          if not user or not pwd:
+              print("⚠️ No Gmail credentials configured — skipping email alert")
+              print("Add ALERT_GMAIL_USER, ALERT_GMAIL_APP_PASSWORD, and ALERT_EMAIL_TO as GitHub secrets")
+              exit(0)
+
+          msg = MIMEText(f"""🚨 A.L.E.C. Health Check Failed
+
+A.L.E.C. is not responding at https://a-l-e-c.vercel.app
+
+Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}
+
+Possible causes:
+1. Mac is asleep or powered off
+2. A.L.E.C. server not running (bash scripts/start-alec.sh)
+3. Tailscale Funnel not active (tailscale funnel --bg 3001)
+4. Network connectivity issue
+
+To fix:
+  ssh into your Mac or open Terminal and run:
+  cd ~/Desktop/App\\ Development/A.l.E.C
+  bash scripts/start-alec.sh
+
+— A.L.E.C. Monitoring System
+          """)
+
+          msg["Subject"] = "🚨 A.L.E.C. is OFFLINE"
+          msg["From"] = user
+          msg["To"] = to
+
+          try:
+              with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+                  server.login(user, pwd)
+                  server.send_message(msg)
+              print(f"📧 Alert email sent to {to}")
+          except Exception as e:
+              print(f"Failed to send email: {e}")
+          PYEOF
