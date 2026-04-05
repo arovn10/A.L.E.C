@@ -30,6 +30,10 @@ from typing import Optional
 logger = logging.getLogger("alec.autonomy")
 
 REPORT_LOG = Path(__file__).resolve().parent.parent.parent / "data" / "autonomy_log.jsonl"
+RESEARCH_SEEN = Path(__file__).resolve().parent.parent.parent / "data" / "research_seen.json"
+
+# Findings older than this are eligible to resurface
+RESEARCH_SEEN_TTL_DAYS = 90
 
 
 class AutonomyEngine:
@@ -58,6 +62,9 @@ class AutonomyEngine:
         self.last_research = 0
         self.last_health_check = 0
         self.pending_suggestions = []
+
+        # Persistent dedup cache for research findings
+        self._seen_findings = self._load_seen_findings()
 
     @property
     def email_configured(self) -> bool:
@@ -296,11 +303,46 @@ class AutonomyEngine:
     #  AI RESEARCH — What's happening in the AI world?
     # ═══════════════════════════════════════════════════════════
 
+    @staticmethod
+    def _load_seen_findings() -> dict:
+        """Load the persistent seen-findings cache from disk.
+        Format: {url: iso-timestamp-when-first-seen, ...}"""
+        try:
+            if RESEARCH_SEEN.exists():
+                data = json.loads(RESEARCH_SEEN.read_text())
+                if isinstance(data, dict):
+                    return data
+        except Exception as e:
+            logger.warning(f"Failed to load research_seen cache: {e}")
+        return {}
+
+    def _save_seen_findings(self) -> None:
+        """Persist the seen-findings cache, pruning entries older than TTL."""
+        now = datetime.now(timezone.utc)
+        pruned = {}
+        for url, ts in self._seen_findings.items():
+            try:
+                seen_dt = datetime.fromisoformat(ts)
+                if (now - seen_dt).days <= RESEARCH_SEEN_TTL_DAYS:
+                    pruned[url] = ts
+            except (ValueError, TypeError):
+                continue
+        self._seen_findings = pruned
+        try:
+            RESEARCH_SEEN.parent.mkdir(parents=True, exist_ok=True)
+            RESEARCH_SEEN.write_text(json.dumps(pruned, indent=2))
+        except Exception as e:
+            logger.warning(f"Failed to save research_seen cache: {e}")
+
     def research_ai_developments(self) -> dict:
         """
         Search the web for the latest AI developments relevant to A.L.E.C.
         Uses Brave Search API. Returns structured findings for the drive
         engine's frontier scanner and the research email report.
+
+        Deduplicates across cycles — URLs seen in the last 90 days are
+        filtered out so the same Qwen/Llama release doesn't resurface
+        every weekly scan.
         """
         api_key = os.getenv("SEARCH_API_KEY", "")
         if not api_key:
@@ -316,8 +358,10 @@ class AutonomyEngine:
             "Qwen Llama Mistral new model release",
         ]
 
+        raw_count = 0
         all_findings = []
-        seen_urls = set()
+        seen_urls = set()  # within-cycle dedup
+        now_iso = datetime.now(timezone.utc).isoformat()
 
         for query in queries:
             try:
@@ -333,9 +377,17 @@ class AutonomyEngine:
                 results = data.get("web", {}).get("results", [])
                 for r in results:
                     link = r.get("url", "")
+                    raw_count += 1
+
+                    # Skip within-cycle duplicates
                     if link in seen_urls:
                         continue
                     seen_urls.add(link)
+
+                    # Skip cross-cycle duplicates (already reported)
+                    if link in self._seen_findings:
+                        continue
+
                     all_findings.append({
                         "title": r.get("title", "Untitled"),
                         "description": (r.get("description", "") or "")[:300],
@@ -343,21 +395,36 @@ class AutonomyEngine:
                         "query": query,
                         "age": r.get("age", ""),
                     })
+
+                    # Mark as seen for future cycles
+                    self._seen_findings[link] = now_iso
+
             except Exception as e:
                 logger.warning(f"Brave search failed for '{query}': {e}")
                 continue
 
-        logger.info(f"AI research complete: {len(all_findings)} findings from {len(queries)} queries")
+        # Persist the updated cache (also prunes expired entries)
+        self._save_seen_findings()
+
+        skipped = raw_count - len(all_findings)
+        logger.info(
+            f"AI research complete: {len(all_findings)} new findings, "
+            f"{skipped} duplicates skipped, {len(queries)} queries"
+        )
         self._log({
             "event": "ai_research",
-            "findings_count": len(all_findings),
+            "new_findings": len(all_findings),
+            "duplicates_skipped": skipped,
             "queries": queries,
+            "cache_size": len(self._seen_findings),
         })
 
         return {
             "findings": all_findings,
             "queries_run": queries,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "duplicates_skipped": skipped,
+            "cache_size": len(self._seen_findings),
+            "timestamp": now_iso,
         }
 
     def send_research_report(self) -> bool:

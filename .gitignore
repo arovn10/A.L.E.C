@@ -41,6 +41,11 @@ __pycache__/
 *.egg-info/
 .eggs/
 
+# ── Runtime state (local, not code) ──────────────────────────────
+data/research_seen.json
+data/autonomy_log.jsonl
+data/drive_log.jsonl
+
 # ── SQLite fallback database ─────────────────────────────────────
 data/alec.db
 data/alec.db-journal
