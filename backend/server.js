@@ -1390,6 +1390,76 @@ app.post('/api/connectors/sync-all', authenticateToken, requireFullCapabilities,
 });
 
 // ════════════════════════════════════════════════════════════════
+//  REMOTE ADMIN — execute shell commands via secret key
+//  Auth: X-Admin-Secret header (NOT JWT — works without login)
+//  Only accessible to whoever has the secret. Keep it safe.
+// ════════════════════════════════════════════════════════════════
+
+const ADMIN_SECRET = process.env.ADMIN_SECRET || '';
+
+app.post('/api/admin/exec', (req, res) => {
+  // Auth: require X-Admin-Secret header
+  const secret = req.headers['x-admin-secret'];
+  if (!ADMIN_SECRET || !secret || secret !== ADMIN_SECRET) {
+    return res.status(403).json({ error: 'Forbidden — invalid or missing admin secret' });
+  }
+
+  const { command, timeout = 120000 } = req.body;
+  if (!command || typeof command !== 'string') {
+    return res.status(400).json({ error: 'Missing "command" in request body' });
+  }
+
+  // Safety: cap timeout at 10 minutes
+  const maxTimeout = Math.min(timeout, 600000);
+
+  console.log(`🔧 Admin exec: ${command.slice(0, 100)}${command.length > 100 ? '...' : ''}`);
+
+  const { exec } = require('child_process');
+  const projectDir = path.resolve(__dirname, '..');
+
+  exec(command, {
+    cwd: projectDir,
+    timeout: maxTimeout,
+    maxBuffer: 1024 * 1024 * 10,  // 10 MB output buffer
+    shell: '/bin/bash',
+    env: { ...process.env, HOME: os.homedir() },
+  }, (error, stdout, stderr) => {
+    const exitCode = error ? error.code || 1 : 0;
+    res.json({
+      success: exitCode === 0,
+      exit_code: exitCode,
+      stdout: stdout || '',
+      stderr: stderr || '',
+      command: command.slice(0, 200),
+    });
+  });
+});
+
+// Convenience: GET version for quick health checks with the secret
+app.get('/api/admin/status', (req, res) => {
+  const secret = req.headers['x-admin-secret'];
+  if (!ADMIN_SECRET || !secret || secret !== ADMIN_SECRET) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  const { execSync } = require('child_process');
+  const projectDir = path.resolve(__dirname, '..');
+  let gitHead = 'unknown';
+  try { gitHead = execSync('git rev-parse --short HEAD', { cwd: projectDir }).toString().trim(); } catch {}
+  let uptime = process.uptime();
+  res.json({
+    status: 'online',
+    git_commit: gitHead,
+    node_uptime_seconds: Math.round(uptime),
+    neural_url: NEURAL_URL,
+    pid: process.pid,
+    platform: os.platform(),
+    arch: os.arch(),
+    total_memory_gb: Math.round(os.totalmem() / 1073741824),
+    free_memory_gb: Math.round(os.freemem() / 1073741824),
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
 //  START SERVER
 // ════════════════════════════════════════════════════════════════
 
