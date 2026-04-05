@@ -753,6 +753,28 @@ def skills_disable(req: SkillConfigRequest):
 #  CONNECTORS (iMessage, Gmail)
 # ══════════════════════════════════════════════════════════════════
 
+@app.get("/stoa/debug")
+def stoa_debug():
+    """Debug endpoint: show what tables exist and sample data."""
+    tables = stoa.discover_tables() if stoa.connected else []
+    # Try to find property-related tables
+    property_tables = [t for t in tables if any(kw in t.lower() for kw in ['propert', 'unit', 'building', 'asset', 'occupan', 'lease'])]
+    samples = {}
+    for t in property_tables[:5]:
+        try:
+            rows = stoa.query(f"SELECT TOP 3 * FROM {t}")
+            samples[t] = rows
+        except Exception as e:
+            samples[t] = {"error": str(e)}
+    return {
+        "connected": stoa.connected,
+        "total_tables": len(tables),
+        "all_tables": tables,
+        "property_related_tables": property_tables,
+        "samples": samples,
+        "query_planner_stats": query_planner.get_stats(),
+    }
+
 @app.get("/connectors/status")
 def connectors_status():
     return connectors.get_all_status()

@@ -1251,6 +1251,11 @@ app.post('/api/skills/configure', authenticateToken, requireFullCapabilities, as
 //  CONNECTORS (iMessage, Gmail)
 // ════════════════════════════════════════════════════════════════
 
+app.get('/api/stoa/debug', authenticateToken, requireFullCapabilities, async (req, res) => {
+  const data = await proxyToNeural('/stoa/debug');
+  res.json(data);
+});
+
 app.get('/api/connectors/status', authenticateToken, requireFullCapabilities, async (req, res) => {
   const data = await proxyToNeural('/connectors/status');
   res.json(data);
