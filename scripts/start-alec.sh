@@ -68,7 +68,7 @@ cleanup_stale
 # ── Start Tailscale Funnel ──────────────────────────────────────
 
 if command -v tailscale &> /dev/null; then
-    tailscale funnel $NODE_PORT &>/dev/null &
+    tailscale funnel --bg $NODE_PORT &>/dev/null || tailscale funnel $NODE_PORT &>/dev/null &
     echo "🌐 Tailscale Funnel active on port $NODE_PORT"
 fi
 
