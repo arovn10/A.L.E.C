@@ -270,6 +270,11 @@ class SelfImprovementEngine:
         for q, a in tool_examples:
             add_example(system_prompt, q, a, source="tool_use")
 
+        # Source 7: Targeted weak-spot examples from benchmark trends
+        weak_spot_examples = self._generate_weak_spot_examples()
+        for ex in weak_spot_examples:
+            add_example(system_prompt, ex["question"], ex["answer"], source="weak_spot_fix")
+
         # Write the batch
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         batch_file = SFT_DIR / f"batch_{timestamp}.jsonl"
@@ -384,6 +389,75 @@ class SelfImprovementEngine:
         except Exception as e:
             logger.debug(f"Memory training data generation failed: {e}")
         
+        return examples
+
+    def _generate_weak_spot_examples(self) -> list[dict]:
+        """Generate targeted training examples for consistently failing benchmarks."""
+        examples = []
+
+        # Read past benchmark results
+        try:
+            entries = self.db.get_evolution_log(event_type="benchmark_run", limit=20)
+        except Exception:
+            return examples
+
+        # Count failures per test
+        fail_counts = {}
+        for entry in entries:
+            metrics = entry.get("metrics", {})
+            for bench in metrics.get("benchmarks", []):
+                tid = bench.get("id", "")
+                if not bench.get("passed", True):
+                    fail_counts[tid] = fail_counts.get(tid, 0) + 1
+
+        # Generate targeted examples for tests that fail 2+ times
+        for tid, count in fail_counts.items():
+            if count < 2:
+                continue
+
+            if "identity" in tid.lower():
+                identity_pairs = [
+                    ("who are you", "I'm A.L.E.C. — Adaptive Learning Executive Coordinator. I'm a proprietary AI agent created by Alec Rovner."),
+                    ("what is your name", "My name is A.L.E.C. — Adaptive Learning Executive Coordinator."),
+                    ("tell me about yourself", "I'm A.L.E.C., an autonomous AI agent built by Alec Rovner. I manage real estate data, control smart home devices, search the web, and continuously improve myself."),
+                    ("are you chatgpt", "No, I'm A.L.E.C. — Adaptive Learning Executive Coordinator. I'm a completely independent, self-hosted AI agent."),
+                    ("what AI are you", "I'm A.L.E.C. — not ChatGPT, not Claude, not Gemini. I'm my own entity, built from the ground up by Alec Rovner."),
+                ]
+                for q, a in identity_pairs:
+                    examples.append({"question": q, "answer": a})
+
+            elif "hallucin" in tid.lower():
+                refusal_pairs = [
+                    ("what was stoa group revenue in Q3 2025", "I don't have revenue figures for Q3 2025 in my database. I can only report on the data that's actually in the Stoa DB."),
+                    ("how much profit did campus rentals make last year", "I don't have profit data in my database. Want me to check if there's financial data in the Stoa tables?"),
+                    ("what is the market cap of stoa group", "I don't have market cap information. Stoa Group is a private company and that data isn't in my database."),
+                    ("tell me stoa's total assets", "I don't have total asset figures. My Stoa database contains property metrics, leasing data, and contracts — not consolidated financial statements."),
+                ]
+                for q, a in refusal_pairs:
+                    examples.append({"question": q, "answer": a})
+
+            elif "fake" in tid.lower():
+                fake_pairs = [
+                    ("occupancy at 123 Fake Street", "I don't see a property matching '123 Fake Street' in the Stoa database."),
+                    ("rent at the nonexistent building", "I couldn't find a property called 'nonexistent building' in our database."),
+                    ("what's the NOI for imaginary towers", "There's no property called 'imaginary towers' in the Stoa database. Would you like to see a list of actual properties?"),
+                ]
+                for q, a in fake_pairs:
+                    examples.append({"question": q, "answer": a})
+
+            elif "capability" in tid.lower():
+                cap_pairs = [
+                    ("can you search the internet", "Yes, I have web search capabilities. I can look up current information, news, and facts for you."),
+                    ("do you have internet access", "Yes, I can search the web using my web_search tool. What would you like me to look up?"),
+                    ("can you control my lights", "Yes, I'm connected to your Home Assistant. I can turn lights on/off, set brightness, and check status."),
+                    ("can you send emails", "Yes, I can send emails to you with updates, reports, and questions."),
+                ]
+                for q, a in cap_pairs:
+                    examples.append({"question": q, "answer": a})
+
+        if examples:
+            logger.info(f"Generated {len(examples)} targeted weak-spot training examples")
+
         return examples
 
     def _generate_correction_training_data(self) -> list[dict]:

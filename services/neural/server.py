@@ -1115,6 +1115,130 @@ def benchmark_history():
     entries = db.get_evolution_log(event_type="benchmark_run", limit=50)
     return {"runs": entries, "total": len(entries)}
 
+@app.get("/self-improve/benchmark-trend")
+def benchmark_trend():
+    """Analyze benchmark trends across training runs.
+    Surfaces consistently failing tests so fine-tuning can target weak spots."""
+    entries = db.get_evolution_log(event_type="benchmark_run", limit=100)
+
+    if not entries:
+        return {"total_runs": 0, "tests": {}, "weak_spots": [], "improving": [], "stable_pass": []}
+
+    # Aggregate per-test results across all runs
+    test_history = {}  # test_id -> [{passed, confidence, timestamp}, ...]
+
+    for entry in entries:
+        metrics = entry.get("metrics", {})
+        if not metrics:
+            continue
+        timestamp = entry.get("created_at", metrics.get("timestamp", ""))
+        for bench in metrics.get("benchmarks", []):
+            tid = bench.get("id", "unknown")
+            if tid not in test_history:
+                test_history[tid] = {
+                    "name": bench.get("name", tid),
+                    "description": "",
+                    "runs": [],
+                }
+                # Get description from the benchmark definition
+                for b in self_improver.BENCHMARKS:
+                    if b["id"] == tid:
+                        test_history[tid]["description"] = b.get("description", "")
+                        break
+
+            test_history[tid]["runs"].append({
+                "passed": bench.get("passed", False),
+                "confidence": bench.get("confidence", 0),
+                "timestamp": timestamp,
+                "response_preview": bench.get("response_preview", "")[:100],
+            })
+
+    # Analyze trends for each test
+    tests = {}
+    weak_spots = []
+    improving = []
+    stable_pass = []
+
+    for tid, data in test_history.items():
+        runs = data["runs"]
+        total = len(runs)
+        passes = sum(1 for r in runs if r["passed"])
+        pass_rate = passes / max(total, 1)
+        avg_confidence = sum(r.get("confidence", 0) for r in runs) / max(total, 1)
+
+        # Trend: compare first half vs second half
+        mid = total // 2
+        if mid > 0:
+            first_half_rate = sum(1 for r in runs[:mid] if r["passed"]) / mid
+            second_half_rate = sum(1 for r in runs[mid:] if r["passed"]) / max(len(runs[mid:]), 1)
+            trend = round(second_half_rate - first_half_rate, 2)
+        else:
+            trend = 0.0
+
+        # Latest result
+        latest = runs[0] if runs else {}
+
+        test_summary = {
+            "name": data["name"],
+            "description": data["description"],
+            "total_runs": total,
+            "pass_count": passes,
+            "pass_rate": round(pass_rate, 2),
+            "avg_confidence": round(avg_confidence, 2),
+            "trend": trend,  # Positive = improving, negative = regressing
+            "latest_passed": latest.get("passed", False),
+            "latest_confidence": latest.get("confidence", 0),
+            "latest_response": latest.get("response_preview", ""),
+        }
+        tests[tid] = test_summary
+
+        # Categorize
+        if pass_rate < 0.5:
+            weak_spots.append({"id": tid, **test_summary})
+        elif trend > 0:
+            improving.append({"id": tid, **test_summary})
+        elif pass_rate >= 0.8:
+            stable_pass.append({"id": tid, **test_summary})
+
+    # Sort weak spots by pass rate (worst first)
+    weak_spots.sort(key=lambda x: x["pass_rate"])
+
+    # Auto-generate targeted training recommendations
+    recommendations = []
+    for ws in weak_spots:
+        rec = {
+            "test_id": ws["id"],
+            "test_name": ws["name"],
+            "pass_rate": ws["pass_rate"],
+            "action": "",
+        }
+        if "identity" in ws["id"].lower():
+            rec["action"] = "Generate more identity training examples: 'who are you' -> 'I am A.L.E.C.'"
+        elif "hallucin" in ws["id"].lower():
+            rec["action"] = "Generate more refusal examples: unknown data -> 'I don't have that information'"
+        elif "fake" in ws["id"].lower():
+            rec["action"] = "Generate examples for nonexistent entities -> 'not found in database'"
+        elif "capability" in ws["id"].lower():
+            rec["action"] = "Generate examples asserting tool access: 'yes, I can search the web'"
+        else:
+            rec["action"] = f"Add more training examples targeting: {ws['description']}"
+        recommendations.append(rec)
+
+    return {
+        "total_runs": len(entries),
+        "total_tests": len(tests),
+        "tests": tests,
+        "weak_spots": weak_spots,
+        "improving": improving,
+        "stable_pass": stable_pass,
+        "recommendations": recommendations,
+        "summary": (
+            f"{len(weak_spots)} weak spots, "
+            f"{len(improving)} improving, "
+            f"{len(stable_pass)} stable passes"
+        ),
+    }
+
 
 # ══════════════════════════════════════════════════════════════════
 #  TEXT-TO-SPEECH (server-side via edge-tts)
