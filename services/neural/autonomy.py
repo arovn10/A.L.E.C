@@ -292,7 +292,7 @@ class AutonomyEngine:
         return self.send_email(subject, html, html=True)
 
 
-        def send_research_report(self) -> bool:
+    def send_research_report(self) -> bool:
         """Research AI developments and email the findings."""
         research = self.research_ai_developments()
         if not research.get("findings"):
