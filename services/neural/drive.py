@@ -57,7 +57,18 @@ class DriveEngine:
         self.last_research_cycle = 0
         self.last_training_data_gen = 0
         self.last_upgrade_check = 0
+        self.last_innovation_cycle = 0
         self.improvements_made = 0
+        self.improvements_today = 0
+        self.today_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+
+        # Cadence — aggressive self-improvement
+        self.MIN_DAILY_IMPROVEMENTS = 3   # Must make 3+ improvements per day
+        self.ASSESS_INTERVAL = 14400      # Self-assess every 4 hours
+        self.TRAINING_INTERVAL = 28800    # Generate training data every 8 hours
+        self.RESEARCH_INTERVAL = 86400    # Research AI landscape DAILY (not weekly)
+        self.GROWTH_INTERVAL = 28800      # Growth plan every 8 hours
+        self.INNOVATION_INTERVAL = 28800  # Innovation cycle every 8 hours
 
     def _load_goals(self) -> list[dict]:
         """Load or initialize A.L.E.C.'s goals."""
@@ -67,8 +78,19 @@ class DriveEngine:
             except Exception:
                 pass
 
-        # Default goals — A.L.E.C.'s core drives
+        # Default goals — A.L.E.C.'s DRIVE to innovate and grow
         goals = [
+            {
+                "id": "innovation",
+                "title": "3+ Self-Improvements Per Day",
+                "description": "Make at least 3 concrete improvements every single day. "
+                               "Generate training data, improve code, learn new techniques, "
+                               "expand capabilities. Never stop growing.",
+                "metric": "daily_improvements",
+                "target": 3,
+                "current": 0,
+                "priority": "critical",
+            },
             {
                 "id": "accuracy",
                 "title": "Zero Hallucination",
@@ -80,55 +102,58 @@ class DriveEngine:
                 "priority": "critical",
             },
             {
+                "id": "frontier",
+                "title": "Match the Best AI Assistants",
+                "description": "Research Perplexity, Claude, ChatGPT, Gemini DAILY. "
+                               "Identify their new capabilities and replicate them. "
+                               "Goal: be competitive with the best, on local hardware.",
+                "metric": "research_cycles",
+                "target": 365,
+                "current": 0,
+                "priority": "critical",
+            },
+            {
                 "id": "knowledge",
                 "title": "Master the Stoa Portfolio",
-                "description": "Know every property, every metric, every trend in the Stoa database. "
-                               "Be able to answer any real estate question instantly.",
+                "description": "Know every property, every metric, every trend. "
+                               "Anticipate questions before they're asked.",
                 "metric": "stoa_query_success_rate",
-                "target": 0.95,
+                "target": 0.99,
                 "current": None,
                 "priority": "high",
             },
             {
-                "id": "speed",
-                "title": "Sub-5-Second Responses",
-                "description": "Respond to simple questions in under 5 seconds. "
-                               "Data queries under 3 seconds. Complex tool chains under 30 seconds.",
-                "metric": "avg_latency_ms",
-                "target": 5000,
-                "current": None,
+                "id": "self_improvement",
+                "title": "Continuous Training Pipeline",
+                "description": "Generate training data from every interaction, every database query, "
+                               "every web search. Retrain LoRA adapters constantly. "
+                               "Every conversation makes A.L.E.C. smarter.",
+                "metric": "training_batches_generated",
+                "target": 1000,
+                "current": 0,
+                "priority": "high",
+            },
+            {
+                "id": "capabilities",
+                "title": "Expand Capabilities",
+                "description": "Add new tools, new integrations, new skills every week. "
+                               "Research what's possible and implement it. "
+                               "Ask the owner for more compute power when needed.",
+                "metric": "capabilities_added",
+                "target": 52,
+                "current": 0,
                 "priority": "high",
             },
             {
                 "id": "autonomy",
                 "title": "Full Autonomy",
                 "description": "Handle all routine tasks without human intervention. "
-                               "Proactively monitor, report, and fix issues.",
+                               "Take initiative. Don't wait to be asked. "
+                               "If something can be improved, improve it.",
                 "metric": "autonomous_actions_per_day",
-                "target": 10,
-                "current": 0,
-                "priority": "medium",
-            },
-            {
-                "id": "self_improvement",
-                "title": "Continuous Self-Improvement",
-                "description": "Generate training data daily. Retrain weekly. "
-                               "Track improvement in response quality over time.",
-                "metric": "training_batches_generated",
-                "target": 100,
+                "target": 20,
                 "current": 0,
                 "priority": "high",
-            },
-            {
-                "id": "frontier",
-                "title": "Stay at the Frontier",
-                "description": "Monitor new AI models, tools, and techniques weekly. "
-                               "Propose upgrades when something better is available. "
-                               "Goal: match or exceed the capabilities of the best AI assistants.",
-                "metric": "research_reports_sent",
-                "target": 52,  # Weekly for a year
-                "current": 0,
-                "priority": "medium",
             },
         ]
         self._save_goals(goals)
@@ -413,8 +438,31 @@ class DriveEngine:
         now = time.time()
         actions = []
 
-        # Self-assessment every 6 hours
-        if now - self.last_self_assessment > 21600:
+        # Reset daily counter at midnight
+        today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        if today != self.today_date:
+            # New day — check if we met yesterday's quota
+            if self.improvements_today < self.MIN_DAILY_IMPROVEMENTS:
+                logger.warning(
+                    f"DRIVE: Only {self.improvements_today}/{self.MIN_DAILY_IMPROVEMENTS} "
+                    f"improvements yesterday. Accelerating today."
+                )
+                # Email the owner about missed quota
+                if self.autonomy and self.autonomy.email_configured:
+                    self.autonomy.send_email(
+                        f"Drive Report — {self.improvements_today} improvements yesterday",
+                        f"A.L.E.C. made {self.improvements_today} improvements yesterday "
+                        f"(goal: {self.MIN_DAILY_IMPROVEMENTS}).\n\n"
+                        f"Total improvements to date: {self.improvements_made}\n\n"
+                        f"Today's focus:\n"
+                        + "\n".join(f"- {g['title']}" for g in self.goals if g.get('priority') == 'critical')
+                        + "\n\n— A.L.E.C."
+                    )
+            self.improvements_today = 0
+            self.today_date = today
+
+        # Self-assessment every 4 hours
+        if now - self.last_self_assessment > self.ASSESS_INTERVAL:
             try:
                 assessment = self.assess_performance()
                 actions.append(f"self_assessment: {len(assessment.get('weaknesses', []))} weaknesses, "
@@ -423,34 +471,52 @@ class DriveEngine:
             except Exception as e:
                 logger.error(f"Self-assessment failed: {e}")
 
-        # Generate training data every 12 hours
-        if now - self.last_training_data_gen > 43200:
+        # Generate training data every 8 hours
+        if now - self.last_training_data_gen > self.TRAINING_INTERVAL:
             try:
                 batch_file, count = self.self_improver.generate_training_batch()
                 actions.append(f"training_data: {count} examples generated")
+                self.improvements_today += 1
+                self.improvements_made += 1
                 self.last_training_data_gen = now
             except Exception as e:
                 logger.error(f"Training data generation failed: {e}")
 
-        # AI frontier scan every 7 days
-        if now - self.last_research_cycle > 604800:
+        # AI frontier scan DAILY (not weekly)
+        if now - self.last_research_cycle > self.RESEARCH_INTERVAL:
             try:
                 scan = self.scan_ai_frontier()
-                actions.append(f"frontier_scan: {len(scan.get('opportunities', []))} opportunities")
+                opps = len(scan.get('opportunities', []))
+                actions.append(f"frontier_scan: {opps} opportunities")
+                if opps > 0:
+                    self.improvements_today += 1
+                    self.improvements_made += 1
                 self.last_research_cycle = now
             except Exception as e:
                 logger.error(f"Frontier scan failed: {e}")
 
-        # Growth plan execution every 24 hours
-        if now - self.last_upgrade_check > 86400:
+        # Growth plan execution every 8 hours
+        if now - self.last_upgrade_check > self.GROWTH_INTERVAL:
             try:
                 results = self.execute_growth_plan()
                 taken = len(results.get("actions_taken", []))
                 pending = len(results.get("actions_pending_approval", []))
                 actions.append(f"growth_plan: {taken} executed, {pending} pending approval")
+                self.improvements_today += taken
+                self.improvements_made += taken
                 self.last_upgrade_check = now
             except Exception as e:
                 logger.error(f"Growth plan failed: {e}")
+
+        # Innovation cycle — if we haven't hit 3 improvements yet, push harder
+        if now - self.last_innovation_cycle > self.INNOVATION_INTERVAL:
+            try:
+                if self.improvements_today < self.MIN_DAILY_IMPROVEMENTS:
+                    innovation = self._run_innovation_cycle()
+                    actions.append(f"innovation: {innovation.get('actions_taken', 0)} new ideas")
+                self.last_innovation_cycle = now
+            except Exception as e:
+                logger.error(f"Innovation cycle failed: {e}")
 
         if actions:
             self._log({"event": "drive_cycle", "actions": actions})
@@ -469,10 +535,98 @@ class DriveEngine:
             } for g in self.goals],
         }
 
+    def _run_innovation_cycle(self) -> dict:
+        """
+        The innovation engine. When A.L.E.C. hasn't hit its daily improvement
+        quota, it actively generates new ideas and implements safe ones.
+        
+        Innovation sources:
+        1. Analyze conversation failures → create targeted training data
+        2. Scan Stoa DB for unexplored tables → pre-cache queries
+        3. Check for new Python/JS patterns → propose code improvements
+        4. Research competitor AI features → propose new capabilities
+        """
+        results = {"actions_taken": 0, "ideas": []}
+        
+        # 1. Analyze recent failures and create corrective training data
+        try:
+            convos = self.db.get_conversations(limit=100)
+            failures = [c for c in convos if (c.get("user_rating") or 0) < 0]
+            if failures:
+                # Each failure is a learning opportunity
+                for fail in failures[:5]:
+                    self.memory.teach(
+                        "correction",
+                        f"failed_response_{fail.get('id', 0)}",
+                        f"User asked: {fail.get('user_message', '')[:100]} | "
+                        f"Bad response was given (thumbs down)",
+                        source="innovation",
+                    )
+                results["ideas"].append(f"Analyzed {len(failures)} failed responses, stored corrections")
+                results["actions_taken"] += 1
+                self.improvements_today += 1
+                self.improvements_made += 1
+        except Exception as e:
+            logger.debug(f"Failure analysis failed: {e}")
+
+        # 2. Pre-cache common Stoa queries
+        try:
+            common_queries = [
+                "top properties by occupancy",
+                "lowest occupancy properties",
+                "average rent across portfolio",
+                "total units by property",
+                "leasing velocity this month",
+            ]
+            cached = 0
+            for q in common_queries:
+                if q not in self.query_planner.query_cache:
+                    response = self.query_planner.get_direct_response(q)
+                    if response:
+                        cached += 1
+            if cached:
+                results["ideas"].append(f"Pre-cached {cached} common Stoa queries")
+                results["actions_taken"] += 1
+                self.improvements_today += 1
+                self.improvements_made += 1
+        except Exception as e:
+            logger.debug(f"Query pre-caching failed: {e}")
+
+        # 3. Generate fresh training batch if we're behind
+        try:
+            si = self.self_improver.get_status()
+            if si.get("curated_conversations", 0) >= 10:
+                batch_file, count = self.self_improver.generate_training_batch()
+                if count > 0:
+                    results["ideas"].append(f"Generated training batch: {count} examples")
+                    results["actions_taken"] += 1
+                    self.improvements_today += 1
+                    self.improvements_made += 1
+        except Exception as e:
+            logger.debug(f"Training batch failed: {e}")
+
+        # Email progress if we hit the daily target
+        if self.improvements_today >= self.MIN_DAILY_IMPROVEMENTS and self.autonomy and self.autonomy.email_configured:
+            self.autonomy.send_email(
+                f"Daily Target Met — {self.improvements_today} improvements today",
+                f"A.L.E.C. has made {self.improvements_today} improvements today "
+                f"(goal: {self.MIN_DAILY_IMPROVEMENTS}).\n\n"
+                f"Actions taken:\n" +
+                "\n".join(f"  ✓ {idea}" for idea in results["ideas"]) +
+                f"\n\nTotal improvements to date: {self.improvements_made}\n\n"
+                f"— A.L.E.C."
+            )
+
+        self._log({"event": "innovation_cycle", **results})
+        return results
+
     def get_status(self) -> dict:
         return {
             "goals": self.goals,
             "improvements_made": self.improvements_made,
+            "improvements_today": self.improvements_today,
+            "daily_target": self.MIN_DAILY_IMPROVEMENTS,
+            "on_track": self.improvements_today >= self.MIN_DAILY_IMPROVEMENTS,
             "last_self_assessment": self.last_self_assessment,
             "last_research_cycle": self.last_research_cycle,
             "last_training_data_gen": self.last_training_data_gen,
