@@ -47,6 +47,7 @@ from query_planner import QueryPlanner
 from agent import ALECAgent
 from self_improve import SelfImprovementEngine
 from autonomy import AutonomyEngine
+from drive import DriveEngine
 from connectors import ConnectorManager
 from encryption import get_encryptor
 from skills_registry import SkillsRegistry
@@ -72,6 +73,7 @@ query_planner = QueryPlanner(stoa)
 agent = None  # Initialized after engine loads
 self_improver = None  # Initialized after engine loads
 autonomy = None       # Initialized after self_improver
+drive = None          # Initialized after autonomy
 connectors = ConnectorManager()
 skills = SkillsRegistry()
 
@@ -119,6 +121,14 @@ async def lifespan(app: FastAPI):
         memory=memory, self_improver=self_improver, stoa=stoa,
     )
     logger.info(f"Autonomy engine initialized (email: {autonomy.email_configured})")
+
+    # 1e. Initialize drive engine (the will to grow)
+    global drive
+    drive = DriveEngine(
+        db=db, engine=engine, autonomy=autonomy,
+        self_improver=self_improver, query_planner=query_planner, memory=memory,
+    )
+    logger.info(f"Drive engine initialized with {len(drive.goals)} goals")
 
     # Send startup notification if email is configured
     if autonomy.email_configured:
@@ -1078,6 +1088,55 @@ def autonomy_initiative():
     task_id = task_runner.run_task(
         "Autonomy Cycle",
         lambda task_info=None: autonomy.take_initiative(),
+    )
+    return {"success": True, "task_id": task_id}
+
+
+# ══════════════════════════════════════════════════════════════════
+#  DRIVE (the will to grow)
+# ══════════════════════════════════════════════════════════════════
+
+@app.get("/drive/status")
+def drive_status():
+    if not drive:
+        return {"enabled": False}
+    return drive.get_status()
+
+@app.get("/drive/goals")
+def drive_goals():
+    if not drive:
+        return {"goals": []}
+    return {"goals": drive.goals}
+
+@app.post("/drive/assess")
+def drive_assess():
+    """Run a self-assessment."""
+    if not drive:
+        raise HTTPException(status_code=503, detail="Drive engine not initialized")
+    return drive.assess_performance()
+
+@app.post("/drive/grow")
+def drive_grow():
+    """Execute the growth plan."""
+    if not drive:
+        raise HTTPException(status_code=503, detail="Drive engine not initialized")
+    return drive.execute_growth_plan()
+
+@app.post("/drive/frontier-scan")
+def drive_frontier():
+    """Scan the AI frontier for improvement opportunities."""
+    if not drive:
+        raise HTTPException(status_code=503, detail="Drive engine not initialized")
+    return drive.scan_ai_frontier()
+
+@app.post("/drive/cycle")
+def drive_cycle():
+    """Run one full drive cycle."""
+    if not drive:
+        raise HTTPException(status_code=503, detail="Drive engine not initialized")
+    task_id = task_runner.run_task(
+        "Drive Cycle",
+        lambda task_info=None: drive.run_drive_cycle(),
     )
     return {"success": True, "task_id": task_id}
 

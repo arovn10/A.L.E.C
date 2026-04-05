@@ -162,14 +162,16 @@ class BackgroundTaskRunner:
                     logger.debug(f"Self-improvement check failed: {e}")
                 last_training_check = now
 
-            # Autonomy cycle (proactive emails, research, health monitoring)
-            # Runs on its own internal timers (daily report, weekly research, 6h health)
+            # Autonomy + Drive cycles (proactive emails, research, self-improvement)
+            # Each engine has its own internal timers gating actual actions
             try:
                 import server as srv
                 if hasattr(srv, 'autonomy') and srv.autonomy:
                     srv.autonomy.take_initiative()
+                if hasattr(srv, 'drive') and srv.drive:
+                    srv.drive.run_drive_cycle()
             except Exception as e:
-                logger.debug(f"Autonomy cycle failed: {e}")
+                logger.debug(f"Autonomy/drive cycle failed: {e}")
 
             time.sleep(30)  # Check every 30 seconds
 
