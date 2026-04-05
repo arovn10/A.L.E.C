@@ -119,13 +119,33 @@ except Exception as e:
                 fi
             fi
             
-            echo "$(date): ✅ Code updated to $(git rev-parse --short HEAD) — restarting..."
+            echo "$(date): ✅ Code updated to $(git rev-parse --short HEAD)"
             
-            # Force restart with new code
-            kill $(lsof -ti:3001) 2>/dev/null
-            kill $(lsof -ti:8000) 2>/dev/null
-            sleep 2
-            # The health check below will detect it's down and restart
+            # Signal the process manager to gracefully reload (if running via start-alec.sh)
+            PID_FILE="/tmp/alec/alec.pids"
+            if [ -f "$PID_FILE" ]; then
+                # start-alec.sh is the parent — find it and send SIGUSR1
+                ALEC_PIDS=$(cat "$PID_FILE")
+                NEURAL_PID=$(echo $ALEC_PIDS | awk '{print $1}')
+                NODE_PID=$(echo $ALEC_PIDS | awk '{print $2}')
+                
+                # uvicorn --reload handles Python file changes automatically,
+                # but git pull changes need an explicit signal for a clean restart
+                # of both processes (new deps, new env vars, etc.)
+                echo "$(date): 🔄 Signaling process manager to reload..."
+                # Kill and let the process manager's respawn loop handle restart
+                kill $NEURAL_PID 2>/dev/null || true
+                kill $NODE_PID 2>/dev/null || true
+                sleep 3
+                # The process manager loop in start-alec.sh detects exits and restarts
+            else
+                # Legacy mode: no process manager, brute-force kill
+                echo "$(date): 🔄 No process manager — force restarting..."
+                kill $(lsof -ti:3001) 2>/dev/null || true
+                kill $(lsof -ti:8000) 2>/dev/null || true
+                sleep 2
+                # The health check below will detect it's down and restart
+            fi
         fi
     fi
 
@@ -135,8 +155,8 @@ except Exception as e:
         RESTART_COUNT=$((RESTART_COUNT + 1))
 
         # Kill any zombie processes
-        kill $(lsof -ti:3001) 2>/dev/null
-        kill $(lsof -ti:8000) 2>/dev/null
+        kill $(lsof -ti:3001) 2>/dev/null || true
+        kill $(lsof -ti:8000) 2>/dev/null || true
         sleep 2
 
         # Load .env
@@ -146,21 +166,50 @@ except Exception as e:
             set +a
         fi
 
+        NEURAL_PORT=${NEURAL_PORT:-8000}
+        LOG_DIR="/tmp/alec"
+        mkdir -p "$LOG_DIR"
+
         # Activate venv and start
         VENV_DIR="$PROJECT_DIR/services/neural/.venv"
         if [ -d "$VENV_DIR" ]; then
             source "$VENV_DIR/bin/activate"
         fi
 
-        # Start Python neural engine
+        # Start Python neural engine (with auto-reload)
         cd services/neural
-        nohup python server.py > /tmp/alec-neural.log 2>&1 &
+        nohup uvicorn server:app \
+            --host 0.0.0.0 \
+            --port "$NEURAL_PORT" \
+            --reload \
+            --reload-dir "." \
+            --reload-include "*.py" \
+            --log-level info \
+            > "$LOG_DIR/neural.log" 2>&1 &
+        NEURAL_PID=$!
         cd "$PROJECT_DIR"
-        sleep 5
+        sleep 8
 
-        # Start Node.js backend
-        nohup node backend/server.js > /tmp/alec-node.log 2>&1 &
+        # Start Node.js backend (with auto-reload if nodemon available)
+        if npx --no-install nodemon --version &>/dev/null 2>&1; then
+            nohup npx nodemon \
+                --watch backend/ \
+                --watch frontend/ \
+                --ext js,html,css \
+                --ignore 'node_modules/' \
+                --ignore 'data/' \
+                --delay 1 \
+                backend/server.js \
+                > "$LOG_DIR/node.log" 2>&1 &
+            NODE_PID=$!
+        else
+            nohup node backend/server.js > "$LOG_DIR/node.log" 2>&1 &
+            NODE_PID=$!
+        fi
         sleep 3
+
+        # Save PIDs for the process manager
+        echo "$NEURAL_PID $NODE_PID" > "$LOG_DIR/alec.pids"
 
         # Start Tailscale Funnel
         if command -v tailscale &> /dev/null; then
