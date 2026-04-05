@@ -261,12 +261,9 @@ function showDashboard(userData) {
   startPolling();
   switchPanel('chat');
 
-  // Auto-initialize voice activation for owner ("Hey ALEC")
-  if (isOwner) {
-    setTimeout(() => {
-      initVoiceActivation();
-      console.log('🎤 Voice activation ready — say "Hey ALEC" to activate');
-    }, 3000);
+  // Restore voice state from previous session (persisted per account)
+  if (isOwner || isAdmin) {
+    setTimeout(() => restoreVoiceState(), 2000);
   }
 }
 
@@ -1421,6 +1418,12 @@ async function sendMessage() {
       conversation_id: data.conversationId || data.conversation_id || data.id,
       session_id: data.session_id
     });
+
+    // Speak the response if this was a voice-triggered message
+    if (state._voiceTriggered && typeof speakResponse === 'function') {
+      speakResponse(responseText);
+    }
+    state._voiceTriggered = false;
   } catch (err) {
     removeTypingIndicator();
     const el = document.createElement('div');
@@ -1786,129 +1789,245 @@ window.saveSkillConfig = async function() {
 };
 
 /* ─── Voice Activation ("Hey ALEC") ─────────────────────────── */
+/* Persists on/off state per account. Uses browser SpeechRecognition for STT
+   and browser speechSynthesis for TTS. Works on desktop Chrome, Android Chrome,
+   Safari (partial). Android uses repeated single-shot mode since continuous is
+   unreliable on mobile. */
 
 let _voiceRecognition = null;
 let _voiceListening = false;
+let _voiceCommandMode = false;  // true while capturing a command after wake word
+let _voiceSpeaking = false;     // true while TTS is playing
+const _isAndroid = /android/i.test(navigator.userAgent);
+const _isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
 
+// ── Persistence: remember voice on/off per account ──
+function _voiceStorageKey() {
+  const email = state.user?.email || 'default';
+  return `alec_voice_${email}`;
+}
+function _saveVoiceState(on) {
+  try { localStorage.setItem(_voiceStorageKey(), on ? '1' : '0'); } catch {}
+}
+function _loadVoiceState() {
+  try { return localStorage.getItem(_voiceStorageKey()) === '1'; } catch { return false; }
+}
+
+// ── TTS: speak A.L.E.C.'s response out loud ──
+function speakResponse(text) {
+  if (!window.speechSynthesis) return;
+  // Cancel anything currently speaking
+  window.speechSynthesis.cancel();
+
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = 'en-AU';  // Australian accent per personality directive
+  utterance.rate = 1.0;
+  utterance.pitch = 1.0;
+
+  // Try to find an Australian or British English voice
+  const voices = window.speechSynthesis.getVoices();
+  const preferred = voices.find(v => v.lang === 'en-AU')
+    || voices.find(v => v.lang === 'en-GB')
+    || voices.find(v => v.lang.startsWith('en'));
+  if (preferred) utterance.voice = preferred;
+
+  _voiceSpeaking = true;
+  utterance.onend = () => {
+    _voiceSpeaking = false;
+    // Resume wake word listening after speaking
+    if (_voiceListening && !_voiceCommandMode) {
+      setTimeout(_startWakeWordLoop, 500);
+    }
+  };
+  utterance.onerror = () => { _voiceSpeaking = false; };
+
+  window.speechSynthesis.speak(utterance);
+}
+
+// Preload voices (Chrome loads them async)
+if (window.speechSynthesis) {
+  window.speechSynthesis.getVoices();
+  window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
+}
+
+// ── STT: Wake word detection + command capture ──
 function initVoiceActivation() {
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition) {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
     console.log('Speech recognition not available in this browser');
-    return;
+    toast('Voice not supported in this browser.', 'warning');
+    return false;
   }
 
-  // Request microphone permission explicitly (needed for iframes/Android WebViews)
-  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+  // Request mic permission up front
+  if (navigator.mediaDevices?.getUserMedia) {
     navigator.mediaDevices.getUserMedia({ audio: true })
-      .then(stream => {
-        // Got permission — stop the stream, we just needed the permission grant
-        stream.getTracks().forEach(t => t.stop());
-        console.log('🎤 Microphone permission granted');
-      })
-      .catch(err => {
-        console.log('🎤 Microphone permission denied:', err.message);
+      .then(s => { s.getTracks().forEach(t => t.stop()); })
+      .catch(() => {
         toast('Microphone access needed for "Hey ALEC". Check browser permissions.', 'warning');
       });
   }
+  return true;
+}
 
-  _voiceRecognition = new SpeechRecognition();
-  _voiceRecognition.continuous = true;
+function _startWakeWordLoop() {
+  if (!_voiceListening || _voiceCommandMode || _voiceSpeaking) return;
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return;
+
+  // Stop any prior instance
+  if (_voiceRecognition) {
+    try { _voiceRecognition.stop(); } catch {}
+    _voiceRecognition = null;
+  }
+
+  _voiceRecognition = new SR();
+  // Android: continuous mode is buggy — use single-shot with restart loop
+  _voiceRecognition.continuous = !_isAndroid;
   _voiceRecognition.interimResults = true;
   _voiceRecognition.lang = 'en-US';
+  _voiceRecognition.maxAlternatives = 1;
 
   _voiceRecognition.onresult = (event) => {
-    const last = event.results[event.results.length - 1];
-    const transcript = last[0].transcript.toLowerCase().trim();
-    
-    // Wake word detection: "hey alec"
-    if (transcript.includes('hey alec') || transcript.includes('hey a.l.e.c')) {
-      // Stop listening for wake word, switch to command mode
-      toast('🎤 Listening...', 'info');
-      _voiceRecognition.stop();
-      startVoiceCommand();
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const transcript = event.results[i][0].transcript.toLowerCase().trim();
+      if (transcript.includes('hey alec') || transcript.includes('hey a.l.e.c')
+          || transcript.includes('hey aleck') || transcript.includes('hey alex')) {
+        // Wake word detected!
+        _voiceRecognition.stop();
+        _startCommandCapture();
+        return;
+      }
     }
   };
 
   _voiceRecognition.onend = () => {
-    // Restart listening for wake word if not in command mode
-    if (_voiceListening && _voiceRecognition) {
-      try { _voiceRecognition.start(); } catch {}
+    // Restart the loop unless we're in command mode or stopped
+    if (_voiceListening && !_voiceCommandMode && !_voiceSpeaking) {
+      setTimeout(_startWakeWordLoop, 300);
     }
   };
 
   _voiceRecognition.onerror = (e) => {
-    if (e.error !== 'no-speech' && e.error !== 'aborted') {
-      console.log('Voice recognition error:', e.error);
+    if (e.error === 'not-allowed') {
+      toast('Microphone blocked. Enable it in browser settings.', 'error');
+      stopVoiceListening();
+      _updateVoiceButton();
+      return;
+    }
+    // For no-speech / aborted / network — just restart the loop
+    if (_voiceListening && !_voiceCommandMode) {
+      setTimeout(_startWakeWordLoop, 1000);
     }
   };
-}
 
-function startVoiceListening() {
-  if (!_voiceRecognition) initVoiceActivation();
-  if (!_voiceRecognition) return;
-  _voiceListening = true;
   try { _voiceRecognition.start(); } catch {}
-  console.log('🎤 Wake word listening active ("Hey ALEC")');
 }
 
-function stopVoiceListening() {
-  _voiceListening = false;
-  if (_voiceRecognition) {
-    try { _voiceRecognition.stop(); } catch {}
-  }
-}
+function _startCommandCapture() {
+  _voiceCommandMode = true;
+  toast('🎤 Listening for your command...', 'info');
 
-function startVoiceCommand() {
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition) return;
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { _voiceCommandMode = false; return; }
 
-  const cmdRecog = new SpeechRecognition();
+  const cmdRecog = new SR();
   cmdRecog.continuous = false;
   cmdRecog.interimResults = false;
   cmdRecog.lang = 'en-US';
 
+  let gotResult = false;
+
   cmdRecog.onresult = (event) => {
+    gotResult = true;
     const command = event.results[0][0].transcript;
     toast(`🎤 "${command}"`, 'info');
-    
-    // Type the command into chat and send it
-    const chatInput = document.getElementById('chat-input');
-    if (chatInput) {
-      chatInput.value = command;
+
+    // Set flag so sendMessage knows to speak the response
+    state._voiceTriggered = true;
+
+    // Inject into chat and send
+    const ci = document.getElementById('chat-input');
+    if (ci) {
+      ci.value = command;
+      ci.dispatchEvent(new Event('input'));
       sendMessage();
     }
-    
-    // Resume wake word listening
-    setTimeout(startVoiceListening, 2000);
-  };
-
-  cmdRecog.onerror = () => {
-    setTimeout(startVoiceListening, 1000);
   };
 
   cmdRecog.onend = () => {
-    // If no result, resume wake word
-    if (_voiceListening) setTimeout(startVoiceListening, 1000);
+    _voiceCommandMode = false;
+    if (!gotResult) {
+      toast('Didn\'t catch that. Say "Hey ALEC" again.', 'warning');
+    }
+    // Don't restart wake word here — speakResponse.onend will do it
+    // unless no voice response (non-voice-triggered path)
+    if (!gotResult && _voiceListening) {
+      setTimeout(_startWakeWordLoop, 1000);
+    }
   };
 
-  cmdRecog.start();
+  cmdRecog.onerror = () => {
+    _voiceCommandMode = false;
+    if (_voiceListening) setTimeout(_startWakeWordLoop, 1000);
+  };
+
+  try { cmdRecog.start(); } catch {
+    _voiceCommandMode = false;
+    if (_voiceListening) setTimeout(_startWakeWordLoop, 1000);
+  }
 }
 
-// Voice auto-init is triggered from showDashboard() when owner logs in
+// ── Public API ──
 
-window.toggleVoiceActivation = function() {
+function startVoiceListening() {
+  if (!initVoiceActivation()) return;
+  _voiceListening = true;
+  _saveVoiceState(true);
+  _startWakeWordLoop();
+  console.log('🎤 Wake word listening active');
+}
+
+function stopVoiceListening() {
+  _voiceListening = false;
+  _voiceCommandMode = false;
+  _saveVoiceState(false);
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
+  if (_voiceRecognition) {
+    try { _voiceRecognition.stop(); } catch {}
+    _voiceRecognition = null;
+  }
+}
+
+function _updateVoiceButton() {
   const btn = document.getElementById('voice-toggle-btn');
+  if (!btn) return;
   if (_voiceListening) {
-    stopVoiceListening();
+    btn.textContent = '🎤 On';
+    btn.style.color = 'var(--success)';
+  } else {
     btn.textContent = '🎤 Off';
     btn.style.color = 'var(--text-muted)';
+  }
+}
+
+// Restore voice state on login
+function restoreVoiceState() {
+  if (_loadVoiceState()) {
+    startVoiceListening();
+  }
+  _updateVoiceButton();
+}
+
+window.toggleVoiceActivation = function() {
+  if (_voiceListening) {
+    stopVoiceListening();
     toast('Voice deactivated', 'info');
   } else {
     startVoiceListening();
-    btn.textContent = '🎤 On';
-    btn.style.color = 'var(--success)';
     toast('Say "Hey ALEC" to activate', 'success');
   }
+  _updateVoiceButton();
 };
 
 /* ─── Trusted Devices Management ────────────────────────────── */

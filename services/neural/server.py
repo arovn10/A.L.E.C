@@ -806,6 +806,26 @@ def stoa_debug():
         "query_planner_stats": query_planner.get_stats(),
     }
 
+@app.post("/stoa/reload-planner")
+def reload_query_planner():
+    """Force reload the query planner: clear cache, re-discover schema."""
+    query_planner.schema = {}
+    query_planner.query_cache = {}
+    query_planner.query_count = 0
+    query_planner.successful_queries = 0
+    # Delete cache file
+    from pathlib import Path
+    cache_file = Path(__file__).resolve().parent.parent.parent / "data" / "query_cache.json"
+    if cache_file.exists():
+        cache_file.unlink()
+    # Re-discover
+    query_planner.discover_schema()
+    return {
+        "success": True,
+        "message": "Query planner reloaded",
+        "stats": query_planner.get_stats(),
+    }
+
 @app.get("/connectors/status")
 def connectors_status():
     return connectors.get_all_status()

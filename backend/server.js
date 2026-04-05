@@ -1352,6 +1352,11 @@ app.get('/api/stoa/debug', authenticateToken, requireFullCapabilities, async (re
   res.json(data);
 });
 
+app.post('/api/stoa/reload-planner', authenticateToken, requireFullCapabilities, async (req, res) => {
+  const data = await proxyToNeural('/stoa/reload-planner', { method: 'POST', body: {} });
+  res.json(data);
+});
+
 app.get('/api/connectors/status', authenticateToken, requireFullCapabilities, async (req, res) => {
   const data = await proxyToNeural('/connectors/status');
   res.json(data);
