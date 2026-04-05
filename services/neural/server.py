@@ -46,6 +46,7 @@ from memory import ALECMemory
 from query_planner import QueryPlanner
 from agent import ALECAgent
 from self_improve import SelfImprovementEngine
+from autonomy import AutonomyEngine
 from connectors import ConnectorManager
 from encryption import get_encryptor
 from skills_registry import SkillsRegistry
@@ -70,6 +71,7 @@ memory = ALECMemory()
 query_planner = QueryPlanner(stoa)
 agent = None  # Initialized after engine loads
 self_improver = None  # Initialized after engine loads
+autonomy = None       # Initialized after self_improver
 connectors = ConnectorManager()
 skills = SkillsRegistry()
 
@@ -109,6 +111,28 @@ async def lifespan(app: FastAPI):
         query_planner=query_planner, stoa=stoa,
     )
     logger.info("Self-improvement engine initialized")
+
+    # 1d. Initialize autonomy engine (proactive communication + research)
+    global autonomy
+    autonomy = AutonomyEngine(
+        db=db, engine=engine, query_planner=query_planner,
+        memory=memory, self_improver=self_improver, stoa=stoa,
+    )
+    logger.info(f"Autonomy engine initialized (email: {autonomy.email_configured})")
+
+    # Send startup notification if email is configured
+    if autonomy.email_configured:
+        try:
+            autonomy.send_email(
+                "A.L.E.C. Online",
+                f"A.L.E.C. has started up successfully.\n\n"
+                f"Model: {engine.get_model_info().get('model_name', 'unknown')}\n"
+                f"Agent tools: {len(agent.tools)}\n"
+                f"Stoa DB: {'connected' if stoa.connected else 'disconnected'}\n"
+                f"Self-improvement: {self_improver.get_status().get('curated_conversations', 0)} curated examples\n"
+            )
+        except Exception:
+            pass
 
     # 2. Seed admin user
     admin_email = os.getenv("ADMIN_EMAIL", "arovner@campusrentalsllc.com")
@@ -984,6 +1008,63 @@ def score_conversation(req: dict):
     if not self_improver:
         return {"score": 0}
     return {"score": self_improver.score_conversation(req)}
+
+
+# ══════════════════════════════════════════════════════════════════
+#  AUTONOMY
+# ══════════════════════════════════════════════════════════════════
+
+@app.get("/autonomy/status")
+def autonomy_status():
+    if not autonomy:
+        return {"enabled": False}
+    return autonomy.get_status()
+
+@app.post("/autonomy/send-email")
+def autonomy_send_email(req: dict):
+    """Send an email from A.L.E.C. to the owner."""
+    if not autonomy:
+        raise HTTPException(status_code=503, detail="Autonomy engine not initialized")
+    subject = req.get("subject", "Message from A.L.E.C.")
+    body = req.get("body", "")
+    if not body:
+        raise HTTPException(status_code=400, detail="'body' required")
+    ok = autonomy.send_email(subject, body)
+    return {"success": ok}
+
+@app.post("/autonomy/daily-report")
+def autonomy_daily_report():
+    """Generate and send the daily report now."""
+    if not autonomy:
+        raise HTTPException(status_code=503, detail="Autonomy engine not initialized")
+    ok = autonomy.send_daily_report()
+    return {"success": ok}
+
+@app.post("/autonomy/research")
+def autonomy_research():
+    """Research AI developments and send report."""
+    if not autonomy:
+        raise HTTPException(status_code=503, detail="Autonomy engine not initialized")
+    results = autonomy.research_ai_developments()
+    return results
+
+@app.post("/autonomy/health-check")
+def autonomy_health_check():
+    """Check system resources and alert if needed."""
+    if not autonomy:
+        raise HTTPException(status_code=503, detail="Autonomy engine not initialized")
+    return autonomy.check_resources()
+
+@app.post("/autonomy/take-initiative")
+def autonomy_initiative():
+    """Run the full autonomy cycle (daily report, research, health check)."""
+    if not autonomy:
+        raise HTTPException(status_code=503, detail="Autonomy engine not initialized")
+    task_id = task_runner.run_task(
+        "Autonomy Cycle",
+        lambda task_info=None: autonomy.take_initiative(),
+    )
+    return {"success": True, "task_id": task_id}
 
 
 # ══════════════════════════════════════════════════════════════════

@@ -186,6 +186,26 @@ class CodeExecutionTool(AgentTool):
             return f"Code execution failed: {e}"
 
 
+class SendEmailTool(AgentTool):
+    """Send an email to the owner."""
+    name = "send_email"
+    description = "Send an email to Alec (the owner). Use this for updates, questions, suggestions, or reports. A.L.E.C. should take initiative and communicate proactively."
+    parameters = {"subject": "Email subject line", "body": "Email body text"}
+
+    def execute(self, subject: str = "", body: str = "", **kwargs) -> str:
+        if not subject or not body:
+            return "Error: both 'subject' and 'body' required."
+        try:
+            # Import the autonomy engine from the server module
+            import server as srv
+            if hasattr(srv, 'autonomy') and srv.autonomy:
+                ok = srv.autonomy.send_email(subject, body)
+                return f"Email sent to owner: '{subject}'" if ok else "Email failed — check GMAIL credentials in .env"
+            return "Autonomy engine not available — cannot send email."
+        except Exception as e:
+            return f"Email error: {e}"
+
+
 class CalendarTool(AgentTool):
     """Check calendar events and availability."""
     name = "calendar"
@@ -735,6 +755,7 @@ class ALECAgent:
         self._register(HomeAssistantTool())
         self._register(CodeExecutionTool())
         self._register(CalendarTool())
+        self._register(SendEmailTool())
         self._register(SelfEditTool())
 
     def _register(self, tool: AgentTool):
@@ -759,6 +780,7 @@ class ALECAgent:
         lines.append("- If the user teaches you something → use memory_store")
         lines.append("- If math or code is needed → use execute_code")
         lines.append("- If the user asks to change the UI, fix a bug, update code, or improve you → use self_edit")
+        lines.append("- To send an email to the owner (updates, questions, reports) → use send_email")
         lines.append("- self_edit safe workflow: read_file → edit_file → dry_run (validates on sandbox branch) → promote (deploys to main)")
         lines.append("- self_edit fast workflow: read_file → edit_file → commit_push (direct deploy with auto-health-check + auto-rollback)")
         lines.append("- Use dry_run for risky changes (Python/JS logic). Use commit_push for simple changes (CSS, text, config).")
