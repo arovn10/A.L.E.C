@@ -90,6 +90,70 @@ class AuthManager:
             "role": user["role"],
         }
 
+    def create_user(self, email: str, password: str, role: str = "viewer") -> Optional[dict]:
+        """Create a new user account. Only the owner can do this."""
+        existing = self._get_user_by_email(email)
+        if existing:
+            return {"error": f"User {email} already exists"}
+        pw_hash = hash_password(password)
+        conn = self.db._sqlite_conn
+        if conn:
+            conn.execute(
+                "INSERT INTO admin_users (email, password_hash, role) VALUES (?, ?, ?)",
+                (email, pw_hash, role),
+            )
+            conn.commit()
+            logger.info(f"Created user: {email} (role: {role})")
+            return {"success": True, "email": email, "role": role}
+        return {"error": "Database not available"}
+
+    def update_user_role(self, email: str, new_role: str) -> Optional[dict]:
+        """Change a user's role."""
+        user = self._get_user_by_email(email)
+        if not user:
+            return {"error": f"User {email} not found"}
+        conn = self.db._sqlite_conn
+        if conn:
+            conn.execute("UPDATE admin_users SET role = ? WHERE email = ?", (new_role, email))
+            conn.commit()
+            logger.info(f"Updated role for {email}: {new_role}")
+            return {"success": True, "email": email, "role": new_role}
+        return {"error": "Database not available"}
+
+    def delete_user(self, email: str) -> dict:
+        """Delete a user. Cannot delete the owner."""
+        owner_email = os.getenv("ADMIN_EMAIL", "arovner@campusrentalsllc.com").lower()
+        if email.lower() == owner_email:
+            return {"error": "Cannot delete the owner account"}
+        conn = self.db._sqlite_conn
+        if conn:
+            conn.execute("DELETE FROM admin_users WHERE email = ?", (email,))
+            conn.commit()
+            logger.info(f"Deleted user: {email}")
+            return {"success": True}
+        return {"error": "Database not available"}
+
+    def list_users(self) -> list[dict]:
+        """List all users (passwords excluded)."""
+        conn = self.db._sqlite_conn
+        if not conn:
+            return []
+        cursor = conn.execute("SELECT id, email, role, created_at, last_login FROM admin_users ORDER BY created_at")
+        return [dict(row) for row in cursor.fetchall()]
+
+    def change_password(self, email: str, new_password: str) -> dict:
+        """Change a user's password."""
+        user = self._get_user_by_email(email)
+        if not user:
+            return {"error": f"User {email} not found"}
+        pw_hash = hash_password(new_password)
+        conn = self.db._sqlite_conn
+        if conn:
+            conn.execute("UPDATE admin_users SET password_hash = ? WHERE email = ?", (pw_hash, email))
+            conn.commit()
+            return {"success": True}
+        return {"error": "Database not available"}
+
     def _get_user_by_email(self, email: str) -> Optional[dict]:
         conn = self.db._sqlite_conn
         if not conn:
@@ -100,14 +164,29 @@ class AuthManager:
         row = cursor.fetchone()
         return dict(row) if row else None
 
+    def is_owner(self, email: str) -> bool:
+        """Check if this email is the owner/creator of A.L.E.C."""
+        owner_email = os.getenv("ADMIN_EMAIL", "arovner@campusrentalsllc.com").lower()
+        return email.lower() == owner_email
+
     def determine_access_level(self, email: str, is_domo_embed: bool = False) -> str:
         """
         Determine token type based on context:
-        - Domo embed + @stoagroup.com email → STOA_ACCESS
-        - Direct login (any email) → FULL_CAPABILITIES
+        - Domo embed → STOA_ACCESS
+        - Owner email → FULL_CAPABILITIES
+        - Role 'admin' → FULL_CAPABILITIES
+        - Role 'editor' → STOA_ACCESS + write
+        - Role 'viewer' → STOA_ACCESS (read-only)
         """
         if is_domo_embed:
-            if email and email.lower().endswith("@stoagroup.com"):
+            return "STOA_ACCESS"
+        if self.is_owner(email):
+            return "FULL_CAPABILITIES"
+        user = self._get_user_by_email(email)
+        if user:
+            role = user.get("role", "viewer")
+            if role == "admin":
+                return "FULL_CAPABILITIES"
+            if role == "editor":
                 return "STOA_ACCESS"
-            return "STOA_ACCESS"  # Domo users always get STOA level
-        return "FULL_CAPABILITIES"
+        return "STOA_ACCESS"

@@ -1083,6 +1083,35 @@ if (voiceServer) {
 }
 
 // ════════════════════════════════════════════════════════════════
+//  USER MANAGEMENT (Owner only)
+// ════════════════════════════════════════════════════════════════
+
+app.get('/api/auth/users', authenticateToken, requireFullCapabilities, async (req, res) => {
+  const data = await proxyToNeural('/auth/users');
+  res.json(data);
+});
+
+app.post('/api/auth/users/create', authenticateToken, requireFullCapabilities, async (req, res) => {
+  const data = await proxyToNeural('/auth/users/create', 'POST', req.body);
+  res.json(data);
+});
+
+app.post('/api/auth/users/role', authenticateToken, requireFullCapabilities, async (req, res) => {
+  const data = await proxyToNeural('/auth/users/role', 'POST', req.body);
+  res.json(data);
+});
+
+app.post('/api/auth/users/password', authenticateToken, requireFullCapabilities, async (req, res) => {
+  const data = await proxyToNeural('/auth/users/password', 'POST', req.body);
+  res.json(data);
+});
+
+app.delete('/api/auth/users/:email', authenticateToken, requireFullCapabilities, async (req, res) => {
+  const data = await proxyToNeural(`/auth/users/${encodeURIComponent(req.params.email)}`, 'DELETE');
+  res.json(data);
+});
+
+// ════════════════════════════════════════════════════════════════
 //  MEMORY (Teaching & Learning)
 // ════════════════════════════════════════════════════════════════
 

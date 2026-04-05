@@ -68,14 +68,17 @@ source "$VENV_DIR/bin/activate"
 # Upgrade pip
 pip install --upgrade pip
 
-# Detect Apple Silicon for Metal support
+# Detect hardware for optimal llama-cpp-python build
 ARCH=$(uname -m)
 if [ "$ARCH" = "arm64" ]; then
     echo "🍎 Apple Silicon detected — installing llama-cpp-python with Metal"
     CMAKE_ARGS="-DLLAMA_METAL=on" pip install llama-cpp-python
+    GPU_LAYERS=-1
 else
-    echo "Installing llama-cpp-python (CPU)"
+    echo "💻 Intel Mac detected — installing llama-cpp-python (CPU only)"
+    echo "   Note: No Metal GPU acceleration on Intel Macs. Inference will be slower."
     pip install llama-cpp-python
+    GPU_LAYERS=0
 fi
 
 # Install remaining Python deps
@@ -109,7 +112,7 @@ JWT_SECRET=$JWT_SECRET
 # Model configuration
 MODEL_PATH=data/models/qwen2.5-coder-7b-instruct-q4_k_m.gguf
 MODEL_CONTEXT_LENGTH=4096
-N_GPU_LAYERS=-1
+N_GPU_LAYERS=$GPU_LAYERS
 NEURAL_BACKEND=llama-cpp
 
 # Azure SQL (optional — SQLite fallback is automatic)

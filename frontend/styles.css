@@ -606,6 +606,16 @@ a:hover { color: var(--primary-hover); }
   display: block;
 }
 
+.panel.active[style*="flex"] {
+  display: flex !important;
+}
+
+#panel-chat.active {
+  display: flex !important;
+  flex-direction: column;
+  padding: 0;
+}
+
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }

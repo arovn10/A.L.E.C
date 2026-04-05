@@ -43,7 +43,7 @@
           type="email"
           id="login-email"
           class="form-control"
-          placeholder="arovner@campusrentalsllc.com"
+          placeholder="Email address"
           autocomplete="email"
           required
         />
@@ -741,6 +741,38 @@
         </div>
 
         <!-- Danger Zone -->
+
+        <!-- User Management (Owner Only) -->
+        <div class="card" id="user-management-section">
+          <div class="card-header">👥 User Management</div>
+          <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px;">Create accounts and assign roles. Only the owner can manage users.</p>
+
+          <!-- Create User Form -->
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;margin-bottom:16px;align-items:end;">
+            <div>
+              <label style="font-size:11px;color:var(--text-muted);">Email</label>
+              <input type="email" id="new-user-email" class="input-field" placeholder="user@example.com">
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--text-muted);">Password</label>
+              <input type="password" id="new-user-password" class="input-field" placeholder="Strong password">
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--text-muted);">Role</label>
+              <select id="new-user-role" class="input-field">
+                <option value="viewer">Viewer (read-only)</option>
+                <option value="editor">Editor (Stoa + write)</option>
+                <option value="admin">Admin (full access)</option>
+              </select>
+            </div>
+            <button class="btn-primary" onclick="createUser()" style="height:38px;">Create</button>
+          </div>
+          <div id="create-user-result" style="font-size:13px;margin-bottom:12px;"></div>
+
+          <!-- User List -->
+          <div id="users-list" style="font-size:13px;">Loading users...</div>
+        </div>
+
         <div class="danger-zone mt-4">
           <h4>⚠️ Danger Zone</h4>
           <p style="font-size:0.8rem;color:var(--text-muted);margin-bottom:12px;">

@@ -207,6 +207,51 @@ def login(req: LoginRequest):
         "access_level": access_level,
     }
 
+class CreateUserRequest(BaseModel):
+    email: str
+    password: str
+    role: str = "viewer"  # viewer, editor, admin
+
+class UpdateRoleRequest(BaseModel):
+    email: str
+    role: str
+
+class ChangePasswordRequest(BaseModel):
+    email: str
+    new_password: str
+
+@app.get("/auth/users")
+def list_users():
+    return {"users": auth_manager.list_users()}
+
+@app.post("/auth/users/create")
+def create_user(req: CreateUserRequest):
+    result = auth_manager.create_user(req.email, req.password, req.role)
+    if result and result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+@app.post("/auth/users/role")
+def update_role(req: UpdateRoleRequest):
+    result = auth_manager.update_user_role(req.email, req.role)
+    if result and result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+@app.post("/auth/users/password")
+def change_password(req: ChangePasswordRequest):
+    result = auth_manager.change_password(req.email, req.new_password)
+    if result and result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+@app.delete("/auth/users/{email}")
+def delete_user(email: str):
+    result = auth_manager.delete_user(email)
+    if result and result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
 @app.post("/auth/domo")
 def domo_auth():
     """Auto-authenticate for Domo embeds — STOA_ACCESS only."""

@@ -32,19 +32,44 @@ class StoaConnector:
         self.last_sync: Optional[str] = None
         self.tables_discovered: list[str] = []
 
-    def _get_conn_string(self) -> str:
-        driver = "{ODBC Driver 18 for SQL Server}"
-        encrypt = "yes" if self.ssl else "no"
-        return (
-            f"DRIVER={driver};"
-            f"SERVER=tcp:{self.host},{self.port};"
-            f"DATABASE={self.database};"
-            f"UID={self.user};"
-            f"PWD={self.password};"
-            f"Encrypt={encrypt};"
-            f"TrustServerCertificate=yes;"
-            f"Connection Timeout=30;"
-        )
+    def _get_connection(self):
+        """Get a database connection using pyodbc or pymssql fallback."""
+        # Try pymssql first (no unixodbc dependency)
+        try:
+            import pymssql
+            conn = pymssql.connect(
+                server=self.host,
+                port=self.port,
+                user=self.user,
+                password=self.password,
+                database=self.database,
+                login_timeout=15,
+                tds_version="7.3",
+            )
+            return conn
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.debug(f"pymssql failed: {e}")
+
+        # Fallback to pyodbc
+        try:
+            import pyodbc
+            driver = "{ODBC Driver 18 for SQL Server}"
+            encrypt = "yes" if self.ssl else "no"
+            conn_str = (
+                f"DRIVER={driver};"
+                f"SERVER=tcp:{self.host},{self.port};"
+                f"DATABASE={self.database};"
+                f"UID={self.user};"
+                f"PWD={self.password};"
+                f"Encrypt={encrypt};"
+                f"TrustServerCertificate=yes;"
+                f"Connection Timeout=30;"
+            )
+            return pyodbc.connect(conn_str, timeout=15)
+        except Exception as e:
+            raise ConnectionError(f"No SQL driver available: {e}")
 
     def connect(self) -> bool:
         """Test connection to Stoa database."""
@@ -52,8 +77,7 @@ class StoaConnector:
             logger.warning("Stoa DB credentials not configured")
             return False
         try:
-            import pyodbc
-            conn = pyodbc.connect(self._get_conn_string(), timeout=15)
+            conn = self._get_connection()
             conn.close()
             self.connected = True
             logger.info(f"Stoa DB connected: {self.host}/{self.database}")

@@ -209,14 +209,20 @@ function showDashboard(userData) {
 
   // Update sidebar user info
   const email = userData.email || userData.user?.email || '—';
-  const role = userData.role || userData.user?.role || '—';
-  document.getElementById('user-email-display').textContent = email;
-  document.getElementById('user-role-display').textContent = role.toUpperCase();
+  const rawRole = userData.role || userData.user?.role || userData.access_level || '—';
+  // Owner detection — never expose full email in UI
+  const isOwner = email.toLowerCase().includes('campusrentalsllc') || rawRole === 'admin' || userData.access_level === 'FULL_CAPABILITIES';
+  const displayRole = isOwner ? 'OWNER' : rawRole.toUpperCase();
+  const maskedEmail = email.includes('@') ? email.split('@')[0].slice(0,3) + '***@' + email.split('@')[1] : email;
+  document.getElementById('user-email-display').textContent = maskedEmail;
+  document.getElementById('user-role-display').textContent = displayRole;
   document.getElementById('user-avatar').textContent = email.slice(0, 2).toUpperCase();
+  // Store owner state
+  state.isOwner = isOwner;
 
   // Admin section in settings
-  document.getElementById('admin-email').textContent = email;
-  document.getElementById('admin-role').textContent = role;
+  document.getElementById('admin-email').textContent = maskedEmail;
+  document.getElementById('admin-role').textContent = displayRole;
   const lastLogin = userData.last_login || userData.user?.last_login;
   document.getElementById('admin-last-login').textContent = lastLogin ? formatDate(lastLogin) : 'Now';
 
@@ -1467,4 +1473,116 @@ if (_origOnPanelSwitch) {
       loadAllMemories();
     }
   };
+}
+
+/* ─── User Management Functions ─────────────────────────────── */
+
+async function createUser() {
+  const email = document.getElementById('new-user-email').value.trim();
+  const password = document.getElementById('new-user-password').value;
+  const role = document.getElementById('new-user-role').value;
+  const resultEl = document.getElementById('create-user-result');
+
+  if (!email || !password) {
+    resultEl.style.color = 'var(--danger-color)';
+    resultEl.textContent = 'Email and password are required.';
+    return;
+  }
+
+  try {
+    const data = await apiFetch('/api/auth/users/create', {
+      method: 'POST',
+      body: JSON.stringify({ email, password, role }),
+    });
+    if (data.success) {
+      resultEl.style.color = 'var(--success-color)';
+      resultEl.textContent = `✅ Created ${email} as ${role}`;
+      document.getElementById('new-user-email').value = '';
+      document.getElementById('new-user-password').value = '';
+      loadUsers();
+    } else {
+      resultEl.style.color = 'var(--danger-color)';
+      resultEl.textContent = data.error || data.detail || 'Failed';
+    }
+  } catch (e) {
+    resultEl.style.color = 'var(--danger-color)';
+    resultEl.textContent = e.message;
+  }
+}
+
+async function loadUsers() {
+  try {
+    const data = await apiFetch('/api/auth/users');
+    const el = document.getElementById('users-list');
+    if (!el) return;
+    const users = data.users || [];
+    if (users.length === 0) {
+      el.innerHTML = '<p style="color:var(--text-muted);">No users found.</p>';
+      return;
+    }
+    el.innerHTML = `<table style="width:100%;border-collapse:collapse;">
+      <thead><tr style="border-bottom:1px solid var(--border-color);text-align:left;">
+        <th style="padding:6px;">Email</th><th>Role</th><th>Last Login</th><th>Actions</th>
+      </tr></thead>
+      <tbody>${users.map(u => `
+        <tr style="border-bottom:1px solid var(--border-color);">
+          <td style="padding:6px;">${escapeHtml(u.email)}</td>
+          <td><select onchange="changeRole('${u.email}', this.value)" class="input-field" style="padding:2px 6px;font-size:12px;">
+            <option value="viewer" ${u.role==='viewer'?'selected':''}>Viewer</option>
+            <option value="editor" ${u.role==='editor'?'selected':''}>Editor</option>
+            <option value="admin" ${u.role==='admin'?'selected':''}>Admin</option>
+          </select></td>
+          <td style="font-size:12px;color:var(--text-muted);">${u.last_login ? new Date(u.last_login).toLocaleDateString() : 'Never'}</td>
+          <td><button onclick="deleteUser('${u.email}')" style="background:none;border:none;color:var(--danger-color);cursor:pointer;font-size:12px;">Delete</button></td>
+        </tr>
+      `).join('')}</tbody>
+    </table>`;
+  } catch (e) {
+    const el = document.getElementById('users-list');
+    if (el) el.innerHTML = '<p style="color:var(--text-muted);">Could not load users.</p>';
+  }
+}
+
+async function changeRole(email, newRole) {
+  try {
+    await apiFetch('/api/auth/users/role', {
+      method: 'POST',
+      body: JSON.stringify({ email, role: newRole }),
+    });
+    showToast(`Updated ${email} to ${newRole}`, 'success');
+  } catch (e) {
+    showToast(`Failed: ${e.message}`, 'error');
+    loadUsers();
+  }
+}
+
+async function deleteUser(email) {
+  if (!confirm(`Delete user ${email}? This cannot be undone.`)) return;
+  try {
+    const data = await apiFetch(`/api/auth/users/${encodeURIComponent(email)}`, { method: 'DELETE' });
+    if (data.success) {
+      showToast(`Deleted ${email}`, 'success');
+      loadUsers();
+    } else {
+      showToast(data.error || data.detail || 'Failed', 'error');
+    }
+  } catch (e) {
+    showToast(e.message, 'error');
+  }
+}
+
+// Load users when settings panel opens
+const _origOnPanelSwitch2 = onPanelSwitch;
+onPanelSwitch = function(panelId) {
+  _origOnPanelSwitch2(panelId);
+  if (panelId === 'settings' && state.isOwner) {
+    loadUsers();
+    document.getElementById('user-management-section').style.display = 'block';
+  }
+};
+
+// Hide user management for non-owners
+if (typeof state !== 'undefined' && !state.isOwner) {
+  const umSection = document.getElementById('user-management-section');
+  if (umSection) umSection.style.display = 'none';
 }
