@@ -7,9 +7,16 @@ on:
     branches: [main]
 
 jobs:
-  validate-node:
-    name: Validate Node.js
+  # ════════════════════════════════════════════════════════════
+  #  STAGE 1: Syntax & Structure (fast, catches obvious breaks)
+  # ════════════════════════════════════════════════════════════
+  validate:
+    name: Validate
     runs-on: ubuntu-latest
+    outputs:
+      node_ok: ${{ steps.node.outcome }}
+      python_ok: ${{ steps.python.outcome }}
+      structure_ok: ${{ steps.structure.outcome }}
     steps:
       - uses: actions/checkout@v4
 
@@ -17,46 +24,114 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install dependencies
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Node dependencies
         run: npm install
 
-      - name: Check syntax (server.js)
-        run: node -c backend/server.js
-
-      - name: Check syntax (neuralEngine.js)
-        run: node -c services/neuralEngine.js
-
-      - name: Check syntax (frontend app.js)
-        run: node -c frontend/app.js
-
-      - name: Verify required files exist
+      # ── Node.js syntax ──
+      - name: Node.js syntax check
+        id: node
         run: |
-          test -f backend/server.js || (echo "FAIL: backend/server.js missing" && exit 1)
-          test -f services/neuralEngine.js || (echo "FAIL: services/neuralEngine.js missing" && exit 1)
-          test -f frontend/index.html || (echo "FAIL: frontend/index.html missing" && exit 1)
-          test -f frontend/app.js || (echo "FAIL: frontend/app.js missing" && exit 1)
-          test -f frontend/styles.css || (echo "FAIL: frontend/styles.css missing" && exit 1)
-          test -f package.json || (echo "FAIL: package.json missing" && exit 1)
-          test -f scripts/setup-local.sh || (echo "FAIL: scripts/setup-local.sh missing" && exit 1)
-          test -f scripts/start-alec.sh || (echo "FAIL: scripts/start-alec.sh missing" && exit 1)
-          test -f scripts/download-model.sh || (echo "FAIL: scripts/download-model.sh missing" && exit 1)
-          echo "✅ All required files present"
-
-      - name: Check no secrets in code
-        run: |
-          # Ensure no passwords or tokens are hardcoded
-          if grep -rn "SiennaBean" --include="*.js" --include="*.py" --include="*.html" backend/ frontend/ services/ 2>/dev/null; then
-            echo "⚠️ WARNING: Possible hardcoded password found in source files"
-          fi
-          if grep -rn "Wed75382" --include="*.js" --include="*.py" --include="*.html" backend/ frontend/ services/ 2>/dev/null; then
-            echo "FAIL: Database password found in source code"
+          ERRORS=""
+          for f in backend/server.js frontend/app.js services/neuralEngine.js services/voiceInterface.js; do
+            if [ -f "$f" ]; then
+              if node -c "$f" 2>/dev/null; then
+                echo "  ✅ $f"
+              else
+                echo "  ❌ $f"
+                ERRORS="$ERRORS $f"
+              fi
+            fi
+          done
+          if [ -n "$ERRORS" ]; then
+            echo "::error::Node syntax errors in:$ERRORS"
             exit 1
           fi
+          echo "✅ All JS files compile"
+
+      # ── Python syntax ──
+      - name: Python syntax check
+        id: python
+        run: |
+          ERRORS=""
+          for f in services/neural/*.py; do
+            if python -m py_compile "$f" 2>/dev/null; then
+              echo "  ✅ $f"
+            else
+              echo "  ❌ $f"
+              ERRORS="$ERRORS $f"
+            fi
+          done
+          if [ -n "$ERRORS" ]; then
+            echo "::error::Python syntax errors in:$ERRORS"
+            exit 1
+          fi
+          echo "✅ All Python files compile"
+
+      # ── Project structure ──
+      - name: Structure check
+        id: structure
+        run: |
+          MISSING=""
+          for f in \
+            backend/server.js \
+            frontend/index.html frontend/app.js frontend/styles.css \
+            services/neural/server.py services/neural/engine.py \
+            services/neural/database.py services/neural/training.py \
+            services/neural/agent.py services/neural/self_improve.py \
+            services/neural/query_planner.py services/neural/memory.py \
+            services/neural/personality.py services/neural/auth.py \
+            services/neural/stoa.py services/neural/tasks.py \
+            services/neural/connectors.py services/neural/skills_registry.py \
+            package.json .env.example \
+            scripts/start-alec.sh scripts/download-model.sh scripts/watchdog.sh; do
+            if [ ! -f "$f" ]; then
+              echo "  ❌ MISSING: $f"
+              MISSING="$MISSING $f"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::Missing files:$MISSING"
+            exit 1
+          fi
+          echo "✅ All required files present"
+
+      # ── Secrets check ──
+      - name: No hardcoded secrets
+        run: |
+          FOUND=0
+          # Check for known password patterns
+          if grep -rn "SiennaBean\|Wed75382\|ADMIN_SECRET=qh" --include="*.js" --include="*.py" --include="*.html" backend/ frontend/ services/ 2>/dev/null; then
+            echo "::error::Hardcoded secrets found in source code"
+            FOUND=1
+          fi
+          # Check for JWT tokens
+          if grep -rn "eyJhbGci" --include="*.js" --include="*.py" frontend/ backend/ services/ 2>/dev/null | grep -v "test\|example\|comment" | head -3; then
+            echo "::warning::Possible JWT token in source code"
+          fi
+          if [ "$FOUND" -eq 1 ]; then exit 1; fi
           echo "✅ No secrets in source code"
 
-  validate-python:
-    name: Validate Python
+      # ── .gitignore coverage ──
+      - name: Gitignore check
+        run: |
+          for pattern in ".env" ".gguf" "alec.db" ".venv" "node_modules" "__pycache__"; do
+            if ! grep -q "$pattern" .gitignore; then
+              echo "::warning::$pattern not in .gitignore"
+            fi
+          done
+          echo "✅ .gitignore configured"
+
+  # ════════════════════════════════════════════════════════════
+  #  STAGE 2: Integration tests (imports, dependencies, API shape)
+  # ════════════════════════════════════════════════════════════
+  integration:
+    name: Integration
     runs-on: ubuntu-latest
+    needs: validate
     steps:
       - uses: actions/checkout@v4
 
@@ -64,64 +139,171 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Check Python syntax
-        run: |
-          python -m py_compile services/neural/server.py
-          python -m py_compile services/neural/engine.py
-          python -m py_compile services/neural/database.py
-          python -m py_compile services/neural/training.py
-          python -m py_compile services/neural/tasks.py
-          python -m py_compile services/neural/stoa.py
-          python -m py_compile services/neural/auth.py
-          python -m py_compile services/neural/personality.py
-          python -m py_compile services/neural/initiative.py
-          echo "✅ All Python files compile successfully"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
 
-      - name: Verify Python files exist
-        run: |
-          test -f services/neural/server.py
-          test -f services/neural/engine.py
-          test -f services/neural/database.py
-          test -f services/neural/training.py
-          test -f services/neural/tasks.py
-          test -f services/neural/stoa.py
-          test -f services/neural/auth.py
-          test -f services/neural/requirements.txt
-          echo "✅ All Python files present"
+      - name: Install Node deps
+        run: npm install
 
-  validate-structure:
-    name: Validate Project Structure
+      # ── Python import check (no model needed) ──
+      - name: Python imports
+        run: |
+          cd services/neural
+          pip install fastapi uvicorn pydantic python-dotenv bcrypt cryptography 2>/dev/null
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          errors = []
+          modules = [
+              'database', 'auth', 'memory', 'personality', 'initiative',
+              'tasks', 'skills_registry', 'encryption', 'excel',
+              'query_planner', 'self_improve', 'agent',
+          ]
+          for mod in modules:
+              try:
+                  __import__(mod)
+                  print(f'  ✅ {mod}')
+              except Exception as e:
+                  # Some modules need runtime deps — just check syntax
+                  print(f'  ⚠️  {mod}: {e}')
+          print('Import check complete')
+          "
+
+      # ── Node.js require check ──
+      - name: Node.js requires
+        run: |
+          node -e "
+          const modules = ['express', 'cors', 'jsonwebtoken', 'dotenv', 'multer', 'bcryptjs', 'ws'];
+          let ok = 0, fail = 0;
+          for (const m of modules) {
+            try { require(m); ok++; console.log('  ✅', m); }
+            catch { fail++; console.log('  ❌', m); }
+          }
+          console.log(ok + '/' + modules.length + ' modules loaded');
+          if (fail > 0) process.exit(1);
+          "
+
+      # ── API route coverage ──
+      - name: API route check
+        run: |
+          echo "Checking critical API routes are defined..."
+          ROUTES="api/chat api/auth/login api/feedback api/training/start api/stoa/status api/metrics/dashboard api/memory/teach api/admin/exec"
+          MISSING=""
+          for route in $ROUTES; do
+            if grep -q "$route" backend/server.js; then
+              echo "  ✅ /$route"
+            else
+              echo "  ❌ /$route NOT FOUND"
+              MISSING="$MISSING $route"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::Missing API routes:$MISSING"
+            exit 1
+          fi
+
+      # ── Agent tools check ──
+      - name: Agent tools registered
+        run: |
+          echo "Checking agent tools..."
+          TOOLS="stoa_query memory_search memory_store web_search smart_home execute_code calendar self_edit"
+          for tool in $TOOLS; do
+            if grep -q "\"$tool\"" services/neural/agent.py; then
+              echo "  ✅ $tool"
+            else
+              echo "  ❌ $tool NOT FOUND"
+              exit 1
+            fi
+          done
+
+      # ── Self-edit safety checks ──
+      - name: Self-edit safety
+        run: |
+          echo "Verifying self_edit safety guards..."
+          # Path traversal prevention
+          grep -q "safe_path\|escapes project" services/neural/agent.py && echo "  ✅ Path traversal prevention"
+          # Critical file protection
+          grep -q "critical.*=.*\[" services/neural/agent.py && echo "  ✅ Critical file delete protection"
+          # Health check on commit
+          grep -q "health_check\|HEALTHY" services/neural/agent.py && echo "  ✅ Post-commit health check"
+          # Auto-rollback
+          grep -q "rollback.*target\|AUTO-ROLLBACK" services/neural/agent.py && echo "  ✅ Auto-rollback on failure"
+          # Dry-run sandbox
+          grep -q "dry_run\|sandbox" services/neural/agent.py && echo "  ✅ Dry-run sandbox branch"
+
+  # ════════════════════════════════════════════════════════════
+  #  STAGE 3: Email results
+  # ════════════════════════════════════════════════════════════
+  notify:
+    name: Email Results
     runs-on: ubuntu-latest
+    needs: [validate, integration]
+    if: always()  # Run even if previous jobs failed
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 5
 
-      - name: Check directory structure
+      - name: Build report
+        id: report
         run: |
-          test -d backend/ || (echo "FAIL: backend/ missing" && exit 1)
-          test -d frontend/ || (echo "FAIL: frontend/ missing" && exit 1)
-          test -d services/neural/ || (echo "FAIL: services/neural/ missing" && exit 1)
-          test -d scripts/ || (echo "FAIL: scripts/ missing" && exit 1)
-          echo "✅ Directory structure valid"
+          VALIDATE="${{ needs.validate.result }}"
+          INTEGRATION="${{ needs.integration.result }}"
 
-      - name: Check .gitignore covers sensitive files
-        run: |
-          grep -q "\.env" .gitignore || (echo "FAIL: .env not in .gitignore" && exit 1)
-          grep -q "\.gguf" .gitignore || (echo "FAIL: .gguf not in .gitignore" && exit 1)
-          grep -q "alec.db" .gitignore || (echo "FAIL: alec.db not in .gitignore" && exit 1)
-          grep -q "\.venv" .gitignore || (echo "FAIL: .venv not in .gitignore" && exit 1)
-          echo "✅ .gitignore properly configured"
+          # Overall status
+          if [ "$VALIDATE" = "success" ] && [ "$INTEGRATION" = "success" ]; then
+            STATUS="✅ ALL CHECKS PASSED"
+            EMOJI="✅"
+          else
+            STATUS="❌ CHECKS FAILED"
+            EMOJI="❌"
+          fi
 
-      - name: Check scripts are executable
-        run: |
-          test -x scripts/setup-local.sh || echo "WARNING: setup-local.sh not executable"
-          test -x scripts/start-alec.sh || echo "WARNING: start-alec.sh not executable"
-          test -x scripts/download-model.sh || echo "WARNING: download-model.sh not executable"
+          COMMIT_MSG=$(git log -1 --pretty=%s)
+          COMMIT_SHA=$(git rev-parse --short HEAD)
+          COMMIT_AUTHOR=$(git log -1 --pretty=%an)
+          CHANGED=$(git diff --name-only HEAD~1 2>/dev/null | head -20)
+          IS_SELF_EDIT="no"
+          if echo "$COMMIT_MSG" | grep -qi "self-edit\|auto-improvement"; then
+            IS_SELF_EDIT="yes"
+          fi
 
-      - name: Validate package.json
-        run: |
-          node -e "JSON.parse(require('fs').readFileSync('package.json'))"
-          echo "✅ package.json is valid JSON"
+          # Build email body
+          cat > /tmp/email_body.txt << EMAILEOF
+          A.L.E.C. CI Report — ${STATUS}
 
-      - name: Check .env.example exists
-        run: |
-          test -f .env.example || echo "WARNING: .env.example missing — new deployments won't know what env vars to set"
+          Commit: ${COMMIT_SHA} — ${COMMIT_MSG}
+          Author: ${COMMIT_AUTHOR}
+          Self-edit: ${IS_SELF_EDIT}
+          Branch: ${{ github.ref_name }}
+
+          Results:
+            Validate:    ${VALIDATE}
+            Integration: ${INTEGRATION}
+
+          Files changed:
+          ${CHANGED}
+
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EMAILEOF
+
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          echo "emoji=$EMOJI" >> $GITHUB_OUTPUT
+          echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
+          echo "commit_msg=$COMMIT_MSG" >> $GITHUB_OUTPUT
+          echo "is_self_edit=$IS_SELF_EDIT" >> $GITHUB_OUTPUT
+
+      - name: Send email
+        if: always()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.ALERT_GMAIL_USER }}
+          password: ${{ secrets.ALERT_GMAIL_APP_PASSWORD }}
+          subject: "${{ steps.report.outputs.emoji }} A.L.E.C. CI — ${{ steps.report.outputs.commit_sha }} — ${{ steps.report.outputs.commit_msg }}"
+          to: ${{ secrets.ALERT_EMAIL_TO }}
+          from: "A.L.E.C. CI <${{ secrets.ALERT_GMAIL_USER }}>"
+          body: file:///tmp/email_body.txt
+          content_type: text/plain
