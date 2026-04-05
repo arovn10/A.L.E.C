@@ -1,6 +1,6 @@
 # A.L.E.C. — Architecture Reference
 
-> Autonomous Language Embedded Cognition
+> Adaptive Learning Executive Coordinator
 > Owner: Alec Rovner | Repo: github.com/arovn10/A.L.E.C
 > License: PROPRIETARY — all data and model weights owned by Alec Rovner
 

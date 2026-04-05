@@ -20,7 +20,7 @@ NEURAL_PORT=${NEURAL_PORT:-8000}
 NODE_PORT=${PORT:-3001}
 VENV_DIR="$PROJECT_DIR/services/neural/.venv"
 
-echo "🧠 Starting A.L.E.C. — Autonomous Language Embedded Cognition"
+echo "🧠 Starting A.L.E.C. — Adaptive Learning Executive Coordinator"
 echo ""
 
 # Check if venv exists

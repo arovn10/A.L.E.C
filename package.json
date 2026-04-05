@@ -1,7 +1,7 @@
 {
   "name": "a-l-e-c",
   "version": "2.0.0",
-  "description": "A.L.E.C. — Autonomous Language Embedded Cognition: Self-improving AI agent with local LLM inference, LoRA fine-tuning, and autonomous knowledge acquisition",
+  "description": "A.L.E.C. — Adaptive Learning Executive Coordinator: Self-improving AI agent with local LLM inference, LoRA fine-tuning, and autonomous knowledge acquisition",
   "main": "backend/server.js",
   "scripts": {
     "start": "node backend/server.js",

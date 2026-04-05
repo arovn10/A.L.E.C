@@ -1,6 +1,6 @@
 /**
  * A.L.E.C. Dashboard — app.js
- * Autonomous Language Embedded Cognition
+ * Adaptive Learning Executive Coordinator
  * Vanilla JS — no frameworks required
  */
 
@@ -260,6 +260,14 @@ function showDashboard(userData) {
   loadMetrics();
   startPolling();
   switchPanel('chat');
+
+  // Auto-initialize voice activation for owner ("Hey ALEC")
+  if (isOwner) {
+    setTimeout(() => {
+      initVoiceActivation();
+      console.log('🎤 Voice activation ready — say "Hey ALEC" to activate');
+    }, 3000);
+  }
 }
 
 async function login(email, password, isDomoEmbed = false) {
@@ -1827,10 +1835,7 @@ function startVoiceCommand() {
   cmdRecog.start();
 }
 
-// Auto-start voice listening for owner
-if (typeof state !== 'undefined' && state.isOwner) {
-  setTimeout(initVoiceActivation, 2000);
-}
+// Voice auto-init is triggered from showDashboard() when owner logs in
 
 window.toggleVoiceActivation = function() {
   const btn = document.getElementById('voice-toggle-btn');

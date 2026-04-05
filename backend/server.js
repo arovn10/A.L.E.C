@@ -1,5 +1,5 @@
 /**
- * A.L.E.C. — Autonomous Language Embedded Cognition
+ * A.L.E.C. — Adaptive Learning Executive Coordinator
  * Main Server Entry Point
  *
  * Two-process architecture:
@@ -1300,7 +1300,7 @@ app.listen(PORT, HOST, () => {
 
   console.log(`
 ╔═══════════════════════════════════════════════════════╗
-║   🧠 A.L.E.C. — Autonomous Language Embedded Cognition
+║   🧠 A.L.E.C. — Adaptive Learning Executive Coordinator
 ╠═══════════════════════════════════════════════════════╣
 ║   Status:  ONLINE
 ║   Port:    ${PORT}

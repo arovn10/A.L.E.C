@@ -1,4 +1,4 @@
-<![CDATA[# A.L.E.C. — Autonomous Language Embedded Cognition
+<![CDATA[# A.L.E.C. — Adaptive Learning Executive Coordinator
 
 > A self-improving AI agent that runs locally, trains on your data, and gets smarter every day.
 > Not a wrapper. Not a chatbot. A proprietary intelligence platform you own completely.
