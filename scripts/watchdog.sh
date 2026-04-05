@@ -17,12 +17,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
-CHECK_INTERVAL=60  # seconds
-MAX_RESTARTS=10    # max restarts per hour before giving up
+CHECK_INTERVAL=60    # seconds between health checks
+UPDATE_INTERVAL=300  # seconds between git pull checks (5 min)
+MAX_RESTARTS=10      # max restarts per hour before giving up
 RESTART_COUNT=0
 LAST_RESET=$(date +%s)
+LAST_UPDATE_CHECK=0
 
-echo "🐕 A.L.E.C. Watchdog started (checking every ${CHECK_INTERVAL}s)"
+echo "🐕 A.L.E.C. Watchdog started (health every ${CHECK_INTERVAL}s, updates every ${UPDATE_INTERVAL}s)"
 
 while true; do
     sleep $CHECK_INTERVAL
@@ -40,6 +42,49 @@ while true; do
         sleep 300  # Wait 5 minutes
         RESTART_COUNT=0
         continue
+    fi
+
+    # ── Auto-update: check for new commits every UPDATE_INTERVAL ──
+    NOW_UPDATE=$(date +%s)
+    if [ $((NOW_UPDATE - LAST_UPDATE_CHECK)) -gt $UPDATE_INTERVAL ]; then
+        LAST_UPDATE_CHECK=$NOW_UPDATE
+        
+        # Fetch latest from GitHub
+        cd "$PROJECT_DIR"
+        git fetch origin main --quiet 2>/dev/null
+        
+        LOCAL_HEAD=$(git rev-parse HEAD 2>/dev/null)
+        REMOTE_HEAD=$(git rev-parse origin/main 2>/dev/null)
+        
+        if [ -n "$REMOTE_HEAD" ] && [ "$LOCAL_HEAD" != "$REMOTE_HEAD" ]; then
+            echo "$(date): 🔄 New code detected — updating A.L.E.C..."
+            echo "  Local:  $LOCAL_HEAD"
+            echo "  Remote: $REMOTE_HEAD"
+            
+            # Pull the update
+            git reset --hard origin/main 2>/dev/null
+            
+            # Reinstall Node deps if package.json changed
+            if git diff --name-only "$LOCAL_HEAD" "$REMOTE_HEAD" 2>/dev/null | grep -q "package.json"; then
+                echo "$(date): 📦 package.json changed — running npm install"
+                npm install --no-audit --no-fund --quiet 2>/dev/null
+            fi
+            
+            # Reinstall Python deps if requirements.txt changed
+            if git diff --name-only "$LOCAL_HEAD" "$REMOTE_HEAD" 2>/dev/null | grep -q "requirements.txt"; then
+                echo "$(date): 🐍 requirements.txt changed — running pip install"
+                source "$PROJECT_DIR/services/neural/.venv/bin/activate" 2>/dev/null
+                pip install -r services/neural/requirements.txt --quiet 2>/dev/null
+            fi
+            
+            echo "$(date): ✅ Code updated to $(git rev-parse --short HEAD) — restarting..."
+            
+            # Force restart with new code
+            kill $(lsof -ti:3001) 2>/dev/null
+            kill $(lsof -ti:8000) 2>/dev/null
+            sleep 2
+            # The health check below will detect it's down and restart
+        fi
     fi
 
     # Check if Node.js is running on port 3001
