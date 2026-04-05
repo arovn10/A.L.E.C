@@ -196,12 +196,51 @@ class SkillsRegistry:
         return result
 
     def get_installed(self) -> list[dict]:
-        """List installed skills."""
+        """List installed skills with REAL connection status."""
         result = []
         for sid, data in self.installed.items():
             skill_def = AVAILABLE_SKILLS.get(sid, {"name": sid, "icon": "🔧"})
-            result.append({**skill_def, **data})
+            entry = {**skill_def, **data}
+            # Check real status for connectors
+            entry["actual_status"] = self._check_real_status(sid, entry)
+            result.append(entry)
         return result
+
+    def _check_real_status(self, skill_id: str, skill_data: dict) -> str:
+        """Check if a skill is ACTUALLY working, not just installed."""
+        import os
+        config = skill_data.get("config", {})
+        requires_config = skill_data.get("requires_config", False)
+
+        # Auto-installed tools are always active
+        if skill_data.get("auto_installed"):
+            return "active"
+
+        # Check env vars for skills configured via .env
+        env_checks = {
+            "imessage": lambda: os.path.exists(os.path.expanduser("~/Library/Messages/chat.db")),
+            "gmail": lambda: bool(os.getenv("GMAIL_EMAIL") and os.getenv("GMAIL_APP_PASSWORD")) or bool(config.get("GMAIL_EMAIL")),
+            "home_assistant": lambda: bool(os.getenv("HOME_ASSISTANT_URL") and os.getenv("HOME_ASSISTANT_ACCESS_TOKEN")) or bool(config.get("HOME_ASSISTANT_URL")),
+            "stoa_database": lambda: bool(os.getenv("STOA_DB_HOST") and os.getenv("STOA_DB_PASSWORD")) or bool(config.get("STOA_DB_HOST")),
+            "web_search": lambda: bool(os.getenv("SEARCH_API_KEY")) or bool(config.get("SEARCH_API_KEY")),
+            "github": lambda: bool(os.getenv("GITHUB_TOKEN")) or bool(config.get("GITHUB_TOKEN")),
+            "notion": lambda: bool(os.getenv("NOTION_API_KEY")) or bool(config.get("NOTION_API_KEY")),
+            "calendar": lambda: bool(config.get("CALENDAR_TYPE")),
+        }
+
+        checker = env_checks.get(skill_id)
+        if checker:
+            try:
+                return "connected" if checker() else "needs_setup"
+            except Exception:
+                return "needs_setup"
+
+        # Has config = connected, needs config but empty = needs setup
+        if requires_config and not config:
+            return "needs_setup"
+        if config:
+            return "connected"
+        return "active"
 
     def install(self, skill_id: str, config: dict = None) -> dict:
         """Install a skill."""

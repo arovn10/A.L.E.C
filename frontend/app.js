@@ -890,20 +890,23 @@ async function loadInstalledSkills() {
     }
 
     container.innerHTML = skills.map(s => {
+      const status = s.actual_status || (s.auto_installed ? 'active' : 'needs_setup');
       const hasConfig = s.requires_config || (s.config_fields && s.config_fields.length > 0);
-      const configured = s.config && Object.keys(s.config).length > 0;
-      const statusClass = configured ? 'badge-connected' : hasConfig ? 'badge-disconnected' : 'badge-connected';
-      const statusText = configured ? 'Connected' : hasConfig ? 'Needs Setup' : 'Active';
+      const colors = { active: '#10b981', connected: '#10b981', needs_setup: '#f59e0b', error: '#ef4444' };
+      const labels = { active: 'ACTIVE', connected: 'CONNECTED', needs_setup: 'NEEDS SETUP', error: 'ERROR' };
+      const c = colors[status] || '#f59e0b';
+      const l = labels[status] || 'NEEDS SETUP';
       return `
         <div class="skill-item">
           <div class="skill-icon">${s.icon || '🔌'}</div>
           <div class="skill-info">
             <div class="skill-name">${escapeHtml(s.name || '—')}</div>
             <div class="skill-desc">${escapeHtml(s.description || '—')}</div>
+            ${s.setup_instructions && status === 'needs_setup' ? `<div style="font-size:11px;color:#f59e0b;margin-top:4px;">⚠️ ${escapeHtml(s.setup_instructions)}</div>` : ''}
           </div>
           <div style="display:flex;gap:6px;align-items:center;">
             ${hasConfig ? `<button class="btn btn-ghost btn-sm" onclick="openSkillConfig('${s.id}')">⚙️ Configure</button>` : ''}
-            <span class="badge ${statusClass}">${statusText}</span>
+            <span style="background:${c}20;color:${c};border:1px solid ${c}40;font-size:11px;padding:2px 8px;border-radius:4px;font-weight:600;">${l}</span>
           </div>
         </div>
       `;
