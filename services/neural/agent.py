@@ -28,6 +28,7 @@ import os
 import re
 import subprocess
 import time
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger("alec.agent")
@@ -200,6 +201,196 @@ class CalendarTool(AgentTool):
 #  AGENT LOOP
 # ═══════════════════════════════════════════════════════════════
 
+
+class SelfEditTool(AgentTool):
+    """
+    Read, modify, commit, and push A.L.E.C.'s own source code.
+    
+    This is what enables true self-improvement: A.L.E.C. can fix its own bugs,
+    add features to its dashboard, update its personality, tune its query planner,
+    and push the changes live — all from a chat message.
+    
+    Actions:
+      read_file   — Read a file from the repo
+      list_files  — List files in a directory
+      edit_file   — Replace text in a file (search → replace)
+      create_file — Create a new file
+      delete_file — Delete a file
+      commit_push — Git commit + push all changes
+      run_shell   — Run an arbitrary shell command in the project directory
+    """
+    name = "self_edit"
+    description = (
+        "Read, modify, or create files in A.L.E.C.'s own source code repository. "
+        "Use this to fix bugs, update the dashboard UI, change styles, add features, "
+        "or improve your own code. After editing, use action='commit_push' to deploy. "
+        "Actions: read_file, list_files, edit_file, create_file, delete_file, commit_push, run_shell."
+    )
+    parameters = {
+        "action": "One of: read_file, list_files, edit_file, create_file, delete_file, commit_push, run_shell",
+        "path": "File path relative to project root (e.g., 'frontend/styles.css')",
+        "search": "(edit_file only) Exact text to find",
+        "replace": "(edit_file only) Replacement text",
+        "content": "(create_file only) File content",
+        "message": "(commit_push only) Git commit message",
+        "command": "(run_shell only) Shell command",
+    }
+
+    def __init__(self):
+        self.project_dir = str(Path(__file__).resolve().parent.parent.parent)
+
+    def _safe_path(self, path: str) -> str:
+        """Resolve path, prevent directory traversal."""
+        clean = path.replace("..", "").lstrip("/")
+        full = os.path.join(self.project_dir, clean)
+        real = os.path.realpath(full)
+        if not real.startswith(os.path.realpath(self.project_dir)):
+            raise ValueError(f"Path escapes project directory: {path}")
+        return full
+
+    def execute(self, action: str = "", path: str = "", search: str = "",
+                replace: str = "", content: str = "", message: str = "",
+                command: str = "", **kwargs) -> str:
+        try:
+            actions = {
+                "read_file": lambda: self._read_file(path),
+                "list_files": lambda: self._list_files(path),
+                "edit_file": lambda: self._edit_file(path, search, replace),
+                "create_file": lambda: self._create_file(path, content),
+                "delete_file": lambda: self._delete_file(path),
+                "commit_push": lambda: self._commit_push(message),
+                "run_shell": lambda: self._run_shell(command),
+            }
+            fn = actions.get(action)
+            if not fn:
+                return f"Unknown action: {action}. Use: {', '.join(actions.keys())}"
+            return fn()
+        except Exception as e:
+            return f"self_edit error: {e}"
+
+    def _read_file(self, path: str) -> str:
+        full = self._safe_path(path)
+        if not os.path.exists(full):
+            return f"File not found: {path}"
+        size = os.path.getsize(full)
+        if size > 100_000:
+            return f"File too large ({size} bytes). Use run_shell with head/tail/grep."
+        with open(full, "r", errors="replace") as f:
+            text = f.read()
+        return f"[{path}] ({text.count(chr(10))+1} lines, {size} bytes):\n\n{text}"
+
+    def _list_files(self, path: str = "") -> str:
+        dir_path = self._safe_path(path or ".")
+        if not os.path.isdir(dir_path):
+            return f"Not a directory: {path}"
+        entries = []
+        skip = {"node_modules", "__pycache__", ".venv", ".git", "data", ".next"}
+        for entry in sorted(os.listdir(dir_path)):
+            if entry.startswith(".") and entry != ".env.example":
+                continue
+            if entry in skip:
+                continue
+            full = os.path.join(dir_path, entry)
+            if os.path.isdir(full):
+                count = sum(1 for f in os.listdir(full) if not f.startswith("."))
+                entries.append(f"  {entry}/ ({count} items)")
+            else:
+                entries.append(f"  {entry} ({os.path.getsize(full):,} bytes)")
+        return f"[{path or '.'}]:\n" + "\n".join(entries)
+
+    def _edit_file(self, path: str, search: str, replace: str) -> str:
+        if not search:
+            return "Error: 'search' parameter required."
+        full = self._safe_path(path)
+        if not os.path.exists(full):
+            return f"File not found: {path}"
+        with open(full, "r") as f:
+            original = f.read()
+        if search not in original:
+            # Fuzzy match hint
+            lines = original.split("\n")
+            search_low = search.lower().strip()[:40]
+            for i, line in enumerate(lines):
+                if search_low in line.lower():
+                    start, end = max(0, i-2), min(len(lines), i+3)
+                    ctx = "\n".join(f"{start+j+1}: {lines[start+j]}" for j in range(end-start))
+                    return f"Search text not found. Nearest match near line {i+1}:\n{ctx}"
+            return f"Search text not found in {path}. Use read_file first."
+        count = original.count(search)
+        if count > 1:
+            return f"Found {count} matches — use a more specific search string."
+        modified = original.replace(search, replace, 1)
+        with open(full, "w") as f:
+            f.write(modified)
+        s_preview = search[:150] + ("..." if len(search) > 150 else "")
+        r_preview = replace[:150] + ("..." if len(replace) > 150 else "")
+        return f"Edited {path} (1 replacement).\nRemoved: {s_preview}\nInserted: {r_preview}"
+
+    def _create_file(self, path: str, content: str) -> str:
+        if not content:
+            return "Error: 'content' parameter required."
+        full = self._safe_path(path)
+        if os.path.exists(full):
+            return f"File exists: {path}. Use edit_file to modify."
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w") as f:
+            f.write(content)
+        return f"Created {path} ({len(content)} bytes)"
+
+    def _delete_file(self, path: str) -> str:
+        full = self._safe_path(path)
+        if not os.path.exists(full):
+            return f"File not found: {path}"
+        critical = ["backend/server.js", "services/neural/server.py", "services/neural/engine.py",
+                     "frontend/index.html", "frontend/app.js", ".env", "package.json"]
+        if path in critical:
+            return f"Cannot delete critical file: {path}"
+        os.remove(full)
+        return f"Deleted {path}"
+
+    def _commit_push(self, message: str = "") -> str:
+        if not message:
+            message = f"self-edit: A.L.E.C. auto-improvement ({time.strftime('%Y-%m-%d %H:%M')})"
+        cmds = [
+            ["git", "add", "-A"],
+            ["git", "diff", "--cached", "--stat"],
+            ["git", "commit", "-m", message],
+            ["git", "push", "origin", "main"],
+        ]
+        results = []
+        for cmd in cmds:
+            try:
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, cwd=self.project_dir)
+                out = (r.stdout or "").strip()
+                if r.returncode != 0:
+                    err = (r.stderr or "").strip()
+                    if "nothing to commit" in (err + out):
+                        return "Nothing to commit."
+                    results.append(f"{'  '.join(cmd[:2])}: ERROR — {err}")
+                    break
+                elif out:
+                    results.append(out)
+            except Exception as e:
+                results.append(f"{' '.join(cmd[:2])}: {e}")
+                break
+        return "\n".join(results) if results else "Committed and pushed."
+
+    def _run_shell(self, command: str) -> str:
+        if not command:
+            return "Error: 'command' required."
+        try:
+            r = subprocess.run(command, shell=True, capture_output=True, text=True,
+                               timeout=60, cwd=self.project_dir)
+            out = (r.stdout or "").strip()
+            if r.returncode != 0:
+                out += f"\nSTDERR: {(r.stderr or '').strip()}"
+            return out[:5000] if out else "(no output)"
+        except subprocess.TimeoutExpired:
+            return "Timed out (60s)."
+        except Exception as e:
+            return f"Shell error: {e}"
+
+
 class ALECAgent:
     """
     The agent loop. Takes a user message, decides whether to use tools,
@@ -218,6 +409,7 @@ class ALECAgent:
         self._register(HomeAssistantTool())
         self._register(CodeExecutionTool())
         self._register(CalendarTool())
+        self._register(SelfEditTool())
 
     def _register(self, tool: AgentTool):
         self.tools[tool.name] = tool
@@ -240,6 +432,8 @@ class ALECAgent:
         lines.append("- If you don't know something → use web_search or memory_search, don't guess")
         lines.append("- If the user teaches you something → use memory_store")
         lines.append("- If math or code is needed → use execute_code")
+        lines.append("- If the user asks to change the UI, fix a bug, update code, or improve you → use self_edit")
+        lines.append("- self_edit workflow: read_file first, then edit_file, then commit_push to deploy")
         lines.append("- If you CAN answer without tools, just respond normally (no TOOL_CALL)")
         lines.append("- NEVER make up data. If a tool returns no results, say so honestly.")
         return "\n".join(lines)
