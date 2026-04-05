@@ -72,12 +72,12 @@ class MemorySearchTool(AgentTool):
         self.memory = memory
 
     def execute(self, query: str = "", **kwargs) -> str:
-        results = self.memory.search(query, limit=5)
+        results = self.memory.recall(query, limit=5)
         if not results:
             return "Nothing found in memory for that query."
         parts = ["From memory:"]
         for r in results:
-            parts.append(f"- [{r.get('category', '?')}] {r.get('value', r.get('content', '?'))}")
+            parts.append(f"- [{r.get('category', '?')}] {r.get('key', '')}: {r.get('value', r.get('content', '?'))}")
         return "\n".join(parts)
 
 
