@@ -756,6 +756,14 @@
 
         <!-- Danger Zone -->
 
+        <!-- Trusted Devices (Owner Only) -->
+        <div class="card" id="trusted-devices-section">
+          <div class="card-header">📱 Trusted Devices <button class="btn-outline" style="float:right;font-size:11px;padding:4px 8px;" onclick="loadTrustedDevices()">Refresh</button></div>
+          <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px;">Devices that stay logged in across server restarts. Revoke access to force re-login.</p>
+          <div id="trusted-devices-list" style="font-size:13px;">Loading devices...</div>
+        </div>
+
+
         <!-- User Management (Owner Only) -->
         <div class="card" id="user-management-section">
           <div class="card-header">👥 User Management</div>

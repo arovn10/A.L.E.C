@@ -1877,3 +1877,67 @@ window.toggleVoiceActivation = function() {
     toast('Say "Hey ALEC" to activate', 'success');
   }
 };
+
+/* ─── Trusted Devices Management ────────────────────────────── */
+
+async function loadTrustedDevices() {
+  const el = document.getElementById('trusted-devices-list');
+  if (!el) return;
+  try {
+    const data = await apiFetch('/api/auth/devices');
+    const devices = data.devices || [];
+    if (!devices.length) {
+      el.innerHTML = '<p style="color:var(--text-muted);">No trusted devices.</p>';
+      return;
+    }
+    const currentDeviceId = localStorage.getItem('alec_device_id');
+    el.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead><tr style="border-bottom:1px solid var(--border);text-align:left;">
+        <th style="padding:6px;">Device</th><th>User</th><th>IP</th><th>Last Seen</th><th></th>
+      </tr></thead>
+      <tbody>${devices.map(d => {
+        const isCurrent = d.device_id === currentDeviceId;
+        const name = d.device_name ? (d.device_name.length > 40 ? d.device_name.slice(0, 40) + '…' : d.device_name) : d.device_id.slice(0, 16);
+        const lastSeen = d.last_seen ? new Date(d.last_seen).toLocaleString() : '—';
+        return `<tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:6px;">${escapeHtml(name)} ${isCurrent ? '<span class="badge badge-connected" style="font-size:10px;">This device</span>' : ''}</td>
+          <td style="font-size:12px;">${escapeHtml(d.user_email || '—')}</td>
+          <td style="font-size:12px;font-family:'JetBrains Mono',monospace;">${escapeHtml(d.ip_address || '—')}</td>
+          <td style="font-size:12px;color:var(--text-muted);">${lastSeen}</td>
+          <td><button onclick="revokeDevice('${d.device_id}')" style="background:none;border:none;color:var(--danger-color);cursor:pointer;font-size:12px;" ${isCurrent ? 'title="This is your current device"' : ''}>Revoke</button></td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>`;
+  } catch (e) {
+    el.innerHTML = '<p style="color:var(--text-muted);">Could not load devices.</p>';
+  }
+}
+
+async function revokeDevice(deviceId) {
+  const currentDeviceId = localStorage.getItem('alec_device_id');
+  const msg = deviceId === currentDeviceId
+    ? 'This is YOUR current device. Revoking will log you out. Continue?'
+    : 'Revoke this device? It will need to log in again.';
+  if (!confirm(msg)) return;
+  try {
+    await apiFetch(`/api/auth/device/${encodeURIComponent(deviceId)}`, { method: 'DELETE' });
+    toast('Device revoked', 'success');
+    if (deviceId === currentDeviceId) {
+      localStorage.clear();
+      location.reload();
+    } else {
+      loadTrustedDevices();
+    }
+  } catch (e) {
+    toast('Failed: ' + e.message, 'error');
+  }
+}
+
+// Load devices when settings panel opens (extend existing handler)
+const _origOnPanelSwitch3 = onPanelSwitch;
+onPanelSwitch = function(panelId) {
+  _origOnPanelSwitch3(panelId);
+  if (panelId === 'settings' && state.isOwner) {
+    loadTrustedDevices();
+  }
+};
