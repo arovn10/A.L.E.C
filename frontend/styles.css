@@ -323,8 +323,7 @@ a:hover { color: var(--primary-hover); }
 
 /* ─── Dashboard Layout ──────────────────────────────────────── */
 #dashboard {
-  display: grid;
-  grid-template-columns: var(--sidebar-w) 1fr;
+  display: block;
   height: 100vh;
   overflow: hidden;
 }
