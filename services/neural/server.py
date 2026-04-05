@@ -342,20 +342,39 @@ async def chat_completions(req: ChatRequest):
             else:
                 messages.insert(0, memory_msg)
 
-        # ── STOA DATA INJECTION: query real data before LLM responds ──
-        stoa_context = query_planner.get_data_context(user_msg)
-        if stoa_context:
-            stoa_msg = {
-                "role": "system",
-                "content": stoa_context,
+        # ── STOA DATA: query real data and return DIRECTLY (bypass LLM) ──
+        # The 7B model can't reliably use injected table data — it hallucinates
+        # fake values like "Property A" instead of reading real data. So when
+        # the query planner finds results, we format and return them directly.
+        stoa_response = query_planner.get_direct_response(user_msg)
+        if stoa_response:
+            logger.info(f"Stoa direct response ({len(stoa_response)} chars) — bypassing LLM")
+            try:
+                conv_id = db.log_conversation(
+                    session_id=session_id,
+                    user_message=user_msg,
+                    alec_response=stoa_response,
+                    confidence=0.95,
+                    model_used="stoa-query-planner",
+                    tokens_in=0,
+                    tokens_out=0,
+                    latency_ms=0,
+                )
+            except Exception:
+                conv_id = None
+            return {
+                "id": f"chatcmpl-stoa-{uuid.uuid4().hex[:8]}",
+                "object": "chat.completion",
+                "model": "alec-v2",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": stoa_response},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                "conversation_id": conv_id,
+                "latency_ms": 0,
             }
-            # Insert after system + memory messages
-            insert_pos = 1
-            for i, m in enumerate(messages):
-                if m["role"] == "system":
-                    insert_pos = i + 1
-            messages.insert(insert_pos, stoa_msg)
-            logger.info(f"Injected Stoa data context ({len(stoa_context)} chars)")
 
         # ── CURIOSITY: detect teaching moments and store them ──
         lower_msg = user_msg.lower()

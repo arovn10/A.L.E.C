@@ -335,6 +335,197 @@ class QueryPlanner:
         parts.append("[END OF DATABASE RESULTS. Present the above data naturally. Say 'From the Stoa database:' then give the facts.]")
         return "\n".join(parts)
 
+    def get_direct_response(self, user_message: str) -> Optional[str]:
+        """Query the Stoa DB and return a formatted human-readable response.
+        
+        This BYPASSES the LLM entirely. The 7B model can't reliably use
+        injected data — it hallucinates fake values. Instead, we format
+        the query results directly into natural language.
+        """
+        if not self.stoa or not self.stoa.connected:
+            try:
+                if self.stoa:
+                    self.stoa.connect()
+            except Exception:
+                pass
+            if not self.stoa or not self.stoa.connected:
+                return None
+
+        if not self.should_query_stoa(user_message):
+            return None
+
+        self.query_count += 1
+        logger.info(f"Query planner (direct): '{user_message[:60]}'")
+
+        self.discover_schema()
+
+        # Check cache
+        cache_key = re.sub(r'[^a-z ]+', '', user_message.lower()).strip()[:50]
+        cached_rows = None
+        if cache_key in self.query_cache:
+            try:
+                cached_rows = self.stoa.query(self.query_cache[cache_key])
+            except Exception:
+                del self.query_cache[cache_key]
+
+        # Find relevant tables and query
+        rows = cached_rows
+        source_table = "cached"
+        sql_used = self.query_cache.get(cache_key, "")
+
+        if not rows:
+            relevant = self._find_relevant_tables(user_message)
+            if not relevant:
+                return None
+
+            for table, score in relevant[:3]:
+                sql = self._generate_sql(table, user_message)
+                logger.info(f"  Trying: {sql[:100]}")
+                try:
+                    rows = self.stoa.query(sql)
+                    if rows:
+                        source_table = table
+                        sql_used = sql
+                        self.query_cache[cache_key] = sql
+                        self._save_cache()
+                        break
+                    # Try without WHERE
+                    schema_name = table.split('.')[0]
+                    table_name = table.split('.')[1] if '.' in table else table
+                    simple_sql = f"SELECT TOP 10 * FROM [{schema_name}].[{table_name}] ORDER BY 1 DESC"
+                    rows = self.stoa.query(simple_sql)
+                    if rows:
+                        source_table = table
+                        sql_used = simple_sql
+                        self.query_cache[cache_key] = simple_sql
+                        self._save_cache()
+                        break
+                except Exception as e:
+                    logger.info(f"  Failed: {e}")
+
+        if not rows:
+            return None
+
+        self.successful_queries += 1
+        return self._format_direct_response(user_message, rows, source_table)
+
+    def _format_direct_response(self, user_message: str, rows: list[dict], source: str) -> str:
+        """Format query results as a natural language response."""
+        lower = user_message.lower()
+        cols = list(rows[0].keys()) if rows else []
+
+        # Detect what the user is asking about to pick the right columns
+        # Property name column
+        name_col = next((c for c in cols if c.lower() in ('property', 'propertyname', 'property_name', 'name', 'projectname', 'project_name', 'title')), None)
+        if not name_col:
+            name_col = next((c for c in cols if 'name' in c.lower() or 'property' in c.lower()), None)
+
+        # Figure out the metric they care about
+        metric_col = None
+        metric_label = "value"
+        metric_map = {
+            'occupancy': ('OccupancyPct', 'occupancy'),
+            'occ': ('OccupancyPct', 'occupancy'),
+            'rent': ('AvgLeasedRent', 'average leased rent'),
+            'units': ('TotalUnits', 'total units'),
+            'vacancy': ('AvailableUnits', 'available units'),
+            'available': ('AvailableUnits', 'available units'),
+            'velocity': ('Velocity28dNew', '28-day lease velocity'),
+            'leased': ('LeasedPct', 'leased percentage'),
+            'budget': ('BudgetedOccupancy', 'budgeted occupancy'),
+            'revenue': ('RevOSF', 'revenue per occupied SF'),
+        }
+        for keyword, (col_name, label) in metric_map.items():
+            if keyword in lower:
+                if col_name in cols:
+                    metric_col = col_name
+                    metric_label = label
+                    break
+
+        # If no specific metric detected, try to find the most relevant numeric column
+        if not metric_col:
+            for c in cols:
+                clow = c.lower()
+                if any(kw in clow for kw in ['pct', 'rate', 'occupancy', 'rent', 'total', 'revenue', 'amount']):
+                    metric_col = c
+                    metric_label = c
+                    break
+
+        # Build the response
+        parts = ["From the Stoa database:\n"]
+
+        # Asking about a specific property?
+        is_specific = any(kw in lower for kw in ['heights', 'picardy', 'bluebonnet', 'crestview', 'waters', 'campus'])
+        is_ranking = any(kw in lower for kw in ['top', 'best', 'highest', 'lowest', 'worst', 'bottom', 'all', 'list', 'show', 'every'])
+
+        if is_specific and len(rows) <= 3:
+            # Specific property query — detailed view
+            for row in rows:
+                pname = row.get(name_col, 'Unknown') if name_col else 'Unknown'
+                parts.append(f"**{pname}**")
+                for col, val in row.items():
+                    if val is not None and str(val).strip() and col != name_col:
+                        # Format percentages nicely
+                        display_val = val
+                        if isinstance(val, float):
+                            if 'pct' in col.lower() or 'rate' in col.lower() or col.lower() == 'occupancypct':
+                                display_val = f"{val:.1f}%"
+                            elif 'rent' in col.lower() or 'amount' in col.lower() or 'revenue' in col.lower():
+                                display_val = f"${val:,.2f}"
+                            else:
+                                display_val = f"{val:,.1f}"
+                        elif isinstance(val, int):
+                            display_val = f"{val:,}"
+                        # Human-readable column name
+                        col_display = re.sub(r'([A-Z])', r' \1', col).strip()
+                        parts.append(f"  {col_display}: {display_val}")
+                parts.append("")
+        else:
+            # Ranking / list view
+            if metric_col:
+                parts.append(f"Properties ranked by {metric_label}:\n")
+                for i, row in enumerate(rows[:15]):
+                    pname = row.get(name_col, f'Row {i+1}') if name_col else f'Row {i+1}'
+                    val = row.get(metric_col)
+                    if val is not None:
+                        if isinstance(val, float):
+                            if 'pct' in metric_col.lower() or 'rate' in metric_col.lower() or 'occupancy' in metric_col.lower():
+                                display = f"{val:.1f}%"
+                            elif 'rent' in metric_col.lower() or 'amount' in metric_col.lower():
+                                display = f"${val:,.2f}"
+                            else:
+                                display = f"{val:,.1f}"
+                        elif isinstance(val, int):
+                            display = f"{val:,}"
+                        else:
+                            display = str(val)
+                        parts.append(f"{i+1}. **{pname}** — {metric_label}: {display}")
+                    else:
+                        parts.append(f"{i+1}. **{pname}**")
+            else:
+                # No clear metric — show key fields
+                parts.append(f"Results ({len(rows)} rows from {source}):\n")
+                for i, row in enumerate(rows[:10]):
+                    pname = row.get(name_col, f'Row {i+1}') if name_col else f'Row {i+1}'
+                    key_vals = []
+                    for col, val in row.items():
+                        if val is not None and col != name_col and str(val).strip():
+                            key_vals.append(f"{col}: {val}")
+                        if len(key_vals) >= 5:
+                            break
+                    parts.append(f"{i+1}. **{pname}** — {', '.join(key_vals)}")
+
+        report_date = None
+        for row in rows[:1]:
+            for col in ['ReportDate', 'Date', 'CreatedAt']:
+                if col in row and row[col]:
+                    report_date = str(row[col])[:10]
+                    break
+        if report_date:
+            parts.append(f"\n_Data as of {report_date}_")
+
+        return "\n".join(parts)
+
     def get_stats(self) -> dict:
         return {
             "queries_attempted": self.query_count,
