@@ -45,6 +45,7 @@ class ALECEngine:
         model_path: Optional[str] = None,
         n_ctx: int = 16384,
         n_gpu_layers: int = -1,
+                n_batch: int = 256,
         n_threads: Optional[int] = None,
     ):
         """Load a GGUF model with llama-cpp-python."""
@@ -75,7 +76,7 @@ class ALECEngine:
             n_ctx=n_ctx,
             n_gpu_layers=n_gpu_layers,
             n_threads=n_threads or os.cpu_count(),
-            n_batch=512,
+            n_batch=n_batch,
             verbose=False,
             chat_format="chatml",
         )
@@ -91,7 +92,7 @@ class ALECEngine:
         self,
         messages: list[dict],
         temperature: float = 0.7,
-        max_tokens: int = 4096,
+        max_tokens: int = 8000,
         top_p: float = 0.9,
         top_k: int = 40,
         stream: bool = False,
