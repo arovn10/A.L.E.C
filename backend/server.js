@@ -1574,7 +1574,7 @@ app.post('/api/plaid/create-link-token', authenticateToken, requireOwner, async 
       return res.status(500).json({ error: 'Plaid credentials not configured. Set PLAID_CLIENT_ID and PLAID_SECRET in .env' });
     }
     const data = await plaidFetch('/link/token/create', {
-      user: { client_user_id: req.user.email },
+      user: { client_user_id: crypto.createHash('sha256').update(req.user.email).digest('hex').slice(0, 32) },
       client_name: 'A.L.E.C.',
       products: ['investments'],
       country_codes: ['US'],
