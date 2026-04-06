@@ -144,14 +144,13 @@ class QueryPlanner:
         named = re.findall(r'(?:the |at |about |for )([A-Z][a-z]+(?: [A-Za-z]+)*)', user_message)
         search_terms = quoted + named
         
-        # Also check common property keywords (NOT generic terms like "stoa" which mean the DB)
+        # DO NOT hardcode property names — let the regex extraction above
+        # handle specific entities from quoted strings and capitalized words.
+        # Hardcoded names caused the query planner to fixate on one property
+        # (e.g. Bluebonnet) even when users asked for "all properties".
         generic_terms = {"stoa", "data", "database", "property", "properties", "all", "every", "list", "show"}
-        for kw in ["heights", "picardy", "campus", "bluebonnet", "crestview", "waters"]:
-            if kw in lower and kw not in [s.lower() for s in search_terms]:
-                search_terms.append(kw)
         # Filter out generic terms that aren't actual property names
         search_terms = [t for t in search_terms if t.lower() not in generic_terms]
-
         if search_terms and name_cols:
             for col in name_cols[:2]:
                 for term in search_terms:
@@ -525,13 +524,11 @@ class QueryPlanner:
 
         # Build the response
         parts = ["From the Stoa database:\n"]
-
         # Asking about a specific property?
-        is_specific = any(kw in lower for kw in ['heights', 'picardy', 'bluebonnet', 'crestview', 'waters', 'campus'])
+                is_specific = len(rows) <= 3  # Few rows = specific property query (don't hardcode names)
         is_ranking = any(kw in lower for kw in ['top', 'best', 'highest', 'lowest', 'worst', 'bottom', 'all', 'list', 'show', 'every'])
 
-        if is_specific and len(rows) <= 3:
-            # Specific property query
+                if is_specific:
             # If the user asked for a SPECIFIC metric, return ONLY that metric.
             # If they asked a general question, show the full detail view.
             for row in rows:
