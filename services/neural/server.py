@@ -232,7 +232,8 @@ class LoginRequest(BaseModel):
     is_domo_embed: bool = False
 
 class StoaQueryRequest(BaseModel):
-    sql: str
+    sql: Optional[str] = None
+    query: Optional[str] = None
 
 class FileProcessRequest(BaseModel):
     filepath: str
@@ -812,7 +813,10 @@ def stoa_sync():
 
 @app.post("/stoa/query")
 def stoa_query(req: StoaQueryRequest):
-    results = stoa.query(req.sql)
+    sql_str = req.sql or req.query
+    if not sql_str:
+        raise HTTPException(status_code=400, detail="Either 'sql' or 'query' field is required")
+    results = stoa.query(sql_str)
     return {"results": results, "count": len(results)}
 
 
