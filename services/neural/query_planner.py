@@ -408,6 +408,15 @@ class QueryPlanner:
         # Check cache
         cache_key = re.sub(r'[^a-z ]+', '', user_message.lower()).strip()[:50]
         cached_rows = None
+
+        # Try specialized handlers first
+        trend_result = self.get_trend_response(user_message)
+        if trend_result:
+            return trend_result
+
+        cost_result = self.get_cost_analysis(user_message)
+        if cost_result:
+            return cost_result
         if cache_key in self.query_cache and not is_ranking:
             try:
                 cached_rows = self.stoa.query(self.query_cache[cache_key])
@@ -599,3 +608,221 @@ class QueryPlanner:
             "cached_queries": len(self.query_cache),
             "stoa_connected": self.stoa.connected if self.stoa else False,
         }
+
+    def _is_trend_query(self, user_message: str) -> bool:
+        """Detect if the user is asking about trends or month-over-month data."""
+        lower = user_message.lower()
+        trend_keywords = [
+            'trend', 'over time', 'month over month', 'month by month',
+            'monthly', 'quarterly', 'yearly', 'year over year',
+            'history', 'historical', 'compare months', 'last 3 months',
+            'last 6 months', 'last 12 months', 'last year',
+            'growth', 'decline', 'change', 'delta', 'progression',
+            'improving', 'worsening', 'increasing', 'decreasing',
+        ]
+        return any(kw in lower for kw in trend_keywords)
+
+    def _is_cost_query(self, user_message: str) -> bool:
+        """Detect if the user is asking about costs or expenses."""
+        lower = user_message.lower()
+        cost_keywords = [
+            'cost', 'expense', 'budget', 'spend', 'spending',
+            'opex', 'capex', 'overhead', 'maintenance cost',
+            'operating expense', 'payroll', 'utility', 'utilities',
+            'insurance', 'tax', 'taxes', 'repair', 'vendor cost',
+            'invoice', 'payment', 'billing', 'charge',
+        ]
+        return any(kw in lower for kw in cost_keywords)
+
+    def _generate_trend_sql(self, table: str, user_message: str) -> Optional[str]:
+        """Generate SQL for month-over-month trend analysis."""
+        columns = self.schema.get(table, [])
+        lower = user_message.lower()
+
+        date_col = None
+        for c in columns:
+            if c.lower() in ('reportdate', 'date', 'createdat', 'computedat'):
+                date_col = c
+                break
+        if not date_col:
+            return None
+
+        metric_col = None
+        metric_map = {
+            'occupancy': 'OccupancyPct', 'rent': 'AvgLeasedRent',
+            'revenue': 'RevOSF', 'noi': 'RevOSF',
+            'velocity': 'Velocity28dNew', 'leased': 'LeasedPct',
+            'vacancy': 'AvailableUnits', 'units': 'TotalUnits',
+        }
+        for keyword, col_name in metric_map.items():
+            if keyword in lower and col_name in columns:
+                metric_col = col_name
+                break
+
+        name_col = next((c for c in columns if 'name' in c.lower() or 'property' in c.lower()), None)
+        schema_name = table.split('.')[0]
+        table_name = table.split('.')[1] if '.' in table else table
+
+        months = 6
+        if 'last 3 month' in lower:
+            months = 3
+        elif 'last 12 month' in lower or 'last year' in lower:
+            months = 12
+
+        select_parts = [f"FORMAT([{date_col}], 'yyyy-MM') as Month"]
+        if name_col:
+            select_parts.append(f"[{name_col}]")
+        if metric_col:
+            select_parts.append(f"AVG([{metric_col}]) as avg_{metric_col}")
+            select_parts.append(f"MIN([{metric_col}]) as min_{metric_col}")
+            select_parts.append(f"MAX([{metric_col}]) as max_{metric_col}")
+        else:
+            select_parts.append("COUNT(*) as record_count")
+
+        group_parts = [f"FORMAT([{date_col}], 'yyyy-MM')"]
+        if name_col:
+            group_parts.append(f"[{name_col}]")
+
+        sql = f"SELECT {', '.join(select_parts)} FROM [{schema_name}].[{table_name}] WHERE [{date_col}] >= DATEADD(month, -{months}, GETDATE()) GROUP BY {', '.join(group_parts)} ORDER BY Month DESC"
+        return sql
+
+    def get_trend_response(self, user_message: str) -> Optional[str]:
+        """Handle trend/month-over-month queries."""
+        if not self._is_trend_query(user_message):
+            return None
+        if not self.stoa or not self.stoa.connected:
+            return None
+
+        self.discover_schema()
+        relevant = self._find_relevant_tables(user_message)
+        if not relevant:
+            return None
+
+        for table, score in relevant[:3]:
+            sql = self._generate_trend_sql(table, user_message)
+            if not sql:
+                continue
+            logger.info(f"  Trend SQL: {sql[:100]}")
+            try:
+                rows = self.stoa.query(sql)
+                if rows:
+                    self.successful_queries += 1
+                    return self._format_trend_response(rows, table)
+            except Exception as e:
+                logger.info(f"  Trend query failed: {e}")
+        return None
+
+    def _format_trend_response(self, rows: list[dict], source: str) -> str:
+        """Format trend data as month-by-month breakdown."""
+        parts = ["From the Stoa database — **Trend Analysis**:\n"]
+        months_data: dict[str, list[dict]] = {}
+        for row in rows:
+            month = row.get('Month', 'Unknown')
+            if month not in months_data:
+                months_data[month] = []
+            months_data[month].append(row)
+
+        metric_cols = [c for c in rows[0].keys() if c.startswith('avg_') or c.startswith('min_') or c.startswith('max_')]
+        name_col = next((c for c in rows[0].keys() if 'name' in c.lower() or 'property' in c.lower()), None)
+
+        for month in sorted(months_data.keys(), reverse=True):
+            month_rows = months_data[month]
+            parts.append(f"**{month}:**")
+            for row in month_rows[:10]:
+                label = row.get(name_col, '') if name_col else ''
+                vals = []
+                for mc in metric_cols:
+                    if row.get(mc) is not None:
+                        col_base = mc.split('_', 1)[1] if '_' in mc else mc
+                        vals.append(f"{mc}: {self._format_value(row[mc], col_base)}")
+                line = f"  {label}: {', '.join(vals)}" if label else f"  {', '.join(vals)}"
+                parts.append(line)
+            parts.append("")
+
+        if len(months_data) >= 2:
+            sm = sorted(months_data.keys())
+            parts.append(f"**Insight:** Data spans {sm[0]} to {sm[-1]} ({len(months_data)} months).")
+        return "\n".join(parts)
+
+    def get_cost_analysis(self, user_message: str) -> Optional[str]:
+        """Handle cost/expense analysis queries."""
+        if not self._is_cost_query(user_message):
+            return None
+        if not self.stoa or not self.stoa.connected:
+            return None
+
+        self.discover_schema()
+        cost_tables = []
+        for table, columns in self.schema.items():
+            tl = table.lower()
+            ct = ' '.join(columns).lower()
+            if any(kw in tl for kw in ['cost', 'expense', 'budget', 'invoice', 'payment', 'vendor', 'contract']):
+                cost_tables.append((table, 15))
+            elif any(kw in ct for kw in ['cost', 'expense', 'amount', 'budget', 'payment', 'fee']):
+                cost_tables.append((table, 5))
+
+        if not cost_tables:
+            return None
+        cost_tables.sort(key=lambda x: -x[1])
+
+        for table, score in cost_tables[:3]:
+            sql = self._generate_sql(table, user_message)
+            logger.info(f"  Cost SQL: {sql[:100]}")
+            try:
+                rows = self.stoa.query(sql)
+                if rows:
+                    self.successful_queries += 1
+                    return self._format_direct_response(user_message, rows, table)
+            except Exception as e:
+                logger.info(f"  Cost query failed: {e}")
+        return None
+
+    def generate_insights(self, user_message: str) -> Optional[str]:
+        """Generate analytical insights — outliers and notable data points."""
+        if not self.stoa or not self.stoa.connected:
+            return None
+
+        self.discover_schema()
+        relevant = self._find_relevant_tables(user_message)
+        if not relevant:
+            return None
+
+        insights = []
+        table = relevant[0][0]
+        columns = self.schema.get(table, [])
+        sn = table.split('.')[0]
+        tn = table.split('.')[1] if '.' in table else table
+
+        num_ind = ['pct', 'rate', 'total', 'amount', 'count', 'rent', 'units', 'occupancy', 'revenue', 'cost']
+        num_cols = [c for c in columns if any(kw in c.lower() for kw in num_ind)]
+        name_col = next((c for c in columns if 'name' in c.lower() or 'property' in c.lower()), None)
+
+        for nc in num_cols[:3]:
+            try:
+                if name_col:
+                    sql = f"SELECT TOP 3 [{name_col}], [{nc}] FROM [{sn}].[{tn}] WHERE [{nc}] IS NOT NULL ORDER BY [{nc}] DESC"
+                else:
+                    sql = f"SELECT TOP 3 [{nc}] FROM [{sn}].[{tn}] WHERE [{nc}] IS NOT NULL ORDER BY [{nc}] DESC"
+                top_rows = self.stoa.query(sql)
+                bot_rows = self.stoa.query(sql.replace('DESC', 'ASC'))
+
+                if top_rows:
+                    tv = top_rows[0].get(nc)
+                    tn2 = top_rows[0].get(name_col, 'N/A') if name_col else 'N/A'
+                    insights.append(f"Highest {nc}: {tn2} at {self._format_value(tv, nc)}")
+                if bot_rows:
+                    bv = bot_rows[0].get(nc)
+                    bn = bot_rows[0].get(name_col, 'N/A') if name_col else 'N/A'
+                    insights.append(f"Lowest {nc}: {bn} at {self._format_value(bv, nc)}")
+            except Exception:
+                pass
+
+        if not insights:
+            return None
+
+        parts = ["From the Stoa database — **Key Insights**:\n"]
+        for ins in insights:
+            parts.append(f"- {ins}")
+        parts.append(f"\n_Source: {table}_")
+        self.successful_queries += 1
+        return "\n".join(parts)
