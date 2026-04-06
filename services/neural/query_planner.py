@@ -158,7 +158,7 @@ class QueryPlanner:
 
         # Detect ordering intent
         order = ""
-        if any(w in lower for w in ["highest", "top", "best", "most", "maximum", "max"]):
+        if any(w in lower for w in ["highest", "top", "best", "most", "maximum", "max", "ranked", "rank", "sort", "ordered"]):
             # Find numeric columns to sort by — prioritize columns that match the user's question
             user_words = set(re.findall(r'[a-z]{3,}', lower))
             # First try to find a column matching what the user asked about
