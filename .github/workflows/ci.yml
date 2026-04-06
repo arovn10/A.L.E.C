@@ -58,7 +58,7 @@ jobs:
         run: |
           ERRORS=""
           for f in services/neural/*.py; do
-            if python -m py_compile "$f" 2>/dev/null; then
+            if python -m py_compile "$f"; then
               echo "  ✅ $f"
             else
               echo "  ❌ $f"
