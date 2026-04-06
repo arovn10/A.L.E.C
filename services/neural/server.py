@@ -477,7 +477,7 @@ async def chat_completions(req: ChatRequest):
     session_id = req.session_id or uuid.uuid4().hex[:12]
 
     # ── MEMORY INJECTION: pull relevant memories and inject into context ──
-    user_msg = next((m.content for m in req.messages if m.role == "user"), "")
+        user_msg = next((m.content for m in reversed(req.messages) if m.role == "user"), "")
     if user_msg:
         
         # Strip previous Stoa-direct responses from history so the LLM
