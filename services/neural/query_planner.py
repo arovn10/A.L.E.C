@@ -128,6 +128,52 @@ class QueryPlanner:
         scored.sort(key=lambda x: -x[1])
         return scored[:5]  # Top 5 most relevant
 
+
+        def _match_property_in_message(self, user_message: str) -> list[str]:
+        """Match property names from user message against actual DB data.
+        This is much more reliable than regex extraction for names like
+        'Heights at Picardy' which contain lowercase connectors."""
+        lower = user_message.lower()
+        # Get known property names from cache or DB
+        if not hasattr(self, '_property_names'):
+            self._property_names = []
+            if self.stoa and self.stoa.connected:
+                try:
+                    for table in self.schema:
+                        cols = self.schema[table]
+                        name_cols = [c for c in cols if any(kw in c.lower() for kw in ['name', 'property', 'title'])]
+                        if name_cols:
+                            sql = f"SELECT DISTINCT [{name_cols[0]}] FROM [{table.split('.')[0]}].[{table.split('.')[1] if '.' in table else table}] WHERE [{name_cols[0]}] IS NOT NULL"
+                            try:
+                                rows = self.stoa.query(sql)
+                                for r in rows:
+                                    val = r.get(name_cols[0], '')
+                                    if val and len(str(val)) > 2:
+                                        self._property_names.append(str(val))
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+            self._property_names = list(set(self._property_names))
+            logger.info(f"Cached {len(self._property_names)} property names from DB")
+        # Match against known names
+        matched = []
+        for name in self._property_names:
+            if name.lower() in lower:
+                matched.append(name)
+        # Also try partial matching: if user says "picardy" match "The Heights at Picardy"
+        if not matched:
+            words = set(re.findall(r'[a-z]{4,}', lower))
+            # Remove generic words
+            words -= {'what', 'which', 'where', 'when', 'that', 'this', 'from', 'have', 'does',
+                      'show', 'tell', 'give', 'about', 'occupancy', 'rent', 'units', 'data',
+                      'property', 'properties', 'highest', 'lowest', 'total', 'average', 'list',
+                      'database', 'stoa', 'many', 'much'}
+            for name in self._property_names:
+                name_words = set(re.findall(r'[a-z]{4,}', name.lower()))
+                if words & name_words:
+                    matched.append(name)
+        return matched
     def _generate_sql(self, table: str, user_message: str) -> str:
         """Generate a SQL query for a table based on the user's question."""
         columns = self.schema.get(table, [])
@@ -146,7 +192,12 @@ class QueryPlanner:
         # Extract potential entity names (capitalized words, quoted strings)
         quoted = re.findall(r'"([^"]+)"', user_message)
         named = re.findall(r'(?:the |at |about |for )([A-Z][a-z]+(?: [A-Za-z]+)*)', user_message)
-        search_terms = quoted + named
+                # Also try matching against actual DB property names (handles 'Heights at Picardy' etc)
+        db_matched = self._match_property_in_message(user_message)
+        if db_matched:
+            search_terms = db_matched  # DB names are more reliable than regex
+        else:
+            search_terms = quoted + named
         
         # DO NOT hardcode property names — let the regex extraction above
         # handle specific entities from quoted strings and capitalized words.
