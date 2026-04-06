@@ -211,7 +211,7 @@ class ChatRequest(BaseModel):
     model: str = "alec-v2"
     messages: list[ChatMessage]
     temperature: float = 0.7
-    max_tokens: int = 4096
+    max_tokens: int = 8000
     top_p: float = 0.9
     top_k: int = 40
     stream: bool = False
