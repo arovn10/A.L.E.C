@@ -321,7 +321,7 @@ class QueryPlanner:
             self.successful_queries  # Don't increment
             return None
 
-        self.successful_queries += 1
+        
         return self._format_results(all_results)
 
     def _format_results(self, all_results: list[dict]) -> str:
@@ -458,9 +458,38 @@ class QueryPlanner:
                     logger.info(f"  Failed: {e}")
 
         if not rows:
-            return None
 
+                        return None
+                    # Ranking queries: if we got too few rows, retry without date filter
+        # This happens when only some properties have data for the latest date
+        if is_ranking and len(rows) <= 2 and source_table != "cached":
+            logger.info(f"  Ranking query got only {len(rows)} rows — retrying without date filter")
+            try:
+                sn = source_table.split('.')[0]
+                tn = source_table.split('.')[1] if '.' in source_table else source_table
+                # Find the ordering column from the original SQL
+                order_col = None
+                lower = user_message.lower()
+                metric_map = {
+                    'occupancy': 'OccupancyPct', 'rent': 'AvgLeasedRent',
+                    'units': 'TotalUnits', 'velocity': 'Velocity28dNew',
+                    'leased': 'LeasedPct', 'revenue': 'RevOSF',
+                }
+                for kw, col in metric_map.items():
+                    if kw in lower and col in self.schema.get(source_table, []):
+                        order_col = col
+                        break
+                order = f"ORDER BY [{order_col}] DESC" if order_col else "ORDER BY 1 DESC"
+                retry_sql = f"SELECT TOP 15 * FROM [{sn}].[{tn}] {order}"
+                retry_rows = self.stoa.query(retry_sql)
+                if retry_rows and len(retry_rows) > len(rows):
+                    rows = retry_rows
+                    logger.info(f"  Retry got {len(rows)} rows")
+            except Exception as e:
+                logger.info(f"  Retry failed: {e}")
+        
         self.successful_queries += 1
+        
         return self._format_direct_response(user_message, rows, source_table)
 
     @staticmethod
@@ -706,7 +735,7 @@ class QueryPlanner:
             try:
                 rows = self.stoa.query(sql)
                 if rows:
-                    self.successful_queries += 1
+                    def get_direct_response
                     return self._format_trend_response(rows, table)
             except Exception as e:
                 logger.info(f"  Trend query failed: {e}")
