@@ -528,7 +528,7 @@ class QueryPlanner:
         is_specific = len(rows) <= 3  # Few rows = specific property query (don't hardcode names)
         is_ranking = any(kw in lower for kw in ['top', 'best', 'highest', 'lowest', 'worst', 'bottom', 'all', 'list', 'show', 'every'])
 
-                if is_specific:
+        if is_specific:
             # If the user asked for a SPECIFIC metric, return ONLY that metric.
             # If they asked a general question, show the full detail view.
             for row in rows:
