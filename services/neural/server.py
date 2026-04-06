@@ -692,13 +692,13 @@ async def _stream_response(messages, req, session_id):
 
 @app.post("/feedback")
 def submit_feedback(req: FeedbackRequest):
-    try:
+        try:
             if not req.conversation_id:
                 return {"success": False, "message": "No conversation to rate"}
-        db.rate_conversation(req.conversation_id, req.rating, req.feedback)
-        return {"success": True, "message": "Feedback recorded"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+            db.rate_conversation(req.conversation_id, req.rating, req.feedback)
+            return {"success": True, "message": "Feedback recorded"}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 # ══════════════════════════════════════════════════════════════════
