@@ -133,7 +133,7 @@ class QueryPlanner:
         """Match property names from user message against actual DB data.
         This is much more reliable than regex extraction for names like
         'Heights at Picardy' which contain lowercase connectors."""
-        lower = user_message.lower()
+    lower = user_message.lower()
         # Get known property names from cache or DB
         if not hasattr(self, '_property_names'):
             self._property_names = []
