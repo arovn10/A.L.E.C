@@ -133,6 +133,10 @@ class QueryPlanner:
         columns = self.schema.get(table, [])
         lower = user_message.lower()
 
+                # Extract requested count from user message (e.g., "top 5" -> 5)
+        count_match = re.search(r'(?:top|bottom|first|last)\s+(\d+)', lower)
+        row_limit = int(count_match.group(1)) if count_match else 15
+
         # Detect if asking about a specific entity
         # Look for property names, places, etc.
         name_cols = [c for c in columns if any(kw in c.lower() for kw in ["name", "title", "description", "property", "project"])]
@@ -195,7 +199,7 @@ class QueryPlanner:
         schema_name = table.split('.')[0]
         table_name = table.split('.')[1] if '.' in table else table
         
-        return f"SELECT TOP 15 * FROM [{schema_name}].[{table_name}] {where_clause} {order}"
+        return f"SELECT TOP {row_limit} * FROM [{schema_name}].[{table_name}] {where_clause} {order}"
 
     def should_query_stoa(self, user_message: str) -> bool:
         """Check if this message warrants a database query.
