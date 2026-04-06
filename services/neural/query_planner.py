@@ -525,7 +525,7 @@ class QueryPlanner:
         # Build the response
         parts = ["From the Stoa database:\n"]
         # Asking about a specific property?
-            is_specific = len(rows) <= 3  # Few rows = specific property query (don't hardcode names)
+        is_specific = len(rows) <= 3  # Few rows = specific property query (don't hardcode names)
         is_ranking = any(kw in lower for kw in ['top', 'best', 'highest', 'lowest', 'worst', 'bottom', 'all', 'list', 'show', 'every'])
 
                 if is_specific:
