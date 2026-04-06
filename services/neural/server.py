@@ -218,7 +218,7 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = None
 
 class FeedbackRequest(BaseModel):
-    conversation_id: int
+    conversation_id: Optional[int] = None
     rating: int = Field(..., ge=-1, le=1)
     feedback: str = ""
 
@@ -234,6 +234,7 @@ class LoginRequest(BaseModel):
 class StoaQueryRequest(BaseModel):
     sql: Optional[str] = None
     query: Optional[str] = None
+    query_type: Optional[str] = None
 
 class FileProcessRequest(BaseModel):
     filepath: str
@@ -692,6 +693,8 @@ async def _stream_response(messages, req, session_id):
 @app.post("/feedback")
 def submit_feedback(req: FeedbackRequest):
     try:
+                if not req.conversation_id:
+            return {"success": False, "message": "No conversation to rate"}
         db.rate_conversation(req.conversation_id, req.rating, req.feedback)
         return {"success": True, "message": "Feedback recorded"}
     except Exception as e:
