@@ -479,6 +479,13 @@ async def chat_completions(req: ChatRequest):
     # ── MEMORY INJECTION: pull relevant memories and inject into context ──
     user_msg = next((m.content for m in req.messages if m.role == "user"), "")
     if user_msg:
+        
+        # Strip previous Stoa-direct responses from history so the LLM
+        # doesn't copy the format for non-data questions
+        messages = [
+            m for m in messages
+            if not (m["role"] == "assistant" and m["content"].startswith("From the Stoa database:"))
+        ]
         memory_context = memory.get_context_injection(user_msg)
         if memory_context:
             # Inject memories as a system message right after the main system prompt
