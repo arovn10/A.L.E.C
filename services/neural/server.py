@@ -537,29 +537,6 @@ async def chat_completions(req: ChatRequest):
                 "latency_ms": 0,
                 "tool_calls": [],
             }
-        # ── STOA DATA: query DB and inject results as LLM context ──
-        # Instead of bypassing the LLM, we feed the raw data INTO the model
-        # so it can reason about it — compare vs budget, flag anomalies,
-        # filter to just what was asked, and add insights.
-        stoa_context = query_planner.get_data_context(user_msg)
-        if stoa_context:
-            logger.info(f"Stoa context injected ({len(stoa_context)} chars) — LLM will reason about it")
-            insight_prompt = {
-                "role": "system",
-                "content": (
-                    f"{stoa_context}\n\n"
-                    "INSTRUCTIONS FOR RESPONDING:\n"
-                    "1. Answer ONLY what the user asked. If they asked for occupancy, give occupancy — not 30 columns.\n"
-                    "2. Add brief INSIGHTS: compare vs budget, flag if above/below target, note trends.\n"
-                    "3. Be concise. One sentence per metric unless the user asked for detail.\n"
-                    "4. Use the EXACT numbers from the data above. Do NOT make up values.\n"
-                    "5. Format: 'From the Stoa database:' then the answer with insight.\n"
-                    "6. Example good answer: 'Heights at Picardy occupancy is 69.4%, which is 0.9% below the 70.3% budget target — you\'re 2 units short.'\n"
-                    "7. Example bad answer: dumping all 30 columns when they asked for one metric.\n"
-                ),
-            }
-            messages.append(insight_prompt)
-
         # ── CURIOSITY: detect teaching moments and store them ──
         lower_msg = user_msg.lower()
         # Detect direct teaching: "X is Y", "remember that", "actually", corrections
