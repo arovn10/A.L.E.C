@@ -156,7 +156,7 @@ const authManager = new AuthManager();
 async function initializeSystem() {
   await authManager.initializeAdminAccount(
     'arovner@stoagroup.com',
-    'Wed75382' // Using same password as database for simplicity
+    process.env.ADMIN_PASSWORD || 'changeme' // Using same password as database for simplicity
   );
 }
 
