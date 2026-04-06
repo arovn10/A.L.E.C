@@ -295,14 +295,21 @@ class QueryPlanner:
                     break  # Got good results
                 else:
                     logger.info(f"  ✗ {table}: 0 rows")
-                    # Try without WHERE clause
+                    # WHERE clause returned 0 rows — check if user asked for a specific entity
+                    _q = re.findall(r'"([^"]+)"', user_message)
+                    _n = re.findall(r'(?:the |at |about |for )([A-Z][a-z]+(?: [A-Za-z]+)*)', user_message)
+                    _terms = _q + _n
+                    _gen = {"stoa", "data", "database", "property", "properties", "all", "every", "list", "show"}
+                    _terms = [t for t in _terms if t.lower() not in _gen]
+                    if _terms:
+                        logger.info(f"  No data for specific entity: {_terms}")
+                        continue
+                    # Generic query — try without WHERE clause
                     simple_sql = f"SELECT TOP 15 * FROM [{table.split('.')[0]}].[{table.split('.')[1] if '.' in table else table}] ORDER BY 1 DESC"
                     rows = self.stoa.query(simple_sql)
                     if rows:
                         all_results.append({"type": table, "sql": simple_sql, "rows": rows[:15]})
                         logger.info(f"  ✓ {table} (no filter): {len(rows)} rows")
-                        self.query_cache[cache_key] = simple_sql
-                        self._save_cache()
                         break
             except Exception as e:
                 logger.info(f"  ✗ {table}: {e}")
@@ -443,7 +450,18 @@ class QueryPlanner:
                         self.query_cache[cache_key] = sql
                         self._save_cache()
                         break
-                    # Try without WHERE
+                    # WHERE clause returned 0 rows — check if user asked for a specific property
+                    # Extract entity names from the original question
+                    _quoted = re.findall(r'"([^"]+)"', user_message)
+                    _named = re.findall(r'(?:the |at |about |for )([A-Z][a-z]+(?: [A-Za-z]+)*)', user_message)
+                    _search_terms = _quoted + _named
+                    _generic = {"stoa", "data", "database", "property", "properties", "all", "every", "list", "show"}
+                    _search_terms = [t for t in _search_terms if t.lower() not in _generic]
+                    if _search_terms:
+                        # User asked about a specific entity that wasn't found — don't return random data
+                        logger.info(f"  No data found for: {_search_terms}")
+                        continue
+                    # Generic query (no specific entity) — try without WHERE
                     schema_name = table.split('.')[0]
                     table_name = table.split('.')[1] if '.' in table else table
                     simple_sql = f"SELECT TOP 10 * FROM [{schema_name}].[{table_name}] ORDER BY 1 DESC"
@@ -451,13 +469,25 @@ class QueryPlanner:
                     if rows:
                         source_table = table
                         sql_used = simple_sql
-                        self.query_cache[cache_key] = simple_sql
-                        self._save_cache()
+                        # Do NOT cache fallback queries — they are generic and not specific to this question
                         break
                 except Exception as e:
                     logger.info(f"  Failed: {e}")
 
         if not rows:
+            # Check if user asked about a specific entity — give a helpful "not found" message
+            _quoted = re.findall(r'"([^"]+)"', user_message)
+            _named = re.findall(r'(?:the |at |about |for )([A-Z][a-z]+(?: [A-Za-z]+)*)', user_message)
+            _search_terms = _quoted + _named
+            _generic = {"stoa", "data", "database", "property", "properties", "all", "every", "list", "show"}
+            _search_terms = [t for t in _search_terms if t.lower() not in _generic]
+            if _search_terms:
+                entity = _search_terms[0]
+                return f"From the Stoa database:
+
+No data found for **{entity}**. This property may not exist in the database or may be listed under a different name.
+
+_Check the Stoa Data panel for available properties._"
             return None
 
         self.successful_queries += 1
