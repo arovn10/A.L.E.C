@@ -460,7 +460,7 @@ app.get('/api/model/info', authenticateToken, async (req, res) => {
     res.json({ success: true, ...data });
   } catch (error) {
     console.error('Model info error:', error);
-    res.status(500).json({ error: 'Failed to fetch model info', message: error.message });
+    res.json({ success: true, model_name: 'Qwen2.5-Coder-7B', status: 'neural_offline', loaded: false, message: 'Neural engine unavailable' });
   }
 });
 
@@ -1225,22 +1225,22 @@ app.get('/api/auth/users', authenticateToken, requireFullCapabilities, async (re
 });
 
 app.post('/api/auth/users/create', authenticateToken, requireFullCapabilities, async (req, res) => {
-  const data = await proxyToNeural('/auth/users/create', 'POST', req.body);
+  const data = await proxyToNeural('/auth/users/create', { method: 'POST', body: req.body });
   res.json(data);
 });
 
 app.post('/api/auth/users/role', authenticateToken, requireFullCapabilities, async (req, res) => {
-  const data = await proxyToNeural('/auth/users/role', 'POST', req.body);
+  const data = await proxyToNeural('/auth/users/role', { method: 'POST', body: req.body });
   res.json(data);
 });
 
 app.post('/api/auth/users/password', authenticateToken, requireFullCapabilities, async (req, res) => {
-  const data = await proxyToNeural('/auth/users/password', 'POST', req.body);
+  const data = await proxyToNeural('/auth/users/password', { method: 'POST', body: req.body });
   res.json(data);
 });
 
 app.delete('/api/auth/users/:email', authenticateToken, requireFullCapabilities, async (req, res) => {
-  const data = await proxyToNeural(`/auth/users/${encodeURIComponent(req.params.email)}`, 'DELETE');
+  const data = await proxyToNeural(`/auth/users/${encodeURIComponent(req.params.email)}`, { method: 'DELETE' });
   res.json(data);
 });
 
@@ -1250,13 +1250,13 @@ app.delete('/api/auth/users/:email', authenticateToken, requireFullCapabilities,
 
 // Teach A.L.E.C. something
 app.post('/api/memory/teach', authenticateToken, requireFullCapabilities, async (req, res) => {
-  const data = await proxyToNeural('/memory/teach', 'POST', req.body);
+  const data = await proxyToNeural('/memory/teach', { method: 'POST', body: req.body });
   res.json(data);
 });
 
 // Search A.L.E.C.'s memory
 app.post('/api/memory/search', authenticateToken, async (req, res) => {
-  const data = await proxyToNeural('/memory/search', 'POST', req.body);
+  const data = await proxyToNeural('/memory/search', { method: 'POST', body: req.body });
   res.json(data);
 });
 
@@ -1280,7 +1280,7 @@ app.get('/api/memory/category/:category', authenticateToken, async (req, res) =>
 
 // Delete a memory
 app.delete('/api/memory/:id', authenticateToken, requireFullCapabilities, async (req, res) => {
-  const data = await proxyToNeural(`/memory/${req.params.id}`, 'DELETE');
+  const data = await proxyToNeural(`/memory/${req.params.id}`, { method: 'DELETE' });
   res.json(data);
 });
 
@@ -1289,22 +1289,22 @@ app.delete('/api/memory/:id', authenticateToken, requireFullCapabilities, async 
 // ════════════════════════════════════════════════════════════════
 
 app.post('/api/excel/read', authenticateToken, async (req, res) => {
-  const data = await proxyToNeural('/excel/read', 'POST', req.body);
+  const data = await proxyToNeural('/excel/read', { method: 'POST', body: req.body });
   res.json(data);
 });
 
 app.post('/api/excel/export', authenticateToken, requireFullCapabilities, async (req, res) => {
-  const data = await proxyToNeural('/excel/export', 'POST', req.body);
+  const data = await proxyToNeural('/excel/export', { method: 'POST', body: req.body });
   res.json(data);
 });
 
 app.post('/api/excel/edit', authenticateToken, requireFullCapabilities, async (req, res) => {
-  const data = await proxyToNeural('/excel/edit', 'POST', req.body);
+  const data = await proxyToNeural('/excel/edit', { method: 'POST', body: req.body });
   res.json(data);
 });
 
 app.post('/api/excel/analyze', authenticateToken, async (req, res) => {
-  const data = await proxyToNeural('/excel/analyze', 'POST', req.body);
+  const data = await proxyToNeural('/excel/analyze', { method: 'POST', body: req.body });
   res.json(data);
 });
 
@@ -1321,7 +1321,7 @@ app.use('/exports', express.static(path.join(__dirname, '..', 'data', 'exports')
 // ════════════════════════════════════════════════════════════════
 
 app.post('/api/initiative/scan', authenticateToken, requireFullCapabilities, async (req, res) => {
-  const data = await proxyToNeural('/initiative/scan', 'POST');
+  const data = await proxyToNeural('/initiative/scan', { method: 'POST' });
   res.json(data);
 });
 
@@ -1331,7 +1331,7 @@ app.get('/api/initiative/status', authenticateToken, async (req, res) => {
 });
 
 app.post('/api/initiative/analyze-performance', authenticateToken, requireFullCapabilities, async (req, res) => {
-  const data = await proxyToNeural('/initiative/analyze-performance', 'POST');
+  const data = await proxyToNeural('/initiative/analyze-performance', { method: 'POST' });
   res.json(data);
 });
 
