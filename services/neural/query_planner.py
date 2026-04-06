@@ -257,7 +257,7 @@ class QueryPlanner:
         self.discover_schema()
 
         # Check cache first
-        cache_key = re.sub(r'[^a-z ]+', '', user_message.lower()).strip()[:50]
+        cache_key = re.sub(r'[^a-z ]+', '', user_message.lower()).strip()[:100]
         if cache_key in self.query_cache:
             try:
                 rows = self.stoa.query(self.query_cache[cache_key])
@@ -406,7 +406,7 @@ class QueryPlanner:
         ])
 
         # Check cache
-        cache_key = re.sub(r'[^a-z ]+', '', user_message.lower()).strip()[:50]
+        cache_key = re.sub(r'[^a-z ]+', '', user_message.lower()).strip()[:100]
         cached_rows = None
 
         # Try specialized handlers first
@@ -536,7 +536,25 @@ class QueryPlanner:
                     metric_col = c
                     metric_label = c
                     break
-
+        # ── CLIENT-SIDE ENTITY FILTER ──
+        # If user asked about a specific property, filter rows to just that property.
+        # This handles cases where SQL WHERE clause didn't match (e.g. "The" prefix).
+        quoted = re.findall(r'"([^"]+)"', user_message)
+        named = re.findall(r'(?:the |at |about |for |of )([A-Z][a-z]+(?:\s+[A-Za-z]+)*)', user_message)
+        entity_terms = quoted + named
+        generic = {'Stoa', 'Data', 'Database', 'Property', 'Properties', 'All'}
+        entity_terms = [t for t in entity_terms if t not in generic]
+        if entity_terms and name_col and len(rows) > 3:
+            filtered = []
+            for row in rows:
+                rname = str(row.get(name_col, '')).lower()
+                for term in entity_terms:
+                    if term.lower() in rname:
+                        filtered.append(row)
+                        break
+            if filtered:
+                rows = filtered
+        
         # Build the response
         parts = ["From the Stoa database:\n"]
         # Asking about a specific property?
