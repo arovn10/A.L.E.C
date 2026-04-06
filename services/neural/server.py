@@ -492,6 +492,44 @@ async def chat_completions(req: ChatRequest):
             else:
                 messages.insert(0, memory_msg)
 
+
+                # ── STOA DIRECT RESPONSE: bypass LLM for data queries ──
+        # The 7B model can't reliably use injected data — it hallucinates.
+        # Use query_planner.get_direct_response() which formats data into
+        # natural language directly, no LLM needed.
+        direct_response = query_planner.get_direct_response(user_msg)
+        if direct_response:
+            logger.info(f"Stoa direct response ({len(direct_response)} chars) — bypassing LLM")
+            # Log the conversation
+            try:
+                conv_id = db.log_conversation(
+                    session_id=session_id,
+                    user_message=user_msg,
+                    alec_response=direct_response,
+                    confidence=1.0,
+                    model_used="alec-v2+stoa-direct",
+                    tokens_in=0,
+                    tokens_out=0,
+                    latency_ms=0,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to log conversation: {e}")
+                conv_id = None
+            return {
+                "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": "alec-v2",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": direct_response},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                "conversation_id": conv_id,
+                "latency_ms": 0,
+                "tool_calls": [],
+            }
         # ── STOA DATA: query DB and inject results as LLM context ──
         # Instead of bypassing the LLM, we feed the raw data INTO the model
         # so it can reason about it — compare vs budget, flag anomalies,
