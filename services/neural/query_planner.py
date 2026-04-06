@@ -398,12 +398,18 @@ class QueryPlanner:
 
         self.discover_schema()
 
+                # Skip cache for ranking/list queries — cached queries are often
+        # filtered to a single property and won't work for "top 5" etc.
+        is_ranking = any(kw in user_message.lower() for kw in [
+            'top ', 'bottom ', 'best ', 'worst ', 'highest ', 'lowest ',
+            'all properties', 'all ', 'every ', 'list ', 'show me', 'rank',
+        ])
         # Check cache
         cache_key = re.sub(r'[^a-z ]+', '', user_message.lower()).strip()[:50]
         cached_rows = None
-        if cache_key in self.query_cache:
+        if cache_key in self.query_cache and not is_ranking:
             try:
-                cached_rows = self.stoa.query(self.query_cache[cache_key])
+            cached_rows = self.stoa.query(self.query_cache[cache_key])
             except Exception:
                 del self.query_cache[cache_key]
 
