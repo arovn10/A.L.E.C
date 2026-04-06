@@ -128,60 +128,10 @@ class QueryPlanner:
         scored.sort(key=lambda x: -x[1])
         return scored[:5]  # Top 5 most relevant
 
-
-        def _match_property_in_message(self, user_message: str) -> list[str]:
-        """Match property names from user message against actual DB data.
-        This is much more reliable than regex extraction for names like
-        'Heights at Picardy' which contain lowercase connectors."""
-    lower = user_message.lower()
-        # Get known property names from cache or DB
-        if not hasattr(self, '_property_names'):
-            self._property_names = []
-            if self.stoa and self.stoa.connected:
-                try:
-                    for table in self.schema:
-                        cols = self.schema[table]
-                        name_cols = [c for c in cols if any(kw in c.lower() for kw in ['name', 'property', 'title'])]
-                        if name_cols:
-                            sql = f"SELECT DISTINCT [{name_cols[0]}] FROM [{table.split('.')[0]}].[{table.split('.')[1] if '.' in table else table}] WHERE [{name_cols[0]}] IS NOT NULL"
-                            try:
-                                rows = self.stoa.query(sql)
-                                for r in rows:
-                                    val = r.get(name_cols[0], '')
-                                    if val and len(str(val)) > 2:
-                                        self._property_names.append(str(val))
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
-            self._property_names = list(set(self._property_names))
-            logger.info(f"Cached {len(self._property_names)} property names from DB")
-        # Match against known names
-        matched = []
-        for name in self._property_names:
-            if name.lower() in lower:
-                matched.append(name)
-        # Also try partial matching: if user says "picardy" match "The Heights at Picardy"
-        if not matched:
-            words = set(re.findall(r'[a-z]{4,}', lower))
-            # Remove generic words
-            words -= {'what', 'which', 'where', 'when', 'that', 'this', 'from', 'have', 'does',
-                      'show', 'tell', 'give', 'about', 'occupancy', 'rent', 'units', 'data',
-                      'property', 'properties', 'highest', 'lowest', 'total', 'average', 'list',
-                      'database', 'stoa', 'many', 'much'}
-            for name in self._property_names:
-                name_words = set(re.findall(r'[a-z]{4,}', name.lower()))
-                if words & name_words:
-                    matched.append(name)
-        return matched
     def _generate_sql(self, table: str, user_message: str) -> str:
         """Generate a SQL query for a table based on the user's question."""
         columns = self.schema.get(table, [])
         lower = user_message.lower()
-
-                # Extract requested count from user message (e.g., "top 5" -> 5)
-        count_match = re.search(r'(?:top|bottom|first|last)\s+(\d+)', lower)
-        row_limit = int(count_match.group(1)) if count_match else 15
 
         # Detect if asking about a specific entity
         # Look for property names, places, etc.
@@ -192,12 +142,7 @@ class QueryPlanner:
         # Extract potential entity names (capitalized words, quoted strings)
         quoted = re.findall(r'"([^"]+)"', user_message)
         named = re.findall(r'(?:the |at |about |for )([A-Z][a-z]+(?: [A-Za-z]+)*)', user_message)
-                # Also try matching against actual DB property names (handles 'Heights at Picardy' etc)
-        db_matched = self._match_property_in_message(user_message)
-        if db_matched:
-            search_terms = db_matched  # DB names are more reliable than regex
-        else:
-            search_terms = quoted + named
+        search_terms = quoted + named
         
         # DO NOT hardcode property names — let the regex extraction above
         # handle specific entities from quoted strings and capitalized words.
@@ -250,7 +195,7 @@ class QueryPlanner:
         schema_name = table.split('.')[0]
         table_name = table.split('.')[1] if '.' in table else table
         
-        return f"SELECT TOP {row_limit} * FROM [{schema_name}].[{table_name}] {where_clause} {order}"
+        return f"SELECT TOP 15 * FROM [{schema_name}].[{table_name}] {where_clause} {order}"
 
     def should_query_stoa(self, user_message: str) -> bool:
         """Check if this message warrants a database query.
@@ -376,7 +321,7 @@ class QueryPlanner:
             self.successful_queries  # Don't increment
             return None
 
-        
+        self.successful_queries += 1
         return self._format_results(all_results)
 
     def _format_results(self, all_results: list[dict]) -> str:
@@ -513,38 +458,9 @@ class QueryPlanner:
                     logger.info(f"  Failed: {e}")
 
         if not rows:
+            return None
 
-                        return None
-                    # Ranking queries: if we got too few rows, retry without date filter
-        # This happens when only some properties have data for the latest date
-        if is_ranking and len(rows) <= 2 and source_table != "cached":
-            logger.info(f"  Ranking query got only {len(rows)} rows — retrying without date filter")
-            try:
-                sn = source_table.split('.')[0]
-                tn = source_table.split('.')[1] if '.' in source_table else source_table
-                # Find the ordering column from the original SQL
-                order_col = None
-                lower = user_message.lower()
-                metric_map = {
-                    'occupancy': 'OccupancyPct', 'rent': 'AvgLeasedRent',
-                    'units': 'TotalUnits', 'velocity': 'Velocity28dNew',
-                    'leased': 'LeasedPct', 'revenue': 'RevOSF',
-                }
-                for kw, col in metric_map.items():
-                    if kw in lower and col in self.schema.get(source_table, []):
-                        order_col = col
-                        break
-                order = f"ORDER BY [{order_col}] DESC" if order_col else "ORDER BY 1 DESC"
-                retry_sql = f"SELECT TOP 15 * FROM [{sn}].[{tn}] {order}"
-                retry_rows = self.stoa.query(retry_sql)
-                if retry_rows and len(retry_rows) > len(rows):
-                    rows = retry_rows
-                    logger.info(f"  Retry got {len(rows)} rows")
-            except Exception as e:
-                logger.info(f"  Retry failed: {e}")
-        
         self.successful_queries += 1
-        
         return self._format_direct_response(user_message, rows, source_table)
 
     @staticmethod
@@ -790,7 +706,7 @@ class QueryPlanner:
             try:
                 rows = self.stoa.query(sql)
                 if rows:
-                    def get_direct_response
+                    self.successful_queries += 1
                     return self._format_trend_response(rows, table)
             except Exception as e:
                 logger.info(f"  Trend query failed: {e}")
