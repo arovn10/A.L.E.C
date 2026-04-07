@@ -508,11 +508,11 @@ class QueryPlanner:
 
         for keyword, (col_name, label) in metric_map.items():
             if keyword in lower:
-                if col_name in cols:
-                    metric_col = col_name
+                                if col_name.lower() in {c.lower() for c in cols}:
+                                        metric_col = next(c for c in cols if c.lower() == col_name.lower())
+                                            logger.info(f"  Metric resolved: metric_col={metric_col}, metric_label={metric_label}, cols[:5]={cols[:5]}")
                     metric_label = label
                     break
-
         if not metric_col:
             for c in cols:
                 clow = c.lower()
@@ -521,6 +521,7 @@ class QueryPlanner:
                     metric_label = c
                     break
 
+                logger.info(f"  Final metric: metric_col={metric_col}, name_col={name_col}, rows={len(rows)}, sample_val={rows[0].get(metric_col) if rows and metric_col else 'N/A'}")
         # Client-side entity filter
         quoted = re.findall(r'"([^"]+)"', user_message)
         named = re.findall(r'(?:the |at |about |for |of )([A-Z][a-z]+(?:\s+[A-Za-z]+)*)', user_message)
