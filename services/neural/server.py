@@ -1125,6 +1125,53 @@ def stoa_debug():
         "query_planner_stats": query_planner.get_stats(),
     }
 
+
+@app.get("/stoa/test-query")
+def test_query(q: str = "occupancy"):
+    """Debug: test query planner metric resolution."""
+    import re
+    if not query_planner.stoa or not query_planner.stoa.connected:
+        return {"error": "not connected"}
+    query_planner.discover_schema()
+    relevant = query_planner._find_relevant_tables(q)
+    if not relevant:
+        return {"error": "no relevant tables", "schema_tables": len(query_planner.schema)}
+    table = relevant[0][0]
+    sql = query_planner._generate_sql(table, q)
+    try:
+        rows = query_planner.stoa.query(sql)
+    except Exception as e:
+        return {"error": str(e), "sql": sql}
+    if not rows:
+        return {"error": "no rows", "sql": sql, "table": table}
+    cols = list(rows[0].keys())
+    lower = q.lower()
+    metric_map = {
+        'occupancy': ('OccupancyPct', 'occupancy'),
+        ' rent': ('AvgLeasedRent', 'avg rent'),
+        'units': ('TotalUnits', 'total units'),
+    }
+    metric_col = None
+    for keyword, (col_name, label) in metric_map.items():
+        if keyword in lower:
+            if col_name in cols:
+                metric_col = col_name
+                break
+            else:
+                metric_col = f"NOT_FOUND:{col_name}"
+    return {
+        "query": q,
+        "table": table,
+        "table_score": relevant[0][1],
+        "sql": sql[:200],
+        "row_count": len(rows),
+        "cols": cols[:10],
+        "metric_col": metric_col,
+        "occupancy_in_cols": 'OccupancyPct' in cols,
+        "occupancy_lower_in_cols": any(c.lower() == 'occupancypct' for c in cols),
+        "sample_row": {k: v for k, v in list(rows[0].items())[:8]},
+        "all_relevant_tables": [(t, s) for t, s in relevant[:5]],
+    }
 @app.post("/stoa/reload-planner")
 def reload_query_planner():
     """Force reload the query planner: clear cache, re-discover schema."""
