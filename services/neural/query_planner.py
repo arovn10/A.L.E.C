@@ -510,7 +510,6 @@ class QueryPlanner:
             if keyword in lower:
                                 if col_name.lower() in {c.lower() for c in cols}:
                                         metric_col = next(c for c in cols if c.lower() == col_name.lower())
-                                            logger.info(f"  Metric resolved: metric_col={metric_col}, metric_label={metric_label}, cols[:5]={cols[:5]}")
                     metric_label = label
                     break
         if not metric_col:
