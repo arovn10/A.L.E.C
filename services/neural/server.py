@@ -531,7 +531,7 @@ async def chat_completions(req: ChatRequest):
             direct_response = query_planner.get_direct_response(user_msg)
         except Exception as e:
             logger.warning(f"Stoa direct response failed (falling back to LLM): {e}")
-                        import traceback; logger.warning(f"FULL TRACEBACK: {traceback.format_exc()}")
+            import traceback; logger.warning(f"FULL TRACEBACK: {traceback.format_exc()}")
             direct_response = None
         if direct_response:
             logger.info(f"Stoa direct response ({len(direct_response)} chars) — bypassing LLM")
