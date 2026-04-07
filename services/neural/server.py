@@ -164,6 +164,12 @@ async def lifespan(app: FastAPI):
     try:
         if stoa.connect():
             logger.info("Stoa DB connected — continuous learning enabled")
+                        # Eagerly discover schema so first query doesn't stall
+            try:
+                query_planner.discover_schema()
+                logger.info(f"Schema pre-loaded: {len(query_planner.schema)} tables")
+            except Exception as e:
+                logger.warning(f"Schema pre-load failed (will retry on first query): {e}")
         else:
             logger.info("Stoa DB not available — will retry on sync")
     except Exception:
@@ -519,7 +525,11 @@ async def chat_completions(req: ChatRequest):
         # The 7B model can't reliably use injected data — it hallucinates.
         # Use query_planner.get_direct_response() which formats data into
         # natural language directly, no LLM needed.
-        direct_response = query_planner.get_direct_response(user_msg)
+        try:
+            direct_response = query_planner.get_direct_response(user_msg)
+        except Exception as e:
+            logger.warning(f"Stoa direct response failed (falling back to LLM): {e}")
+            direct_response = None
         if direct_response:
             logger.info(f"Stoa direct response ({len(direct_response)} chars) — bypassing LLM")
             # Log the conversation
