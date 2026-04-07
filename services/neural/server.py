@@ -525,10 +525,12 @@ async def chat_completions(req: ChatRequest):
         # The 7B model can't reliably use injected data — it hallucinates.
         # Use query_planner.get_direct_response() which formats data into
         # natural language directly, no LLM needed.
+        logger.info(f"STOA DIRECT: attempting get_direct_response for: '{user_msg[:60]}'  stoa_connected={query_planner.stoa.connected if query_planner.stoa else False}  schema_tables={len(query_planner.schema)}")        
         try:
             direct_response = query_planner.get_direct_response(user_msg)
         except Exception as e:
             logger.warning(f"Stoa direct response failed (falling back to LLM): {e}")
+                        import traceback; logger.warning(f"FULL TRACEBACK: {traceback.format_exc()}")
             direct_response = None
         if direct_response:
             logger.info(f"Stoa direct response ({len(direct_response)} chars) — bypassing LLM")
