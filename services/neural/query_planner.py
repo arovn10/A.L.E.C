@@ -508,8 +508,8 @@ class QueryPlanner:
 
         for keyword, (col_name, label) in metric_map.items():
             if keyword in lower:
-                                if col_name.lower() in {c.lower() for c in cols}:
-                                        metric_col = next(c for c in cols if c.lower() == col_name.lower())
+                if col_name.lower() in {c.lower() for c in cols}:
+                    metric_col = next(c for c in cols if c.lower() == col_name.lower())
                     metric_label = label
                     break
         if not metric_col:
