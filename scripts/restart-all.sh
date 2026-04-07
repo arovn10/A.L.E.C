@@ -53,7 +53,7 @@ done
 # ── Start Node Backend ──
 echo "── Starting Node backend..."
 cd "$REPO"
-nohup node backendserver.js > /tmp/alec-node.log 2>&1 &
+nohup node backend/server.js > /tmp/alec-node.log 2>&1 &
 NODE_PID=$!
 echo "   PID: $NODE_PID  Log: /tmp/alec-node.log"
 sleep 3
