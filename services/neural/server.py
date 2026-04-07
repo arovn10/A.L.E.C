@@ -499,7 +499,7 @@ async def chat_completions(req: ChatRequest):
         # doesn't copy the format for non-data questions
         messages = [
             m for m in messages
-            if not (m["role"] == "assistant" and m["content"].startswith("From the Stoa database:"))
+                        if not (m["role"] == "assistant" and ("_As of 20" in m["content"] or m["content"].startswith("**")))
         ]
         memory_context = memory.get_context_injection(user_msg)
         if memory_context:
