@@ -732,11 +732,11 @@ class QueryPlanner:
                 months_data[month] = []
             months_data[month].append(row)
 
+        name_col = next((c for c in rows[0].keys() if 'name' in c.lower() or 'property' in c.lower()), None)
         metric_cols = [c for c in rows[0].keys() if c.startswith('avg_') or c.startswith('min_') or c.startswith('max_')]
                 # Fallback: if no avg_/min_/max_ cols, include record_count or any numeric col
         if not metric_cols:
             metric_cols = [c for c in rows[0].keys() if c not in ('Month', name_col) and c != name_col]
-        name_col = next((c for c in rows[0].keys() if 'name' in c.lower() or 'property' in c.lower()), None)
 
         for month in sorted(months_data.keys(), reverse=True):
             month_rows = months_data[month]
@@ -748,6 +748,11 @@ class QueryPlanner:
                     if row.get(mc) is not None:
                         col_base = mc.split('_', 1)[1] if '_' in mc else mc
                         vals.append(f"{mc}: {self._format_value(row[mc], col_base)}")
+                                        # Fallback: if no metric vals, show all non-key values
+                if not vals:
+                    for k, v in row.items():
+                        if k != 'Month' and k != name_col and v is not None:
+                            vals.append(f"{k}: {self._format_value(v, k)}")
                 line = f"  {label}: {', '.join(vals)}" if label else f"  {', '.join(vals)}"
                 parts.append(line)
             parts.append("")
