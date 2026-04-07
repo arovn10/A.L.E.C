@@ -564,19 +564,57 @@ class QueryPlanner:
                             parts.append(f"  {col_display}: {display_val}")
                     parts.append("")
         else:
-            # Ranking / list view
+# Adaptive ranking / list view
+            numeric_vals = []
             if metric_col:
-                for i, row in enumerate(rows):
-                    pname = row.get(name_col, f'Row {i+1}') if name_col else f'Row {i+1}'
+                for row in rows:
+                    v = row.get(metric_col)
+                    if v is not None and isinstance(v, (int, float)):
+                        numeric_vals.append(float(v))
+
+            avg_val = sum(numeric_vals) / len(numeric_vals) if numeric_vals else None
+            min_val = min(numeric_vals) if numeric_vals else None
+            max_val = max(numeric_vals) if numeric_vals else None
+
+            # Adaptive intro
+            if any(kw in lower for kw in ['top', 'best', 'highest']):
+                intro = f"**Top {len(rows)} by {metric_label}:**"
+            elif any(kw in lower for kw in ['bottom', 'worst', 'lowest']):
+                intro = f"**Bottom {len(rows)} by {metric_label}:**"
+            else:
+                intro = f"**Portfolio snapshot -- {metric_label}:**"
+            parts.append(intro)
+            parts.append("")
+
+            concerns = []
+            stars = []
+            for i, row in enumerate(rows):
+                pname = row.get(name_col, f'Row {i+1}') if name_col else f'Row {i+1}'
+                if metric_col:
                     val = row.get(metric_col)
                     if val is not None:
                         display = self._format_value(val, metric_col)
-                        parts.append(f"{i+1}. **{pname}** -- {display}")
+                        flag = ""
+                        if isinstance(val, (int, float)):
+                            fval = float(val)
+                            is_pct = 'pct' in metric_col.lower() or 'rate' in metric_col.lower() or 'occupancy' in metric_col.lower()
+                            if is_pct:
+                                if fval < 50:
+                                    flag = " \u26a0\ufe0f"
+                                    concerns.append((pname, display))
+                                elif fval < 80:
+                                    flag = " \u2193"
+                                    concerns.append((pname, display))
+                                elif fval > 95:
+                                    flag = " \u2b50"
+                                    stars.append((pname, display))
+                            elif avg_val and fval < avg_val * 0.5:
+                                flag = " \u26a0\ufe0f"
+                                concerns.append((pname, display))
+                        parts.append(f"{i+1}. **{pname}** -- {display}{flag}")
                     else:
                         parts.append(f"{i+1}. **{pname}**")
-            else:
-                for i, row in enumerate(rows):
-                    pname = row.get(name_col, f'Row {i+1}') if name_col else f'Row {i+1}'
+                else:
                     key_vals = []
                     for col, val in row.items():
                         if val is not None and col != name_col and str(val).strip():
@@ -585,7 +623,24 @@ class QueryPlanner:
                                 break
                     parts.append(f"{i+1}. **{pname}** -- {', '.join(key_vals)}")
 
-        # Add date context subtly
+            # Portfolio summary
+            if avg_val is not None and len(numeric_vals) >= 3:
+                parts.append("")
+                avg_d = self._format_value(avg_val, metric_col)
+                min_d = self._format_value(min_val, metric_col)
+                max_d = self._format_value(max_val, metric_col)
+                parts.append(f"**Portfolio avg:** {avg_d} | Range: {min_d} - {max_d}")
+
+            if concerns:
+                parts.append("")
+                clist = ', '.join(f'{n} ({v})' for n, v in concerns[:3])
+                parts.append(f"\u26a0\ufe0f **Needs attention:** {clist}")
+
+            if stars:
+                parts.append("")
+                slist = ', '.join(n for n, v in stars[:3])
+                parts.append(f"\u2b50 **Top performers:** {slist}")
+                
         report_date = None
         for row in rows[:1]:
             for col in ['ReportDate', 'Date', 'CreatedAt']:
