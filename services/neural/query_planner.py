@@ -647,7 +647,7 @@ class QueryPlanner:
             'occupancy': 'OccupancyPct', 'rent': 'AvgLeasedRent',
             'revenue': 'RevOSF', 'noi': 'RevOSF',
             'velocity': 'Velocity28dNew', 'leased': 'LeasedPct',
-            'vacancy': 'AvailableUnits', 'units': 'TotalUnits',
+            'vacancy': 'AvailableUnits', 'units': 'TotalUnits', 'leasing': 'OccupancyPct', 'lease': 'OccupancyPct', 'trend': 'OccupancyPct',
         }
         for keyword, col_name in metric_map.items():
             if keyword in lower and col_name in columns:
@@ -678,9 +678,23 @@ class QueryPlanner:
         if name_col:
             group_parts.append(f"[{name_col}]")
 
-        sql = f"SELECT {', '.join(select_parts)} FROM [{schema_name}].[{table_name}] WHERE [{date_col}] >= DATEADD(month, -{months}, GETDATE()) GROUP BY {', '.join(group_parts)} ORDER BY Month DESC"
-        return sql
+        # Extract entity/property name filter from user message
+        where_parts = [f"[{date_col}] >= DATEADD(month, -{months}, GETDATE())"]
+        if name_col:
+            quoted = re.findall(r'"([^"]+)"', user_message)
+            named = re.findall(r'(?:the |at |about |for |of )([A-Z][a-z]+(?:\s+[A-Za-z]+)*)', user_message)
+            # Also match lowercase property names like "settlers trace"
+            named_lower = re.findall(r'(?:for |at |about )([a-z]+(?:\s+[a-z]+)+)', lower)
+            entity_terms = quoted + named + named_lower
+            generic = {'stoa', 'data', 'database', 'property', 'properties', 'all', 'every', 'list', 'show', 'the past', 'last year'}
+            entity_terms = [t for t in entity_terms if t.lower().strip() not in generic and len(t.strip()) > 2]
+            if entity_terms:
+                term = entity_terms[0].strip()
+                where_parts.append(f"[{name_col}] LIKE '%{term}%'")
 
+        where_clause = ' AND '.join(where_parts)
+        sql = f"SELECT {', '.join(select_parts)} FROM [{schema_name}].[{table_name}] WHERE {where_clause} GROUP BY {', '.join(group_parts)} ORDER BY Month DESC"
+        return sql
     def get_trend_response(self, user_message: str) -> Optional[str]:
         if not self._is_trend_query(user_message):
             return None
@@ -719,6 +733,9 @@ class QueryPlanner:
             months_data[month].append(row)
 
         metric_cols = [c for c in rows[0].keys() if c.startswith('avg_') or c.startswith('min_') or c.startswith('max_')]
+                # Fallback: if no avg_/min_/max_ cols, include record_count or any numeric col
+        if not metric_cols:
+            metric_cols = [c for c in rows[0].keys() if c not in ('Month', name_col) and c != name_col]
         name_col = next((c for c in rows[0].keys() if 'name' in c.lower() or 'property' in c.lower()), None)
 
         for month in sorted(months_data.keys(), reverse=True):
