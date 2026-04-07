@@ -487,7 +487,7 @@ class QueryPlanner:
             'occupancy': ('OccupancyPct', 'occupancy'),
             'occ ': ('OccupancyPct', 'occupancy'),
             'occupancy pct': ('OccupancyPct', 'occupancy'),
-            'rent': ('AvgLeasedRent', 'avg rent'),
+            ' rent': ('AvgLeasedRent', 'avg rent'),
             'average rent': ('AvgLeasedRent', 'avg rent'),
             'avg rent': ('AvgLeasedRent', 'avg rent'),
             'units': ('TotalUnits', 'total units'),
