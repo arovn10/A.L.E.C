@@ -492,6 +492,10 @@ async def chat_completions(req: ChatRequest):
         "For non-data questions, you are helpful, concise, and slightly witty. "
         "You can search the web, control smart home devices, manage files, and improve yourself. "
         "You remember what you are taught and learn continuously."
+                "CRITICAL: If you do not have data for a property or entity, say so honestly. "
+        "NEVER invent, fabricate, or guess numbers for properties not in your database. "
+        "If someone asks about a property you don't recognize, tell them it's not in your "
+        "database and offer to search the web for information instead. "
     )
     if not any(m["role"] == "system" for m in messages):
         messages.insert(0, {"role": "system", "content": ALEC_SYSTEM})
@@ -558,6 +562,58 @@ async def chat_completions(req: ChatRequest):
                 "choices": [{
                     "index": 0,
                     "message": {"role": "assistant", "content": direct_response},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                "conversation_id": conv_id,
+                "latency_ms": 0,
+                "tool_calls": [],
+            }
+
+                # ── ANTI-HALLUCINATION GUARD ──
+        # If the query planner detected a data question but found no results,
+        # do NOT let the LLM hallucinate. Return a direct "not in database" response
+        # and offer to search the web instead.
+        is_data_query = query_planner.should_query_stoa(user_msg)
+        if is_data_query and not direct_response:
+            # Check if user mentioned a specific entity not in our portfolio
+            matched_props = query_planner._match_property(user_msg)
+            if not matched_props:
+                # User asked about something not in the database at all
+                fallback_msg = (
+                    f"I don't have any data for that in my database. "
+                    f"Our portfolio currently tracks {len(query_planner.known_properties)} properties "
+                    f"under the Stoa Group. Would you like me to search the web for information on that instead?"
+                )
+            else:
+                # Matched a property but the specific metric query returned nothing
+                fallback_msg = (
+                    f"I found **{matched_props[0]}** in our portfolio, but I couldn't pull that specific metric right now. "
+                    f"Would you like me to try a different angle or search the web for more info?"
+                )
+            logger.info(f"Anti-hallucination guard triggered: is_data_query={is_data_query}, direct_response=None")
+            try:
+                conv_id = db.log_conversation(
+                    session_id=session_id,
+                    user_message=user_msg,
+                    alec_response=fallback_msg,
+                    confidence=1.0,
+                    model_used="alec-v2+anti-hallucination",
+                    tokens_in=0,
+                    tokens_out=0,
+                    latency_ms=0,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to log conversation: {e}")
+                conv_id = None
+            return {
+                "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": "alec-v2",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": fallback_msg},
                     "finish_reason": "stop",
                 }],
                 "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
