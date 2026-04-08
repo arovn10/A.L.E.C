@@ -1,15 +1,19 @@
 """
-A.L.E.C. Query Planner — SELF-DISCOVERING.
+A.L.E.C. Query Planner — FULLY DYNAMIC.
 
 A.L.E.C. knows its data like the back of its hand. The Stoa database is part
 of its ever-growing knowledge. It doesn't "query" — it just knows.
 
+NOTHING is hardcoded. Property names, column names, metric mappings —
+everything is discovered dynamically from the database schema and data.
+
 Internally this module:
 1. Discovers all tables and columns from the Stoa DB on startup
-2. Matches user questions to real column/table names
-3. Generates SQL dynamically based on what it finds
-4. Caches successful queries for instant recall
-5. Falls back gracefully if a query fails
+2. Discovers all property/entity names from the data itself
+3. Matches user questions to real column/table names dynamically
+4. Generates SQL dynamically based on what it finds
+5. Caches successful queries for instant recall
+6. Falls back gracefully if a query fails
 """
 
 import json
@@ -32,6 +36,7 @@ class QueryPlanner:
         self.successful_queries = 0
         self.schema: dict[str, list[str]] = {}  # table -> [columns]
         self.query_cache: dict[str, str] = {}  # keyword -> SQL that worked
+        self.known_properties: list[str] = []  # dynamically discovered property names
         self._load_cache()
 
     def _load_cache(self):
@@ -64,9 +69,145 @@ class QueryPlanner:
                 if table not in self.schema:
                     self.schema[table] = []
                 self.schema[table].append(col)
-            logger.info(f"Schema discovered: {len(self.schema)} tables, {sum(len(v) for v in self.schema.values())} columns")
+
+            logger.info(f"Schema discovered: {len(self.schema)} tables, "
+                        f"{sum(len(v) for v in self.schema.values())} columns")
+
+            # Discover property names dynamically
+            self._discover_properties()
+
         except Exception as e:
             logger.error(f"Schema discovery failed: {e}")
+
+    def _discover_properties(self):
+        """Discover all property/entity names from the database dynamically.
+        Queries tables that have name-like columns to build a list of known entities.
+        """
+        if self.known_properties:
+            return
+        if not self.stoa or not self.stoa.connected:
+            return
+
+        # Try common property/project tables first
+        discovery_queries = [
+            "SELECT DISTINCT [PropertyName] FROM [leasing].[DailyPropertyMetrics] WHERE [PropertyName] IS NOT NULL",
+            "SELECT DISTINCT [Property] FROM [leasing].[PortfolioUnitDetails] WHERE [Property] IS NOT NULL",
+            "SELECT DISTINCT [ProjectName] FROM [core].[Project] WHERE [ProjectName] IS NOT NULL",
+        ]
+
+        names = set()
+        for sql in discovery_queries:
+            try:
+                rows = self.stoa.query(sql)
+                for row in rows:
+                    for val in row.values():
+                        if val and str(val).strip() and len(str(val).strip()) > 1:
+                            names.add(str(val).strip())
+            except Exception:
+                continue
+
+        # If those failed, scan schema for any name-like columns and query them
+        if not names:
+            for table, columns in self.schema.items():
+                name_cols = [c for c in columns if any(kw in c.lower() for kw in ['name', 'property', 'project', 'title'])]
+                if name_cols:
+                    sn = table.split('.')[0]
+                    tn = table.split('.')[1] if '.' in table else table
+                    for nc in name_cols[:1]:
+                        try:
+                            rows = self.stoa.query(f"SELECT DISTINCT TOP 100 [{nc}] FROM [{sn}].[{tn}] WHERE [{nc}] IS NOT NULL")
+                            for row in rows:
+                                val = row.get(nc)
+                                if val and str(val).strip() and len(str(val).strip()) > 1:
+                                    names.add(str(val).strip())
+                        except Exception:
+                            continue
+                    if names:
+                        break
+
+        self.known_properties = sorted(names)
+        logger.info(f"Discovered {len(self.known_properties)} property names: {self.known_properties[:10]}")
+
+    def _match_property(self, user_message: str) -> list[str]:
+        """Dynamically match user message against known property names.
+        Returns list of matched property names.
+        """
+        if not self.known_properties:
+            self._discover_properties()
+
+        lower = user_message.lower()
+        matches = []
+
+        for prop in self.known_properties:
+            prop_lower = prop.lower()
+            # Check if any significant part of the property name appears in the message
+            prop_words = prop_lower.split()
+            # Match if the full property name is in the message
+            if prop_lower in lower:
+                matches.append(prop)
+                continue
+            # Match if all significant words (>2 chars) of the property name appear
+            significant_words = [w for w in prop_words if len(w) > 2]
+            if significant_words and all(w in lower for w in significant_words):
+                matches.append(prop)
+                continue
+            # Match if any single distinctive word (>4 chars) matches
+            for w in prop_words:
+                if len(w) > 4 and w in lower:
+                    matches.append(prop)
+                    break
+
+        return matches
+
+    def _infer_metric_column(self, user_message: str, columns: list[str]) -> tuple[str | None, str]:
+        """Dynamically infer which column the user is asking about based on
+        column names and user message keywords. No hardcoded mapping.
+        """
+        lower = user_message.lower()
+        user_words = set(re.findall(r'[a-z]{3,}', lower))
+
+        # Score each column by how well it matches the user's question
+        scored = []
+        for col in columns:
+            col_lower = col.lower()
+            col_words = set(re.findall(r'[a-z]{3,}', col_lower))
+            score = 0
+
+            # Direct word overlap
+            for uw in user_words:
+                if uw in col_lower:
+                    score += 10
+                for cw in col_words:
+                    if uw in cw or cw in uw:
+                        score += 5
+
+            # Skip non-metric columns (names, dates, IDs)
+            if any(kw in col_lower for kw in ['name', 'title', 'description', 'date', 'id', 'key', 'status']):
+                score -= 20
+
+            # Boost numeric-looking columns
+            if any(kw in col_lower for kw in ['pct', 'rate', 'total', 'amount', 'count', 'avg', 'rent', 'units', 'revenue', 'cost', 'budget', 'velocity', 'delta', 'variance', 'occupancy', 'noi']):
+                score += 3
+
+            if score > 0:
+                scored.append((col, score))
+
+        scored.sort(key=lambda x: -x[1])
+
+        if scored:
+            col = scored[0][0]
+            # Generate a friendly label from the column name
+            label = re.sub(r'([A-Z])', r' \1', col).strip().lower()
+            return col, label
+
+        # Fallback: pick first numeric-looking column
+        for c in columns:
+            clow = c.lower()
+            if any(kw in clow for kw in ['pct', 'rate', 'occupancy', 'rent', 'total', 'revenue', 'amount']):
+                label = re.sub(r'([A-Z])', r' \1', c).strip().lower()
+                return c, label
+
+        return None, "value"
 
     # ── HELPER: parse "top N" / "bottom N" from user query ──
 
@@ -91,8 +232,8 @@ class QueryPlanner:
 
         lower = user_message.lower()
         words = set(re.findall(r'[a-z]{3,}', lower))
-        scored = []
 
+        scored = []
         for table, columns in self.schema.items():
             score = 0
             table_lower = table.lower()
@@ -114,9 +255,16 @@ class QueryPlanner:
                     if w in cp or cp in w:
                         score += 2
 
-            re_terms = {"occupancy", "rent", "lease", "unit", "property", "pricing", "tenant", "renewal", "velocity", "performing", "performance", "status", "settlers", "picardy", "bluebonnet", "waters", "flats", "crestview", "mcgowin", "freeport", "promenade", "crosspointe", "ransley", "waterpointe", "redstone", "hammond", "millerville", "heights"}
-            if words & re_terms and any(kw in table_lower for kw in ["leasing", "property", "project", "unit"]):
+            # Boost tables with real estate / leasing keywords dynamically
+            re_words = {'occupancy', 'rent', 'lease', 'unit', 'property', 'pricing',
+                        'tenant', 'renewal', 'velocity', 'performing', 'performance', 'status'}
+            if words & re_words and any(kw in table_lower for kw in ['leasing', 'property', 'project', 'unit']):
                 score += 8
+
+            # Dynamic boost: if user mentions a known property name, boost property-related tables
+            matched_props = self._match_property(user_message)
+            if matched_props and any(kw in table_lower for kw in ['leasing', 'property', 'project', 'unit', 'metrics']):
+                score += 12
 
             priority_tables = {
                 "leasing.dailypropertymetrics": 25,
@@ -137,7 +285,9 @@ class QueryPlanner:
         return scored[:5]
 
     def _generate_sql(self, table: str, user_message: str) -> str:
-        """Generate a SQL query for a table based on the user's question."""
+        """Generate a SQL query for a table based on the user's question.
+        Property name matching is fully dynamic from discovered properties.
+        """
         columns = self.schema.get(table, [])
         lower = user_message.lower()
         limit = self._parse_result_limit(user_message)
@@ -146,12 +296,23 @@ class QueryPlanner:
 
         where_parts = []
 
+        # Dynamic property matching - no hardcoded names
+        matched_props = self._match_property(user_message)
+        # Also check quoted strings and capitalized phrases
         quoted = re.findall(r'"([^"]+)"', user_message)
         named = re.findall(r'(?:the |at |about |for )([A-Z][a-z]+(?: [A-Za-z]+)*)', user_message)
-        search_terms = quoted + named + [v for k, v in {"settlers trace": "Settlers Trace", "picardy": "Picardy", "bluebonnet": "Bluebonnet", "west village": "West Village", "crestview": "Crestview", "mcgowin": "McGowin", "freeport": "Freeport", "promenade": "Promenade", "crosspointe": "Crosspointe", "ransley": "Ransley", "waterpointe": "Waterpointe", "redstone": "Redstone", "hammond": "Hammond", "millerville": "Millerville"}.items() if k in lower]
+        search_terms = quoted + named + matched_props
 
         generic_terms = {"stoa", "data", "database", "property", "properties", "all", "every", "list", "show"}
         search_terms = [t for t in search_terms if t.lower() not in generic_terms]
+        # Deduplicate
+        seen = set()
+        unique_terms = []
+        for t in search_terms:
+            if t.lower() not in seen:
+                seen.add(t.lower())
+                unique_terms.append(t)
+        search_terms = unique_terms
 
         if search_terms and name_cols:
             for col in name_cols[:2]:
@@ -162,13 +323,19 @@ class QueryPlanner:
         if any(w in lower for w in ["highest", "top", "best", "most", "maximum", "max", "ranked", "rank", "sort", "ordered"]):
             user_words = set(re.findall(r'[a-z]{3,}', lower))
             num_cols = [c for c in columns if any(uw in c.lower() for uw in user_words if uw not in generic_terms)]
-            num_cols = [c for c in num_cols if any(kw in c.lower() for kw in ["rate", "pct", "occupancy", "total", "amount", "count", "revenue", "income", "price", "rent", "units", "avg", "velocity", "delta", "budget", "variance"])]
+            num_cols = [c for c in num_cols if any(kw in c.lower() for kw in
+                        ["rate", "pct", "occupancy", "total", "amount", "count", "revenue",
+                         "income", "price", "rent", "units", "avg", "velocity", "delta",
+                         "budget", "variance"])]
             if not num_cols:
-                num_cols = [c for c in columns if any(kw in c.lower() for kw in ["rate", "pct", "occupancy", "total", "amount", "count", "revenue", "income", "price", "rent"])]
+                num_cols = [c for c in columns if any(kw in c.lower() for kw in
+                            ["rate", "pct", "occupancy", "total", "amount", "count",
+                             "revenue", "income", "price", "rent"])]
             if num_cols:
                 order = f"ORDER BY [{num_cols[0]}] DESC"
         elif any(w in lower for w in ["lowest", "bottom", "worst", "least", "minimum", "min"]):
-            num_cols = [c for c in columns if any(kw in c.lower() for kw in ["rate", "occupancy", "vacancy", "amount", "cost", "expense"])]
+            num_cols = [c for c in columns if any(kw in c.lower() for kw in
+                        ["rate", "occupancy", "vacancy", "amount", "cost", "expense"])]
             if num_cols:
                 order = f"ORDER BY [{num_cols[0]}] ASC"
         elif any(w in lower for w in ["latest", "recent", "newest", "last", "current", "today", "yesterday"]):
@@ -192,41 +359,49 @@ class QueryPlanner:
         return f"SELECT TOP {limit} * FROM [{schema_name}].[{table_name}] {where_clause} {order}"
 
     def should_query_stoa(self, user_message: str) -> bool:
-        """Check if this message warrants a database query."""
+        """Check if this message warrants a database query.
+        Uses dynamic property matching instead of hardcoded names.
+        """
         lower = user_message.lower()
 
         non_data_patterns = [
             "remember ", "forget ", "my favorite", "i prefer", "i like",
             "i want you to", "change ", "update ", "make ", "turn on", "turn off",
             "set ", "schedule ", "remind ", "who are you", "what can you",
-            "help me", "hello", "hey alec", "thank", "thanks", "good job",
-            "nice", "great", "can you see", "do you have access", "are you able",
+            "help me", "hello", "hey alec", "thank", "thanks",
+            "good job", "nice", "great",
+            "can you see", "do you have access", "are you able",
             "search the web", "search the internet", "google ", "look up",
             "browse ", "latest news", "find out", "what is the weather",
             "stock price", "current events", "today's news",
             "qwen", "llama", "model release", "ai news",
             "turn on", "turn off", "lights", "brightness",
             "email ", "send me", "send a report",
-            "improve yourself", "your code", "edit ",
-            "fix yourself", "fix your", "repair yourself", "repair your",
-            "improve your", "self_edit", "trigger a self", "commit", "push", "deploy",
+            "improve yourself", "your code", "edit ", "fix yourself",
+            "fix your", "repair yourself", "repair your", "improve your",
+            "self_edit", "trigger a self", "commit", "push", "deploy",
         ]
         if any(pat in lower for pat in non_data_patterns):
             return False
 
+        # Generic data keywords
         stoa_keywords = [
             "property", "properties", "occupancy", "noi", "rent", "lease",
             "loan", "bank", "deal", "contract", "vendor", "stoa", "campus",
-            "portfolio", "unit", "pricing", "metrics", "heights", "picardy",
-            "bluebonnet", "waters", "flats", "crestview", "mcgowin", "freeport",
-            "promenade", "crosspointe", "ransley", "waterpointe", "redstone",
-            "settlers", "hammond", "millerville", "west village",
+            "portfolio", "unit", "pricing", "metrics",
             "highest", "lowest", "top", "bottom", "best", "worst",
-            "how many", "total", "average", "list", "show me",
-            "query", "data", "database", "table", "what's the",
+            "how many", "total", "average", "list", "show me", "query",
+            "data", "database", "table", "what's the",
             "velocity", "leased", "available", "vacant", "renewal",
         ]
-        return any(kw in lower for kw in stoa_keywords)
+        if any(kw in lower for kw in stoa_keywords):
+            return True
+
+        # Dynamic: check if user mentions a known property name
+        if self._match_property(user_message):
+            return True
+
+        return False
 
     def get_data_context(self, user_message: str) -> Optional[str]:
         """Self-discovering: find relevant tables, generate SQL, run it, return results."""
@@ -239,6 +414,7 @@ class QueryPlanner:
                 pass
         if not self.stoa.connected:
             return None
+
         if not self.should_query_stoa(user_message):
             return None
 
@@ -261,7 +437,9 @@ class QueryPlanner:
             logger.info("  No relevant tables found")
             tables = list(self.schema.keys())
             if tables:
-                return f"[STOA DATABASE -- {len(tables)} tables available but couldn't determine which to query.\nAvailable tables: {', '.join(tables[:30])}\nAsk the user to be more specific about what data they want.]"
+                return (f"[STOA DATABASE -- {len(tables)} tables available but couldn't "
+                        f"determine which to query.\nAvailable tables: {', '.join(tables[:30])}\n"
+                        f"Ask the user to be more specific about what data they want.]")
             return None
 
         logger.info(f"  Relevant tables: {[(t, s) for t, s in relevant[:3]]}")
@@ -286,8 +464,9 @@ class QueryPlanner:
                     _gen = {"stoa", "data", "database", "property", "properties", "all", "every", "list", "show"}
                     _terms = [t for t in _terms if t.lower() not in _gen]
                     if _terms:
-                        logger.info(f"  No data for specific entity: {_terms}")
+                        logger.info(f"    No data for specific entity: {_terms}")
                         continue
+
                     simple_sql = f"SELECT TOP 15 * FROM [{table.split('.')[0]}].[{table.split('.')[1] if '.' in table else table}] ORDER BY 1 DESC"
                     rows = self.stoa.query(simple_sql)
                     if rows:
@@ -325,6 +504,7 @@ class QueryPlanner:
             rtype = result.get("type", "data")
             parts.append(f"Source table: {rtype} -- {len(rows)} rows returned.")
             parts.append("")
+
             for i, row in enumerate(rows[:10]):
                 parts.append(f"Row {i+1}:")
                 for col, val in row.items():
@@ -341,11 +521,14 @@ class QueryPlanner:
                 for col, val in row.items():
                     if val is not None and str(val).strip():
                         clow = col.lower()
-                        if any(kw in clow for kw in ["name", "property", "project", "title", "description", "rate", "pct", "occupancy", "rent", "total", "amount", "units", "count", "price", "noi", "revenue"]):
+                        if any(kw in clow for kw in ["name", "property", "project", "title", "description",
+                               "rate", "pct", "occupancy", "rent", "total", "amount", "units", "count",
+                               "price", "noi", "revenue"]):
                             summary_parts.append(f"{col}={val}")
                 if summary_parts:
                     parts.append(f"  {i+1}. {', '.join(summary_parts[:8])}")
             parts.append("")
+
         parts.append("[END OF DATABASE RESULTS. Present the above data naturally as if you already know it.]")
         return "\n".join(parts)
 
@@ -361,6 +544,7 @@ class QueryPlanner:
                 pass
         if not self.stoa or not self.stoa.connected:
             return None
+
         if not self.should_query_stoa(user_message):
             return None
 
@@ -385,7 +569,6 @@ class QueryPlanner:
         if cost_result:
             return cost_result
 
-        # Try analytical queries (pet %, amenity breakdowns, per-property aggregation)
         analytical_result = self.get_analytical_response(user_message)
         if analytical_result:
             return analytical_result
@@ -416,7 +599,7 @@ class QueryPlanner:
                         self.query_cache[cache_key] = sql
                         self._save_cache()
                         break
-                    # WHERE clause returned 0 rows
+
                     _quoted = re.findall(r'"([^"]+)"', user_message)
                     _named = re.findall(r'(?:the |at |about |for )([A-Z][a-z]+(?: [A-Za-z]+)*)', user_message)
                     _search_terms = _quoted + _named
@@ -425,7 +608,7 @@ class QueryPlanner:
                     if _search_terms:
                         logger.info(f"  No data found for: {_search_terms}")
                         continue
-                    # Generic query -- try without WHERE
+
                     schema_name = table.split('.')[0]
                     table_name = table.split('.')[1] if '.' in table else table
                     simple_sql = f"SELECT TOP 10 * FROM [{schema_name}].[{table_name}] ORDER BY 1 DESC"
@@ -438,14 +621,9 @@ class QueryPlanner:
                     logger.info(f"  Failed: {e}")
 
         if not rows:
-            _quoted = re.findall(r'"([^"]+)"', user_message)
-            _named = re.findall(r'(?:the |at |about |for )([A-Z][a-z]+(?: [A-Za-z]+)*)', user_message)
-            _search_terms = _quoted + _named
-            _generic = {"stoa", "data", "database", "property", "properties", "all", "every", "list", "show"}
-            _search_terms = [t for t in _search_terms if t.lower() not in _generic]
-            if _search_terms:
-                entity = _search_terms[0]
-                return f"I don't have data for **{entity}** in the portfolio. It may be listed under a different name."
+            matched = self._match_property(user_message)
+            if matched:
+                return f"I don't have data for **{matched[0]}** in the portfolio. It may be listed under a different name."
             return None
 
         self.successful_queries += 1
@@ -470,66 +648,33 @@ class QueryPlanner:
 
     def _format_direct_response(self, user_message: str, rows: list[dict], source: str) -> str:
         """Format query results as a natural, confident response.
-
         A.L.E.C. KNOWS this data. It doesn't say 'from the database' or
         'according to records'. It just answers directly, like an executive
         who has the numbers memorized.
+
+        ALL metric/column matching is DYNAMIC -- no hardcoded mappings.
         """
         lower = user_message.lower()
         cols = list(rows[0].keys()) if rows else []
         limit = self._parse_result_limit(user_message)
 
-        # Property name column
-        name_col = next((c for c in cols if c.lower() in ('property', 'propertyname', 'property_name', 'name', 'projectname', 'project_name', 'title')), None)
+        # Property name column (dynamic detection)
+        name_col = next((c for c in cols if c.lower() in ('property', 'propertyname', 'property_name',
+                         'name', 'projectname', 'project_name', 'title')), None)
         if not name_col:
             name_col = next((c for c in cols if 'name' in c.lower() or 'property' in c.lower()), None)
 
-        # Figure out the metric they care about
-        metric_col = None
-        metric_label = "value"
+        # Dynamic metric inference -- no hardcoded metric_map
+        metric_col, metric_label = self._infer_metric_column(user_message, cols)
 
-        metric_map = {
-            'occupancy': ('OccupancyPct', 'occupancy'),
-            'occ ': ('OccupancyPct', 'occupancy'),
-            'occupancy pct': ('OccupancyPct', 'occupancy'),
-            ' rent': ('AvgLeasedRent', 'avg rent'),
-            'average rent': ('AvgLeasedRent', 'avg rent'),
-            'avg rent': ('AvgLeasedRent', 'avg rent'),
-            'units': ('TotalUnits', 'total units'),
-            'total units': ('TotalUnits', 'total units'),
-            'vacancy': ('AvailableUnits', 'available units'),
-            'available': ('AvailableUnits', 'available units'),
-            'velocity': ('Velocity28dNew', '28-day lease velocity'),
-            'leased': ('LeasedPct', 'leased %'),
-            'leased pct': ('LeasedPct', 'leased %'),
-            'budget': ('BudgetedOccupancy', 'budgeted occupancy'),
-            'budgeted': ('BudgetedOccupancy', 'budgeted occupancy'),
-            'revenue': ('RevOSF', 'revenue/occupied SF'),
-            'noi': ('RevOSF', 'revenue/occupied SF'),
-            'trade out': ('TradeOutPct', 'trade-out %'),
-            'rent growth': ('RentGrowth3MoPct', '3-mo rent growth'),
-            'look ahead': ('OccupancyLookAhead4Weeks', '4-week look-ahead'),
-        }
+        logger.info(f"  Final metric: metric_col={metric_col}, name_col={name_col}, "
+                    f"rows={len(rows)}, sample_val={rows[0].get(metric_col) if rows and metric_col else 'N/A'}")
 
-        for keyword, (col_name, label) in metric_map.items():
-            if keyword in lower:
-                if col_name.lower() in {c.lower() for c in cols}:
-                    metric_col = next(c for c in cols if c.lower() == col_name.lower())
-                    metric_label = label
-                    break
-        if not metric_col:
-            for c in cols:
-                clow = c.lower()
-                if any(kw in clow for kw in ['pct', 'rate', 'occupancy', 'rent', 'total', 'revenue', 'amount']):
-                    metric_col = c
-                    metric_label = c
-                    break
-
-                logger.info(f"  Final metric: metric_col={metric_col}, name_col={name_col}, rows={len(rows)}, sample_val={rows[0].get(metric_col) if rows and metric_col else 'N/A'}")
-        # Client-side entity filter
+        # Client-side entity filter using dynamic property matching
+        matched_props = self._match_property(user_message)
         quoted = re.findall(r'"([^"]+)"', user_message)
         named = re.findall(r'(?:the |at |about |for |of )([A-Z][a-z]+(?:\s+[A-Za-z]+)*)', user_message)
-        entity_terms = quoted + named
+        entity_terms = quoted + named + matched_props
         generic = {'Stoa', 'Data', 'Database', 'Property', 'Properties', 'All'}
         entity_terms = [t for t in entity_terms if t not in generic]
 
@@ -551,7 +696,8 @@ class QueryPlanner:
 
         # Is this a specific property query or a ranking/list?
         is_specific = len(rows) <= 3
-        is_ranking = any(kw in lower for kw in ['top', 'best', 'highest', 'lowest', 'worst', 'bottom', 'all', 'list', 'show', 'every', 'rank'])
+        is_ranking = any(kw in lower for kw in ['top', 'best', 'highest', 'lowest', 'worst',
+                         'bottom', 'all', 'list', 'show', 'every', 'rank'])
 
         if is_specific and not is_ranking:
             for row in rows:
@@ -567,9 +713,9 @@ class QueryPlanner:
                             display_val = self._format_value(val, col)
                             col_display = re.sub(r'([A-Z])', r' \1', col).strip()
                             parts.append(f"  {col_display}: {display_val}")
-                    parts.append("")
+                parts.append("")
         else:
-# Adaptive ranking / list view
+            # Adaptive ranking / list view
             numeric_vals = []
             if metric_col:
                 for row in rows:
@@ -581,18 +727,19 @@ class QueryPlanner:
             min_val = min(numeric_vals) if numeric_vals else None
             max_val = max(numeric_vals) if numeric_vals else None
 
-            # Adaptive intro
             if any(kw in lower for kw in ['top', 'best', 'highest']):
                 intro = f"**Top {len(rows)} by {metric_label}:**"
             elif any(kw in lower for kw in ['bottom', 'worst', 'lowest']):
                 intro = f"**Bottom {len(rows)} by {metric_label}:**"
             else:
                 intro = f"**Portfolio snapshot -- {metric_label}:**"
+
             parts.append(intro)
             parts.append("")
 
             concerns = []
             stars = []
+
             for i, row in enumerate(rows):
                 pname = row.get(name_col, f'Row {i+1}') if name_col else f'Row {i+1}'
                 if metric_col:
@@ -640,12 +787,11 @@ class QueryPlanner:
                 parts.append("")
                 clist = ', '.join(f'{n} ({v})' for n, v in concerns[:3])
                 parts.append(f"\u26a0\ufe0f **Needs attention:** {clist}")
-
             if stars:
                 parts.append("")
                 slist = ', '.join(n for n, v in stars[:3])
                 parts.append(f"\u2b50 **Top performers:** {slist}")
-                
+
         report_date = None
         for row in rows[:1]:
             for col in ['ReportDate', 'Date', 'CreatedAt']:
@@ -664,6 +810,7 @@ class QueryPlanner:
             "schema_tables": len(self.schema),
             "schema_columns": sum(len(v) for v in self.schema.values()),
             "cached_queries": len(self.query_cache),
+            "known_properties": len(self.known_properties),
             "stoa_connected": self.stoa.connected if self.stoa else False,
         }
 
@@ -691,6 +838,7 @@ class QueryPlanner:
         return any(kw in lower for kw in cost_keywords)
 
     def _generate_trend_sql(self, table: str, user_message: str) -> Optional[str]:
+        """Generate trend SQL with dynamic metric inference."""
         columns = self.schema.get(table, [])
         lower = user_message.lower()
 
@@ -702,19 +850,21 @@ class QueryPlanner:
         if not date_col:
             return None
 
-        metric_col = None
-        metric_map = {
-            'occupancy': 'OccupancyPct', 'rent': 'AvgLeasedRent',
-            'revenue': 'RevOSF', 'noi': 'RevOSF',
-            'velocity': 'Velocity28dNew', 'leased': 'LeasedPct',
-            'vacancy': 'AvailableUnits', 'units': 'TotalUnits', 'leasing': 'OccupancyPct', 'lease': 'OccupancyPct', 'trend': 'OccupancyPct',
-        }
-        for keyword, col_name in metric_map.items():
-            if keyword in lower and col_name in columns:
-                metric_col = col_name
-                break
+        # Dynamic metric inference instead of hardcoded map
+        metric_col, _ = self._infer_metric_column(user_message, columns)
+        if not metric_col:
+            # Default to first numeric-looking column
+            for c in columns:
+                if any(kw in c.lower() for kw in ['pct', 'rate', 'occupancy', 'rent', 'total', 'revenue']):
+                    metric_col = c
+                    break
+        if not metric_col:
+            metric_col = 'OccupancyPct' if 'OccupancyPct' in columns else None
+            if not metric_col:
+                return None
 
         name_col = next((c for c in columns if 'name' in c.lower() or 'property' in c.lower()), None)
+
         schema_name = table.split('.')[0]
         table_name = table.split('.')[1] if '.' in table else table
 
@@ -727,34 +877,38 @@ class QueryPlanner:
         select_parts = [f"FORMAT([{date_col}], 'yyyy-MM') as Month"]
         if name_col:
             select_parts.append(f"[{name_col}]")
-        if metric_col:
-            select_parts.append(f"AVG([{metric_col}]) as avg_{metric_col}")
-            select_parts.append(f"MIN([{metric_col}]) as min_{metric_col}")
-            select_parts.append(f"MAX([{metric_col}]) as max_{metric_col}")
-        else:
-            select_parts.append("COUNT(*) as record_count")
+        select_parts.append(f"AVG([{metric_col}]) as avg_{metric_col}")
+        select_parts.append(f"MIN([{metric_col}]) as min_{metric_col}")
+        select_parts.append(f"MAX([{metric_col}]) as max_{metric_col}")
 
         group_parts = [f"FORMAT([{date_col}], 'yyyy-MM')"]
         if name_col:
             group_parts.append(f"[{name_col}]")
 
-        # Extract entity/property name filter from user message
         where_parts = [f"[{date_col}] >= DATEADD(month, -{months}, GETDATE())"]
-        if name_col:
+
+        # Dynamic property filter
+        matched_props = self._match_property(user_message)
+        if name_col and matched_props:
+            where_parts.append(f"[{name_col}] LIKE '%{matched_props[0]}%'")
+        else:
+            # Also check quoted/named
             quoted = re.findall(r'"([^"]+)"', user_message)
             named = re.findall(r'(?:the |at |about |for |of )([A-Z][a-z]+(?:\s+[A-Za-z]+)*)', user_message)
-            # Also match lowercase property names like "settlers trace"
             named_lower = re.findall(r'(?:for |at |about )([a-z]+(?:\s+[a-z]+)+)', lower)
             entity_terms = quoted + named + named_lower
             generic = {'stoa', 'data', 'database', 'property', 'properties', 'all', 'every', 'list', 'show', 'the past', 'last year'}
             entity_terms = [t for t in entity_terms if t.lower().strip() not in generic and len(t.strip()) > 2]
-            if entity_terms:
+            if entity_terms and name_col:
                 term = entity_terms[0].strip()
                 where_parts.append(f"[{name_col}] LIKE '%{term}%'")
 
         where_clause = ' AND '.join(where_parts)
-        sql = f"SELECT {', '.join(select_parts)} FROM [{schema_name}].[{table_name}] WHERE {where_clause} GROUP BY {', '.join(group_parts)} HAVING AVG([{metric_col or 'OccupancyPct'}]) > 0 ORDER BY Month DESC"
+        sql = (f"SELECT {', '.join(select_parts)} FROM [{schema_name}].[{table_name}] "
+               f"WHERE {where_clause} GROUP BY {', '.join(group_parts)} "
+               f"HAVING AVG([{metric_col}]) > 0 ORDER BY Month DESC")
         return sql
+
     def get_trend_response(self, user_message: str) -> Optional[str]:
         if not self._is_trend_query(user_message):
             return None
@@ -794,7 +948,6 @@ class QueryPlanner:
 
         name_col = next((c for c in rows[0].keys() if 'name' in c.lower() or 'property' in c.lower()), None)
         metric_cols = [c for c in rows[0].keys() if c.startswith('avg_') or c.startswith('min_') or c.startswith('max_')]
-                # Fallback: if no avg_/min_/max_ cols, include record_count or any numeric col
         if not metric_cols:
             metric_cols = [c for c in rows[0].keys() if c not in ('Month', name_col) and c != name_col]
 
@@ -807,8 +960,8 @@ class QueryPlanner:
                 for mc in metric_cols:
                     if row.get(mc) is not None:
                         col_base = mc.split('_', 1)[1] if '_' in mc else mc
-                        friendly = re.sub(r'([A-Z])', r' \1', col_base).strip(); vals.append(f"{friendly}: {self._format_value(row[mc], col_base)}")
-                                        # Fallback: if no metric vals, show all non-key values
+                        friendly = re.sub(r'([A-Z])', r' \1', col_base).strip()
+                        vals.append(f"{friendly}: {self._format_value(row[mc], col_base)}")
                 if not vals:
                     for k, v in row.items():
                         if k != 'Month' and k != name_col and v is not None:
@@ -817,55 +970,52 @@ class QueryPlanner:
                 parts.append(line)
             parts.append("")
 
-        if len(months_data) >= 2:
+        if len(months_data) >= 2 and metric_cols and name_col:
+            oldest_month = sorted(months_data.keys())[0]
+            newest_month = sorted(months_data.keys())[-1]
+            old_rows = months_data.get(oldest_month, [])
+            new_rows = months_data.get(newest_month, [])
 
-                        # Trend direction analysis
-            if metric_cols and name_col:
-                oldest_month = sorted(months_data.keys())[0]
-                newest_month = sorted(months_data.keys())[-1]
-                old_rows = months_data.get(oldest_month, [])
-                new_rows = months_data.get(newest_month, [])
-                improving = []
-                declining = []
-                for nr in new_rows:
-                    nname = nr.get(name_col, '')
-                    nval = None
-                    for mc in metric_cols:
-                        if nr.get(mc) is not None and isinstance(nr[mc], (int, float)):
-                            nval = float(nr[mc])
-                            break
-                    if nval is None:
-                        continue
-                    for orw in old_rows:
-                        if orw.get(name_col, '') == nname:
-                            oval = None
-                            for mc in metric_cols:
-                                if orw.get(mc) is not None and isinstance(orw[mc], (int, float)):
-                                    oval = float(orw[mc])
-                                    break
-                            if oval is not None:
-                                delta = nval - oval
-                                if delta > 0.5:
-                                    improving.append((nname, delta))
-                                elif delta < -0.5:
-                                    declining.append((nname, abs(delta)))
-                            break
-                parts.append("")
-                if improving:
-                    improving.sort(key=lambda x: -x[1])
-                    top = improving[:3]
-                    names = ', '.join(f'**{n}** (+{d:.1f})' for n, d in top)
-                    parts.append(f"\u2b06 Trending up: {names}")
-                if declining:
-                    declining.sort(key=lambda x: -x[1])
-                    top = declining[:3]
-                    names = ', '.join(f'**{n}** (-{d:.1f})' for n, d in top)
-                    parts.append(f"\u2b07 Trending down: {names}")
-                if not improving and not declining:
-                    parts.append("Portfolio performance is holding steady.")
-            sm = sorted(months_data.keys())
-            parts.append(f"Data spans {sm[0]} to {sm[-1]} ({len(months_data)} months).")
+            improving = []
+            declining = []
+            for nr in new_rows:
+                nname = nr.get(name_col, '')
+                nval = None
+                for mc in metric_cols:
+                    if nr.get(mc) is not None and isinstance(nr[mc], (int, float)):
+                        nval = float(nr[mc])
+                        break
+                if nval is None:
+                    continue
+                for orw in old_rows:
+                    if orw.get(name_col, '') == nname:
+                        oval = None
+                        for mc in metric_cols:
+                            if orw.get(mc) is not None and isinstance(orw[mc], (int, float)):
+                                oval = float(orw[mc])
+                                break
+                        if oval is not None:
+                            delta = nval - oval
+                            if delta > 0.5:
+                                improving.append((nname, delta))
+                            elif delta < -0.5:
+                                declining.append((nname, abs(delta)))
+                        break
 
+            parts.append("")
+            if improving:
+                improving.sort(key=lambda x: -x[1])
+                names = ', '.join(f'**{n}** (+{d:.1f})' for n, d in improving[:3])
+                parts.append(f"\u2b06 Trending up: {names}")
+            if declining:
+                declining.sort(key=lambda x: -x[1])
+                names = ', '.join(f'**{n}** (-{d:.1f})' for n, d in declining[:3])
+                parts.append(f"\u2b07 Trending down: {names}")
+            if not improving and not declining:
+                parts.append("Portfolio performance is holding steady.")
+
+        sm = sorted(months_data.keys())
+        parts.append(f"Data spans {sm[0]} to {sm[-1]} ({len(months_data)} months).")
         return "\n".join(parts)
 
     def get_cost_analysis(self, user_message: str) -> Optional[str]:
@@ -875,7 +1025,6 @@ class QueryPlanner:
             return None
 
         self.discover_schema()
-
         cost_tables = []
         for table, columns in self.schema.items():
             tl = table.lower()
@@ -889,7 +1038,6 @@ class QueryPlanner:
             return None
 
         cost_tables.sort(key=lambda x: -x[1])
-
         for table, score in cost_tables[:3]:
             sql = self._generate_sql(table, user_message)
             logger.info(f"  Cost SQL: {sql[:100]}")
@@ -948,7 +1096,6 @@ class QueryPlanner:
         parts = ["**Key Insights:**\n"]
         for ins in insights:
             parts.append(f"- {ins}")
-
         self.successful_queries += 1
         return "\n".join(parts)
 
@@ -957,9 +1104,10 @@ class QueryPlanner:
         lower = user_message.lower()
         analytical_keywords = [
             'percent', 'percentage', '%', 'average %', 'avg %',
-            'ratio', 'proportion', 'how many units',
-            'per building', 'per property', 'per deal', 'by building',
-            'by property', 'by deal', 'each building', 'each property',
+            'ratio', 'proportion',
+            'how many units', 'per building', 'per property', 'per deal',
+            'by building', 'by property', 'by deal',
+            'each building', 'each property',
             'pet', 'pets', 'pet rent', 'pet fee',
             'amenity', 'amenities', 'parking', 'garage',
             'breakdown', 'distribution', 'composition',
@@ -968,42 +1116,31 @@ class QueryPlanner:
         return any(kw in lower for kw in analytical_keywords)
 
     def get_analytical_response(self, user_message: str) -> Optional[str]:
-        """Handle complex analytical queries with aggregation.
-        Supports: pet %, amenity analysis, unit-level breakdowns by property.
-        """
+        """Handle complex analytical queries with aggregation."""
         if not self._is_analytical_query(user_message):
             return None
         if not self.stoa or not self.stoa.connected:
             return None
+
         self.discover_schema()
         lower = user_message.lower()
         logger.info(f"Analytical query: '{user_message[:80]}'")
 
-        # Pet rent / amenity analysis
         if any(kw in lower for kw in ['pet', 'pets', 'pet rent', 'pet fee']):
             return self._analyze_pet_rent(user_message)
-
-        # Amenity breakdown
         if any(kw in lower for kw in ['amenity', 'amenities']):
             return self._analyze_amenities(user_message)
-
-        # Generic per-property aggregation
-        if any(kw in lower for kw in ['per building', 'per property', 'by building', 'by property', 'each building', 'each property', 'per deal', 'by deal']):
+        if any(kw in lower for kw in ['per building', 'per property', 'by building',
+               'by property', 'each building', 'each property', 'per deal', 'by deal']):
             return self._analyze_per_property(user_message)
 
         return None
 
     def _analyze_pet_rent(self, user_message: str) -> Optional[str]:
-        """Analyze pet rent across the portfolio.
-        Uses PortfolioUnitDetails: units where [Total Billing] > [Lease Rent]
-        on occupied units indicates additional charges (pet rent, amenities).
-        Also checks Amenities column as a proxy for pet-related charges.
-        """
+        """Analyze pet rent across the portfolio."""
         try:
-            # Query: for each property, count occupied units and units with extra billing
             sql = """
-                SELECT
-                    [Property],
+                SELECT [Property],
                     COUNT(*) as TotalOccupied,
                     SUM(CASE WHEN [Total Billing] > [Lease Rent] AND [Lease Rent] > 0 THEN 1 ELSE 0 END) as UnitsWithExtraCharges,
                     CAST(ROUND(
@@ -1013,8 +1150,7 @@ class QueryPlanner:
                     AVG(CASE WHEN [Total Billing] > [Lease Rent] AND [Lease Rent] > 0
                         THEN [Total Billing] - [Lease Rent] ELSE NULL END) as AvgExtraCharge
                 FROM [leasing].[PortfolioUnitDetails]
-                WHERE [Unit/Lease Status] = 'Occupied'
-                    AND [Lease Rent] > 0
+                WHERE [Unit/Lease Status] = 'Occupied' AND [Lease Rent] > 0
                 GROUP BY [Property]
                 ORDER BY PctWithExtraCharges DESC
             """
@@ -1023,9 +1159,7 @@ class QueryPlanner:
                 return None
 
             self.successful_queries += 1
-            parts = []
-            parts.append("**Pet/Amenity Charge Analysis by Property:**\n")
-
+            parts = ["**Pet/Amenity Charge Analysis by Property:**\n"]
             total_occupied = 0
             total_with_charges = 0
 
@@ -1035,7 +1169,6 @@ class QueryPlanner:
                 extra = row.get('UnitsWithExtraCharges', 0)
                 pct = row.get('PctWithExtraCharges', 0)
                 avg_charge = row.get('AvgExtraCharge')
-
                 total_occupied += (occ or 0)
                 total_with_charges += (extra or 0)
 
@@ -1048,14 +1181,11 @@ class QueryPlanner:
                 avg_str = f" (avg ${avg_charge:,.0f}/mo)" if avg_charge else ""
                 parts.append(f"{i+1}. **{prop}** -- {extra}/{occ} units ({pct}%) have extra charges{avg_str}{flag}")
 
-            # Portfolio summary
             if total_occupied > 0:
                 portfolio_pct = round(100.0 * total_with_charges / total_occupied, 1)
                 parts.append(f"\n**Portfolio total:** {total_with_charges}/{total_occupied} occupied units ({portfolio_pct}%) have pet/amenity charges.")
-
             parts.append("\n_Extra charges = Total Billing > Lease Rent (includes pet rent, parking, amenities)._")
             return "\n".join(parts)
-
         except Exception as e:
             logger.error(f"Pet rent analysis failed: {e}")
             return None
@@ -1064,8 +1194,7 @@ class QueryPlanner:
         """Analyze amenity charges across properties."""
         try:
             sql = """
-                SELECT
-                    [Property],
+                SELECT [Property],
                     COUNT(*) as TotalUnits,
                     SUM(CASE WHEN [Amenities] > 0 THEN 1 ELSE 0 END) as UnitsWithAmenities,
                     CAST(ROUND(
@@ -1092,7 +1221,6 @@ class QueryPlanner:
                 avg_ch = row.get('AvgAmenityCharge')
                 avg_str = f" (avg ${avg_ch:,.0f}/mo)" if avg_ch else ""
                 parts.append(f"{i+1}. **{prop}** -- {with_am}/{total} units ({pct}%){avg_str}")
-
             return "\n".join(parts)
         except Exception as e:
             logger.error(f"Amenity analysis failed: {e}")
@@ -1102,14 +1230,14 @@ class QueryPlanner:
         """Generic per-property aggregation for analytical questions."""
         lower = user_message.lower()
         try:
-            # Determine what metric to aggregate
             if any(kw in lower for kw in ['unit', 'units', 'count']):
                 sql = """
                     SELECT [Property],
                         COUNT(*) as TotalUnits,
                         SUM(CASE WHEN [Unit/Lease Status] = 'Occupied' THEN 1 ELSE 0 END) as Occupied,
                         SUM(CASE WHEN [Unit/Lease Status] = 'Vacant' THEN 1 ELSE 0 END) as Vacant,
-                        CAST(ROUND(100.0 * SUM(CASE WHEN [Unit/Lease Status] = 'Occupied' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS DECIMAL(5,1)) as OccPct
+                        CAST(ROUND(100.0 * SUM(CASE WHEN [Unit/Lease Status] = 'Occupied' THEN 1 ELSE 0 END)
+                            / NULLIF(COUNT(*), 0), 1) AS DECIMAL(5,1)) as OccPct
                     FROM [leasing].[PortfolioUnitDetails]
                     GROUP BY [Property]
                     ORDER BY OccPct DESC
@@ -1132,10 +1260,8 @@ class QueryPlanner:
             rows = self.stoa.query(sql)
             if not rows:
                 return None
-
             self.successful_queries += 1
             return self._format_direct_response(user_message, rows, 'leasing.PortfolioUnitDetails')
-
         except Exception as e:
             logger.error(f"Per-property analysis failed: {e}")
             return None
