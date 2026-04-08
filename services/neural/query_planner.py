@@ -385,6 +385,11 @@ class QueryPlanner:
         if cost_result:
             return cost_result
 
+        # Try analytical queries (pet %, amenity breakdowns, per-property aggregation)
+        analytical_result = self.get_analytical_response(user_message)
+        if analytical_result:
+            return analytical_result
+
         if cache_key in self.query_cache and not is_ranking:
             try:
                 cached_rows = self.stoa.query(self.query_cache[cache_key])
@@ -946,3 +951,191 @@ class QueryPlanner:
 
         self.successful_queries += 1
         return "\n".join(parts)
+
+    def _is_analytical_query(self, user_message: str) -> bool:
+        """Detect complex analytical questions requiring aggregation/JOINs."""
+        lower = user_message.lower()
+        analytical_keywords = [
+            'percent', 'percentage', '%', 'average %', 'avg %',
+            'ratio', 'proportion', 'how many units',
+            'per building', 'per property', 'per deal', 'by building',
+            'by property', 'by deal', 'each building', 'each property',
+            'pet', 'pets', 'pet rent', 'pet fee',
+            'amenity', 'amenities', 'parking', 'garage',
+            'breakdown', 'distribution', 'composition',
+            'compare', 'comparison', 'versus', 'vs',
+        ]
+        return any(kw in lower for kw in analytical_keywords)
+
+    def get_analytical_response(self, user_message: str) -> Optional[str]:
+        """Handle complex analytical queries with aggregation.
+        Supports: pet %, amenity analysis, unit-level breakdowns by property.
+        """
+        if not self._is_analytical_query(user_message):
+            return None
+        if not self.stoa or not self.stoa.connected:
+            return None
+        self.discover_schema()
+        lower = user_message.lower()
+        logger.info(f"Analytical query: '{user_message[:80]}'")
+
+        # Pet rent / amenity analysis
+        if any(kw in lower for kw in ['pet', 'pets', 'pet rent', 'pet fee']):
+            return self._analyze_pet_rent(user_message)
+
+        # Amenity breakdown
+        if any(kw in lower for kw in ['amenity', 'amenities']):
+            return self._analyze_amenities(user_message)
+
+        # Generic per-property aggregation
+        if any(kw in lower for kw in ['per building', 'per property', 'by building', 'by property', 'each building', 'each property', 'per deal', 'by deal']):
+            return self._analyze_per_property(user_message)
+
+        return None
+
+    def _analyze_pet_rent(self, user_message: str) -> Optional[str]:
+        """Analyze pet rent across the portfolio.
+        Uses PortfolioUnitDetails: units where [Total Billing] > [Lease Rent]
+        on occupied units indicates additional charges (pet rent, amenities).
+        Also checks Amenities column as a proxy for pet-related charges.
+        """
+        try:
+            # Query: for each property, count occupied units and units with extra billing
+            sql = """
+                SELECT
+                    [Property],
+                    COUNT(*) as TotalOccupied,
+                    SUM(CASE WHEN [Total Billing] > [Lease Rent] AND [Lease Rent] > 0 THEN 1 ELSE 0 END) as UnitsWithExtraCharges,
+                    CAST(ROUND(
+                        100.0 * SUM(CASE WHEN [Total Billing] > [Lease Rent] AND [Lease Rent] > 0 THEN 1 ELSE 0 END)
+                        / NULLIF(COUNT(*), 0), 1
+                    ) AS DECIMAL(5,1)) as PctWithExtraCharges,
+                    AVG(CASE WHEN [Total Billing] > [Lease Rent] AND [Lease Rent] > 0
+                        THEN [Total Billing] - [Lease Rent] ELSE NULL END) as AvgExtraCharge
+                FROM [leasing].[PortfolioUnitDetails]
+                WHERE [Unit/Lease Status] = 'Occupied'
+                    AND [Lease Rent] > 0
+                GROUP BY [Property]
+                ORDER BY PctWithExtraCharges DESC
+            """
+            rows = self.stoa.query(sql)
+            if not rows:
+                return None
+
+            self.successful_queries += 1
+            parts = []
+            parts.append("**Pet/Amenity Charge Analysis by Property:**\n")
+
+            total_occupied = 0
+            total_with_charges = 0
+
+            for i, row in enumerate(rows):
+                prop = row.get('Property', 'Unknown')
+                occ = row.get('TotalOccupied', 0)
+                extra = row.get('UnitsWithExtraCharges', 0)
+                pct = row.get('PctWithExtraCharges', 0)
+                avg_charge = row.get('AvgExtraCharge')
+
+                total_occupied += (occ or 0)
+                total_with_charges += (extra or 0)
+
+                flag = ""
+                if pct and float(pct) > 40:
+                    flag = " \u2b50"
+                elif pct and float(pct) < 10:
+                    flag = " \u2193"
+
+                avg_str = f" (avg ${avg_charge:,.0f}/mo)" if avg_charge else ""
+                parts.append(f"{i+1}. **{prop}** -- {extra}/{occ} units ({pct}%) have extra charges{avg_str}{flag}")
+
+            # Portfolio summary
+            if total_occupied > 0:
+                portfolio_pct = round(100.0 * total_with_charges / total_occupied, 1)
+                parts.append(f"\n**Portfolio total:** {total_with_charges}/{total_occupied} occupied units ({portfolio_pct}%) have pet/amenity charges.")
+
+            parts.append("\n_Extra charges = Total Billing > Lease Rent (includes pet rent, parking, amenities)._")
+            return "\n".join(parts)
+
+        except Exception as e:
+            logger.error(f"Pet rent analysis failed: {e}")
+            return None
+
+    def _analyze_amenities(self, user_message: str) -> Optional[str]:
+        """Analyze amenity charges across properties."""
+        try:
+            sql = """
+                SELECT
+                    [Property],
+                    COUNT(*) as TotalUnits,
+                    SUM(CASE WHEN [Amenities] > 0 THEN 1 ELSE 0 END) as UnitsWithAmenities,
+                    CAST(ROUND(
+                        100.0 * SUM(CASE WHEN [Amenities] > 0 THEN 1 ELSE 0 END)
+                        / NULLIF(COUNT(*), 0), 1
+                    ) AS DECIMAL(5,1)) as PctWithAmenities,
+                    AVG(CASE WHEN [Amenities] > 0 THEN [Amenities] ELSE NULL END) as AvgAmenityCharge
+                FROM [leasing].[PortfolioUnitDetails]
+                WHERE [Unit/Lease Status] = 'Occupied'
+                GROUP BY [Property]
+                ORDER BY PctWithAmenities DESC
+            """
+            rows = self.stoa.query(sql)
+            if not rows:
+                return None
+
+            self.successful_queries += 1
+            parts = ["**Amenity Charge Analysis:**\n"]
+            for i, row in enumerate(rows):
+                prop = row.get('Property', 'Unknown')
+                total = row.get('TotalUnits', 0)
+                with_am = row.get('UnitsWithAmenities', 0)
+                pct = row.get('PctWithAmenities', 0)
+                avg_ch = row.get('AvgAmenityCharge')
+                avg_str = f" (avg ${avg_ch:,.0f}/mo)" if avg_ch else ""
+                parts.append(f"{i+1}. **{prop}** -- {with_am}/{total} units ({pct}%){avg_str}")
+
+            return "\n".join(parts)
+        except Exception as e:
+            logger.error(f"Amenity analysis failed: {e}")
+            return None
+
+    def _analyze_per_property(self, user_message: str) -> Optional[str]:
+        """Generic per-property aggregation for analytical questions."""
+        lower = user_message.lower()
+        try:
+            # Determine what metric to aggregate
+            if any(kw in lower for kw in ['unit', 'units', 'count']):
+                sql = """
+                    SELECT [Property],
+                        COUNT(*) as TotalUnits,
+                        SUM(CASE WHEN [Unit/Lease Status] = 'Occupied' THEN 1 ELSE 0 END) as Occupied,
+                        SUM(CASE WHEN [Unit/Lease Status] = 'Vacant' THEN 1 ELSE 0 END) as Vacant,
+                        CAST(ROUND(100.0 * SUM(CASE WHEN [Unit/Lease Status] = 'Occupied' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS DECIMAL(5,1)) as OccPct
+                    FROM [leasing].[PortfolioUnitDetails]
+                    GROUP BY [Property]
+                    ORDER BY OccPct DESC
+                """
+            elif any(kw in lower for kw in ['rent', 'pricing', 'rate']):
+                sql = """
+                    SELECT [Property],
+                        AVG([Lease Rent]) as AvgRent,
+                        MIN([Lease Rent]) as MinRent,
+                        MAX([Lease Rent]) as MaxRent,
+                        COUNT(*) as Units
+                    FROM [leasing].[PortfolioUnitDetails]
+                    WHERE [Unit/Lease Status] = 'Occupied' AND [Lease Rent] > 0
+                    GROUP BY [Property]
+                    ORDER BY AvgRent DESC
+                """
+            else:
+                return None
+
+            rows = self.stoa.query(sql)
+            if not rows:
+                return None
+
+            self.successful_queries += 1
+            return self._format_direct_response(user_message, rows, 'leasing.PortfolioUnitDetails')
+
+        except Exception as e:
+            logger.error(f"Per-property analysis failed: {e}")
+            return None
