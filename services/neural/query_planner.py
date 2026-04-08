@@ -813,6 +813,51 @@ class QueryPlanner:
             parts.append("")
 
         if len(months_data) >= 2:
+
+                        # Trend direction analysis
+            if metric_cols and name_col:
+                oldest_month = sorted(months_data.keys())[0]
+                newest_month = sorted(months_data.keys())[-1]
+                old_rows = months_data.get(oldest_month, [])
+                new_rows = months_data.get(newest_month, [])
+                improving = []
+                declining = []
+                for nr in new_rows:
+                    nname = nr.get(name_col, '')
+                    nval = None
+                    for mc in metric_cols:
+                        if nr.get(mc) is not None and isinstance(nr[mc], (int, float)):
+                            nval = float(nr[mc])
+                            break
+                    if nval is None:
+                        continue
+                    for orw in old_rows:
+                        if orw.get(name_col, '') == nname:
+                            oval = None
+                            for mc in metric_cols:
+                                if orw.get(mc) is not None and isinstance(orw[mc], (int, float)):
+                                    oval = float(orw[mc])
+                                    break
+                            if oval is not None:
+                                delta = nval - oval
+                                if delta > 0.5:
+                                    improving.append((nname, delta))
+                                elif delta < -0.5:
+                                    declining.append((nname, abs(delta)))
+                            break
+                parts.append("")
+                if improving:
+                    improving.sort(key=lambda x: -x[1])
+                    top = improving[:3]
+                    names = ', '.join(f'**{n}** (+{d:.1f})' for n, d in top)
+                    parts.append(f"\u2b06 Trending up: {names}")
+                if declining:
+                    declining.sort(key=lambda x: -x[1])
+                    top = declining[:3]
+                    names = ', '.join(f'**{n}** (-{d:.1f})' for n, d in top)
+                    parts.append(f"\u2b07 Trending down: {names}")
+                if not improving and not declining:
+                    parts.append("Portfolio performance is holding steady.")
             sm = sorted(months_data.keys())
             parts.append(f"Data spans {sm[0]} to {sm[-1]} ({len(months_data)} months).")
 
