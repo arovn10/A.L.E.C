@@ -114,7 +114,7 @@ class QueryPlanner:
                     if w in cp or cp in w:
                         score += 2
 
-            re_terms = {"occupancy", "rent", "lease", "unit", "property", "pricing", "tenant", "renewal", "velocity"}
+            re_terms = {"occupancy", "rent", "lease", "unit", "property", "pricing", "tenant", "renewal", "velocity", "performing", "performance", "status", "settlers", "picardy", "bluebonnet", "waters", "flats", "crestview", "mcgowin", "freeport", "promenade", "crosspointe", "ransley", "waterpointe", "redstone", "hammond", "millerville", "heights"}
             if words & re_terms and any(kw in table_lower for kw in ["leasing", "property", "project", "unit"]):
                 score += 8
 
