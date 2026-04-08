@@ -1178,6 +1178,12 @@ def test_query(q: str = "occupancy"):
 @app.post("/stoa/reload-planner")
 def reload_query_planner():
     """Force reload the query planner: clear cache, re-discover schema."""
+        global query_planner
+    import importlib
+    import query_planner as qp_module
+    importlib.reload(qp_module)
+    from query_planner import QueryPlanner
+    query_planner = QueryPlanner(stoa)
     query_planner.schema = {}
     query_planner.query_cache = {}
     query_planner.query_count = 0
