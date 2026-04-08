@@ -753,7 +753,7 @@ class QueryPlanner:
                 where_parts.append(f"[{name_col}] LIKE '%{term}%'")
 
         where_clause = ' AND '.join(where_parts)
-        sql = f"SELECT {', '.join(select_parts)} FROM [{schema_name}].[{table_name}] WHERE {where_clause} GROUP BY {', '.join(group_parts)} ORDER BY Month DESC"
+        sql = f"SELECT {', '.join(select_parts)} FROM [{schema_name}].[{table_name}] WHERE {where_clause} GROUP BY {', '.join(group_parts)} HAVING AVG([{metric_col or 'OccupancyPct'}]) > 0 ORDER BY Month DESC"
         return sql
     def get_trend_response(self, user_message: str) -> Optional[str]:
         if not self._is_trend_query(user_message):
@@ -807,7 +807,7 @@ class QueryPlanner:
                 for mc in metric_cols:
                     if row.get(mc) is not None:
                         col_base = mc.split('_', 1)[1] if '_' in mc else mc
-                        vals.append(f"{mc}: {self._format_value(row[mc], col_base)}")
+                        friendly = re.sub(r'([A-Z])', r' \1', col_base).strip(); vals.append(f"{friendly}: {self._format_value(row[mc], col_base)}")
                                         # Fallback: if no metric vals, show all non-key values
                 if not vals:
                     for k, v in row.items():
