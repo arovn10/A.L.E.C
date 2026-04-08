@@ -148,7 +148,7 @@ class QueryPlanner:
 
         quoted = re.findall(r'"([^"]+)"', user_message)
         named = re.findall(r'(?:the |at |about |for )([A-Z][a-z]+(?: [A-Za-z]+)*)', user_message)
-        search_terms = quoted + named
+        search_terms = quoted + named + [v for k, v in {"settlers trace": "Settlers Trace", "picardy": "Picardy", "bluebonnet": "Bluebonnet", "west village": "West Village", "crestview": "Crestview", "mcgowin": "McGowin", "freeport": "Freeport", "promenade": "Promenade", "crosspointe": "Crosspointe", "ransley": "Ransley", "waterpointe": "Waterpointe", "redstone": "Redstone", "hammond": "Hammond", "millerville": "Millerville"}.items() if k in lower]
 
         generic_terms = {"stoa", "data", "database", "property", "properties", "all", "every", "list", "show"}
         search_terms = [t for t in search_terms if t.lower() not in generic_terms]
