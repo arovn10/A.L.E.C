@@ -1259,7 +1259,6 @@ def reload_query_planner():
     query_planner.query_count = 0
     query_planner.successful_queries = 0
     # Delete cache file
-    from pathlib import Path
     cache_file = Path(__file__).resolve().parent.parent.parent / "data" / "query_cache.json"
     if cache_file.exists():
         cache_file.unlink()
