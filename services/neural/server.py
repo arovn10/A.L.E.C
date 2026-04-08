@@ -1179,6 +1179,20 @@ def test_query(q: str = "occupancy"):
 def reload_query_planner():
     """Force reload the query planner: clear cache, re-discover schema."""
         global query_planner
+        # Auto-pull latest code from GitHub before reloading
+        import subprocess
+        project_root = Path(__file__).resolve().parent.parent.parent
+        try:
+            pull_result = subprocess.run(
+                ["git", "pull", "origin", "main"],
+                cwd=str(project_root),
+                capture_output=True, text=True, timeout=30
+            )
+            git_output = pull_result.stdout.strip()
+            logger.info(f"Git pull: {git_output}")
+        except Exception as e:
+            git_output = f"git pull failed: {e}"
+            logger.warning(git_output)
     import importlib
     import query_planner as qp_module
     importlib.reload(qp_module)
