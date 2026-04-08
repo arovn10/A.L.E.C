@@ -39,8 +39,8 @@ class TrainingConfig:
     use_qlora: bool = True
     qlora_bits: int = 4
     # LoRA hyperparameters — alpha = 2x rank is the recommended heuristic
-    lora_rank: int = 32
-    lora_alpha: int = 64
+    lora_rank: int = 16
+    lora_alpha: int = 32
     lora_dropout: float = 0.05
     # Removed v_proj and down_proj — they are poorly captured by
     # low-rank approximations (see WeLore paper)
@@ -54,12 +54,12 @@ class TrainingConfig:
     gradient_accumulation_steps: int = 8  # Effective batch = 8
     max_steps: int = 200
     warmup_steps: int = 20
-    max_seq_length: int = 2048
+    max_seq_length: int = 512
     save_steps: int = 50
     logging_steps: int = 1
     output_dir: str = str(LORA_DIR)
     # MPS memory management
-    mps_memory_fraction: float = 0.7  # Leave 30% for inference model
+    mps_memory_fraction: float = 0.5  # Leave 30% for inference model
 
 
 @dataclass
