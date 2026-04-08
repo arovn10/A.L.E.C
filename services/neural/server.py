@@ -1180,8 +1180,8 @@ def reload_query_planner():
     """Force reload the query planner: clear cache, re-discover schema."""
     global query_planner
     # Auto-pull latest code from GitHub before reloading
-        import subprocess
-        project_root = Path(__file__).resolve().parent.parent.parent
+    import subprocess
+    project_root = Path(__file__).resolve().parent.parent.parent
         try:
             pull_result = subprocess.run(
                 ["git", "pull", "origin", "main"],
