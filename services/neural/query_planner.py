@@ -422,7 +422,7 @@ class QueryPlanner:
         logger.info(f"Query planner triggered: '{user_message[:60]}'")
         self.discover_schema()
 
-                # Anti-hallucination: check if user asks about a specific property not in our DB
+        # Anti-hallucination: check if user asks about a specific property not in our DB
         _loc_ind = ["at ", "about the ", "for the ", "of the "]
         _mentions_specific = any(w in user_message.lower() for w in _loc_ind)
         is_ranking = any(kw in user_message.lower() for kw in ['top ', 'bottom ', 'best ', 'worst ', 'all ', 'every ', 'list ', 'show me'])
@@ -507,7 +507,7 @@ class QueryPlanner:
     def _format_results(self, all_results: list[dict]) -> str:
         """Format query results for LLM injection (fallback path)."""
         parts = []
-                parts.append("[STOA DATABASE QUERY RESULTS -- THIS IS REAL DATA. ONLY report values shown below. If the user's question is NOT answered by this data, say 'I don't have that in my database — want me to search the web?' NEVER fabricate numbers, property names, or statistics.]")
+        parts.append("[STOA DATABASE QUERY RESULTS -- THIS IS REAL DATA. ONLY report values shown below. If the user's question is NOT answered by this data, say 'I don't have that in my database — want me to search the web?' NEVER fabricate numbers, property names, or statistics.]")
         parts.append("CRITICAL: If zero rows match, tell the user no data was found. Do NOT make up approximate values.")
         parts.append("")
 
@@ -537,13 +537,13 @@ class QueryPlanner:
                         clow = col.lower()
                         if any(kw in clow for kw in ["name", "property", "project", "title", "description",
                                "rate", "pct", "occupancy", "rent", "total", "amount", "units", "count",
-                               "price", "noi", "revenue"]):
+                                                     "price", "noi", "revenue"]):
                             summary_parts.append(f"{col}={val}")
                 if summary_parts:
                     parts.append(f"  {i+1}. {', '.join(summary_parts[:8])}")
             parts.append("")
 
-                parts.append("[END OF DATABASE RESULTS. ONLY use the data shown above. If the user asked about something NOT in these results, say 'I don't have that in my database' and offer to search the web. NEVER make up or guess values.]")
+            parts.append("[END OF DATABASE RESULTS. ONLY use the data shown above. If the user asked about something NOT in these results, say 'I don't have that in my database' and offer to search the web. NEVER make up or guess values.]")
         parts.append("")
         parts.append("[ANTI-HALLUCINATION: If no rows match the user's question, tell them the data wasn't found. Do NOT invent statistics or property names.]")
 
@@ -590,7 +590,7 @@ class QueryPlanner:
             matched = self._match_property(user_message)
             if not matched:
                 logger.info("Anti-hallucination: unknown property, returning None")
-                                return "I don't have that property in my database. Would you like me to search the web for information about it?"
+                return "I don't have that property in my database. Would you like me to search the web for information about it?"
 
         cache_key = re.sub(r'[^a-z ]+', '', user_message.lower()).strip()[:100]
         cached_rows = None
@@ -658,8 +658,8 @@ class QueryPlanner:
         if not rows:
             matched = self._match_property(user_message)
             if matched:
-                                return f"I don't have data for **{matched[0]}** in my database. It may be listed under a different name, or I can search the web for information about it if you'd like."
-                        return "I couldn't find that information in my database. Would you like me to search the web for it?"
+                return f"I don't have data for **{matched[0]}** in my database. It may be listed under a different name, or I can search the web for information about it if you'd like."
+                return "I couldn't find that information in my database. Would you like me to search the web for it?"
 
         self.successful_queries += 1
         return self._format_direct_response(user_message, rows, source_table)
