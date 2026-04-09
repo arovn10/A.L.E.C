@@ -34,7 +34,7 @@ GGUF_DIR = DATA_ROOT / "data" / "models"
 class TrainingConfig:
     """LoRA training configuration — optimized for Apple Silicon."""
     # Model — must match the architecture of the inference GGUF
-    model_name: str = "Qwen/Qwen2.5-7B-Instruct"
+    model_name: str = "Qwen/Qwen2.5-1.5B-Instruct"
     # QLoRA: 4-bit quantization to fit in memory alongside inference model
     use_qlora: bool = True
     qlora_bits: int = 4
@@ -380,9 +380,17 @@ class ALECTrainer:
             model = AutoModelForCausalLM.from_pretrained(
                 self.config.model_name, **load_kwargs
             )
-            if device == "mps" and not quantization_config:
-                model = model.to(device)
-
+                        if device == "mps" and not quantization_config:
+                try:
+                    model = model.to(device)
+                except RuntimeError as e:
+                    if "out of memory" in str(e).lower() or "MPS" in str(e):
+                        logger.warning(f"[{run_id}] MPS OOM, falling back to CPU")
+                        self._clear_mps_cache()
+                        device = "cpu"
+                        model = model.to("cpu").float()
+                    else:
+                        raise
             # Apply LoRA
             lora_config = LoraConfig(
                 r=self.config.lora_rank,
@@ -393,6 +401,10 @@ class ALECTrainer:
                 task_type=TaskType.CAUSAL_LM,
             )
             model = get_peft_model(model, lora_config)
+            
+            # Enable gradient checkpointing to save memory
+            model.gradient_checkpointing_enable()
+            model.enable_input_require_grads()
 
             trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
             total = sum(p.numel() for p in model.parameters())
@@ -432,6 +444,8 @@ class ALECTrainer:
                 max_steps=self.config.max_steps,
                 learning_rate=self.config.learning_rate,
                 fp16=(device == "cuda"),
+                                use_cpu=(device == "cpu"),
+                gradient_checkpointing=True,
                 logging_steps=self.config.logging_steps,
                 save_steps=self.config.save_steps,
                 save_total_limit=3,
