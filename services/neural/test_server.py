@@ -101,7 +101,7 @@ class TestEngineInfo:
         info = engine.get_model_info()
         serialized = json.dumps(info)
         assert serialized
-        assert info["model_loaded"] is False
+        assert info["loaded"] is False
 
 
 # ── Query Planner Tests ───────────────────────────────────────
