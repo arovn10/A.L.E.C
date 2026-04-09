@@ -422,6 +422,19 @@ class QueryPlanner:
         logger.info(f"Query planner triggered: '{user_message[:60]}'")
         self.discover_schema()
 
+                # Anti-hallucination: check if user asks about a specific property not in our DB
+        _loc_ind = ["at ", "about the ", "for the ", "of the "]
+        _mentions_specific = any(w in user_message.lower() for w in _loc_ind)
+        is_ranking = any(kw in user_message.lower() for kw in ['top ', 'bottom ', 'best ', 'worst ', 'all ', 'every ', 'list ', 'show me'])
+        if _mentions_specific and not is_ranking:
+            matched = self._match_property(user_message)
+            if not matched:
+                logger.info("Anti-hallucination (data_context): unknown property")
+                return ("[STOA DATABASE -- The property or entity mentioned by the user was NOT FOUND in the database. "
+                        "Tell the user: 'I don't have that property in my database. Would you like me to search the web for information about it?' "
+                        "Do NOT make up any data or statistics.]")
+
+
         cache_key = re.sub(r'[^a-z ]+', '', user_message.lower()).strip()[:100]
         if cache_key in self.query_cache:
             try:
@@ -494,7 +507,8 @@ class QueryPlanner:
     def _format_results(self, all_results: list[dict]) -> str:
         """Format query results for LLM injection (fallback path)."""
         parts = []
-        parts.append("[STOA DATABASE QUERY RESULTS -- THIS IS REAL DATA. Read it back to the user EXACTLY as shown. Do NOT substitute placeholders or make up values.]")
+                parts.append("[STOA DATABASE QUERY RESULTS -- THIS IS REAL DATA. ONLY report values shown below. If the user's question is NOT answered by this data, say 'I don't have that in my database — want me to search the web?' NEVER fabricate numbers, property names, or statistics.]")
+        parts.append("CRITICAL: If zero rows match, tell the user no data was found. Do NOT make up approximate values.")
         parts.append("")
 
         for result in all_results:
@@ -529,7 +543,10 @@ class QueryPlanner:
                     parts.append(f"  {i+1}. {', '.join(summary_parts[:8])}")
             parts.append("")
 
-        parts.append("[END OF DATABASE RESULTS. Present the above data naturally as if you already know it.]")
+                parts.append("[END OF DATABASE RESULTS. ONLY use the data shown above. If the user asked about something NOT in these results, say 'I don't have that in my database' and offer to search the web. NEVER make up or guess values.]")
+        parts.append("")
+        parts.append("[ANTI-HALLUCINATION: If no rows match the user's question, tell them the data wasn't found. Do NOT invent statistics or property names.]")
+
         return "\n".join(parts)
 
     def get_direct_response(self, user_message: str) -> Optional[str]:
@@ -564,7 +581,7 @@ class QueryPlanner:
             matched = self._match_property(user_message)
             if not matched:
                 logger.info("Anti-hallucination: unknown property, returning None")
-                return None
+                                return "I don't have that property in my database. Would you like me to search the web for information about it?"
 
         cache_key = re.sub(r'[^a-z ]+', '', user_message.lower()).strip()[:100]
         cached_rows = None
@@ -632,8 +649,8 @@ class QueryPlanner:
         if not rows:
             matched = self._match_property(user_message)
             if matched:
-                return f"I don't have data for **{matched[0]}** in the portfolio. It may be listed under a different name."
-            return None
+                                return f"I don't have data for **{matched[0]}** in my database. It may be listed under a different name, or I can search the web for information about it if you'd like."
+                        return "I couldn't find that information in my database. Would you like me to search the web for it?"
 
         self.successful_queries += 1
         return self._format_direct_response(user_message, rows, source_table)
