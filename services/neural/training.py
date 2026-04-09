@@ -135,11 +135,9 @@ class StoaTrainingDataGenerator:
         """Generate SFT training data from real Stoa queries."""
         output_path = output_path or str(SFT_DIR / "stoa_conversations.jsonl")
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-
         properties = self._get_properties()
         if not properties:
             raise RuntimeError("No properties found in Stoa DB")
-
         examples = []
         for prop in properties:
             prop_pattern = prop.split()[-1] if len(prop.split()) > 2 else prop
@@ -169,7 +167,6 @@ class StoaTrainingDataGenerator:
                 except Exception as e:
                     logger.warning(f"Failed to generate example for {prop}: {e}")
                     continue
-
         # Also generate "I don't know" examples for unknown properties
                     unknown_props = ["Sunset Apartments", "Oak Ridge Place", "River Walk Towers", "Pine Valley Estates", "Lakewood Commons", "Highland Park Residences", "Maple Creek Village", "Grand Plaza Suites", "Willowbrook Terrace", "Cedarwood Heights"]
         for fake in unknown_props:
@@ -180,7 +177,6 @@ class StoaTrainingDataGenerator:
                     {"role": "assistant", "content": f"I don't have data for '{fake}' in our portfolio. Our current properties are managed through the Stoa database. Would you like me to show you the properties we do track?"}
                 ]
             })
-
                     # Add more diverse anti-hallucination training patterns
             anti_hallucination_questions = [
                 ("How is {fake} performing?", "I don't have '{fake}' in my database. Would you like me to search the web for information about it?"),
@@ -198,11 +194,9 @@ class StoaTrainingDataGenerator:
                             {"role": "assistant", "content": a_template.format(fake=fake)}
                         ]
                     })
-
         with open(output_path, 'w') as f:
             for ex in examples:
                 f.write(json.dumps(ex) + '\n')
-
         logger.info(f"Generated {len(examples)} training examples -> {output_path}")
         return output_path
 
@@ -210,10 +204,8 @@ class StoaTrainingDataGenerator:
         """Generate DPO preference pairs: correct (from DB) vs hallucinated."""
         output_path = output_path or str(SFT_DIR / "dpo_preferences.jsonl")
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-
         properties = self._get_properties()
         examples = []
-
         for prop in properties:
             prop_pattern = prop.split()[-1] if len(prop.split()) > 2 else prop
             try:
@@ -233,7 +225,6 @@ class StoaTrainingDataGenerator:
                 fake_occ = round(random.uniform(85, 99), 1)
                 fake_units = random.randint(100, 500)
                 rejected = f"{prop} has an occupancy of {fake_occ}% with {fake_units} total units."
-
                 examples.append({
                     "prompt": question,
                     "chosen": chosen,
@@ -242,11 +233,9 @@ class StoaTrainingDataGenerator:
             except Exception as e:
                 logger.warning(f"DPO gen failed for {prop}: {e}")
                 continue
-
         with open(output_path, 'w') as f:
             for ex in examples:
                 f.write(json.dumps(ex) + '\n')
-
         logger.info(f"Generated {len(examples)} DPO preference pairs -> {output_path}")
         return output_path
 
@@ -287,27 +276,22 @@ class ALECTrainer:
         """Start QLoRA fine-tuning in a background thread."""
         if self.status.is_training:
             raise RuntimeError("Training already in progress")
-
         if config:
             for k, v in config.items():
                 if hasattr(self.config, k):
                     setattr(self.config, k, v)
-
         run_id = f"run_{uuid.uuid4().hex[:8]}"
-
         # Auto-generate training data if none provided
         if not data_path:
             data_path = str(SFT_DIR / "stoa_conversations.jsonl")
             if not Path(data_path).exists() and self.stoa:
                 logger.info("No training data found, generating from Stoa...")
                 self.generate_training_data()
-
         if not Path(data_path).exists():
             raise FileNotFoundError(
                 f"Training data not found at {data_path}. "
                 "Generate data first via /training/generate-data endpoint."
             )
-
         self.status = TrainingStatus(
             is_training=True,
             run_id=run_id,
@@ -315,7 +299,6 @@ class ALECTrainer:
             started_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             phase="loading",
         )
-
         self._training_thread = threading.Thread(
             target=self._train, args=(run_id, data_path), daemon=True
         )
@@ -345,10 +328,8 @@ class ALECTrainer:
             )
             from peft import LoraConfig, get_peft_model, TaskType
             from datasets import load_dataset
-
             self.status.phase = "loading"
             logger.info(f"[{run_id}] Loading model: {self.config.model_name}")
-
             # Determine device
             if torch.backends.mps.is_available():
                 device = "mps"
@@ -359,19 +340,15 @@ class ALECTrainer:
             else:
                 device = "cpu"
                 dtype = torch.float32
-
             logger.info(f"[{run_id}] Using device: {device}")
-
             # Clear memory before loading
             self._clear_mps_cache()
-
             # Load tokenizer
             tokenizer = AutoTokenizer.from_pretrained(
                 self.config.model_name, trust_remote_code=True
             )
             if tokenizer.pad_token is None:
                 tokenizer.pad_token = tokenizer.eos_token
-
             # QLoRA: 4-bit quantization config
             quantization_config = None
             if self.config.use_qlora and device == "cuda":
@@ -381,7 +358,6 @@ class ALECTrainer:
                     bnb_4bit_compute_dtype=dtype,
                     bnb_4bit_use_double_quant=True,
                 )
-
             # Load model
             load_kwargs = {
                 "torch_dtype": dtype,
@@ -394,11 +370,10 @@ class ALECTrainer:
             elif device == "mps":
                 # MPS: load in float16, move to device
                 load_kwargs["device_map"] = None
-
             model = AutoModelForCausalLM.from_pretrained(
                 self.config.model_name, **load_kwargs
             )
-                        if device == "mps" and not quantization_config:
+            if device == "mps" and not quantization_config:
                 try:
                     model = model.to(device)
                 except RuntimeError as e:
@@ -419,22 +394,18 @@ class ALECTrainer:
                 task_type=TaskType.CAUSAL_LM,
             )
             model = get_peft_model(model, lora_config)
-            
             # Enable gradient checkpointing to save memory
             model.gradient_checkpointing_enable()
             model.enable_input_require_grads()
-
             trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
             total = sum(p.numel() for p in model.parameters())
             logger.info(
                 f"[{run_id}] LoRA applied: {trainable:,} trainable / {total:,} total "
                 f"({100 * trainable / total:.2f}%)"
             )
-
             # Load dataset
             dataset = load_dataset("json", data_files=data_file, split="train")
             logger.info(f"[{run_id}] Dataset loaded: {len(dataset)} examples")
-
             # Tokenize
             def tokenize(example):
                 msgs = example.get("messages", [])
@@ -448,9 +419,7 @@ class ALECTrainer:
                 )
                 tokens["labels"] = tokens["input_ids"].copy()
                 return tokens
-
             dataset = dataset.map(tokenize, remove_columns=dataset.column_names)
-
             # Training arguments
             self.status.phase = "training"
             output_dir = str(LORA_DIR / run_id)
@@ -471,11 +440,9 @@ class ALECTrainer:
                 remove_unused_columns=False,
                 dataloader_pin_memory=False,  # Required for MPS
             )
-
             # Status callback
             from transformers import TrainerCallback
             trainer_ref = self
-
             class StatusCallback(TrainerCallback):
                 def on_log(self, args, state, control, logs=None, **kwargs):
                     if logs and "loss" in logs:
@@ -497,7 +464,6 @@ class ALECTrainer:
                                 )
                             except Exception as e:
                                 logger.warning(f"Failed to log metric: {e}")
-
             from transformers import Trainer
             trainer = Trainer(
                 model=model,
@@ -505,20 +471,16 @@ class ALECTrainer:
                 train_dataset=dataset,
                 callbacks=[StatusCallback()],
             )
-
             logger.info(f"[{run_id}] Starting training...")
             trainer.train()
-
             # Save adapter
             self.status.phase = "merging"
             model.save_pretrained(output_dir)
             tokenizer.save_pretrained(output_dir)
             logger.info(f"[{run_id}] LoRA adapter saved to {output_dir}")
-
             # Clean up training model from memory
             del model, trainer
             self._clear_mps_cache()
-
             # Log evolution
             if self.db:
                 self.db.log_evolution(
@@ -535,11 +497,9 @@ class ALECTrainer:
                         "lora_rank": self.config.lora_rank,
                     },
                 )
-
             self.status.is_training = False
             self.status.phase = "idle"
             logger.info(f"[{run_id}] Training complete!")
-
             # Auto-run benchmarks
             try:
                 import server as srv
@@ -549,7 +509,6 @@ class ALECTrainer:
                     logger.info(f"[{run_id}] Benchmarks: {bench.get('passed',0)}/{bench.get('total',0)} passed")
             except Exception as bench_err:
                 logger.error(f"[{run_id}] Post-training benchmark failed: {bench_err}")
-
         except Exception as e:
             logger.error(f"[{run_id}] Training failed: {e}")
             self.status.is_training = False
