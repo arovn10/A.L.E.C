@@ -531,7 +531,7 @@ async def chat_completions(req: ChatRequest):
         # Use query_planner.get_direct_response() which formats data into
         # natural language directly, no LLM needed.
         # -- PRE-CHECK: if user asks about a specific property not in our DB, skip Stoa
-        _loc_words = ["at ", "about the ", "for the "]
+        _loc_words = ["at ", "about the ", "for the ", "of the ", "on the ", "what is ", "what's ", "how much", "how many", "tell me about", "show me ", "give me "]
         _has_loc = any(w in user_msg.lower() for w in _loc_words)
         _is_ranking = any(w in user_msg.lower() for w in ["top ", "bottom ", "all ", "every ", "portfolio", "average", "total", "across ", "overall", "summary", "rank", "list ", "show me", "each property", "compare", "highest", "lowest"])
         _skip_stoa = False

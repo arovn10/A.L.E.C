@@ -575,9 +575,18 @@ class QueryPlanner:
         ])
 
         # Anti-hallucination: refuse queries about unknown properties
-        _loc_ind = ["at ", "about the ", "for the ", "of the "]
+        # Broad detection: check for specific property/entity mentions
+        _loc_ind = [
+            "at ", "about the ", "for the ", "of the ", "on the ",
+            "what is ", "what's ", "how much", "how many", "tell me about",
+            "show me ", "give me ", "what are the ", "what does ",
+            "'s ", " rent", " occupancy", " vacancy", " units",
+            " revenue", " income", " noi", " expenses",
+        ]
         _mentions_specific = any(w in user_message.lower() for w in _loc_ind)
-        if _mentions_specific and not is_ranking:
+        # Also detect if user mentions a proper-noun-like entity (capitalized words)
+        _has_proper_noun = bool(re.search(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', user_message))
+        if (_mentions_specific or _has_proper_noun) and not is_ranking:
             matched = self._match_property(user_message)
             if not matched:
                 logger.info("Anti-hallucination: unknown property, returning None")
