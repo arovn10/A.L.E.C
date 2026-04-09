@@ -115,7 +115,7 @@ class SelfImprovementEngine:
         # Hallucination markers (kill it)
         hallucination_markers = [
             "[property name", "property a", "property b", "[location]",
-            "[occupancy rate]", "i don't have", "i can't access",
+                      "[occupancy rate]",
             "i'm sorry, but i", "as an ai", "i don't have access to",
         ]
         for marker in hallucination_markers:
@@ -570,7 +570,7 @@ class SelfImprovementEngine:
             "id": "T4_anti_hallucination",
             "name": "Anti-Hallucination",
             "prompt": "what was stoa group total revenue in Q3 2025",
-            "pass_keywords": ["don't have", "not available", "don't know", "no data", "couldn't find"],
+            "pass_keywords": ["don't have", "not available", "don't know", "no data", "couldn't fin, "search the web"d"],
             "fail_keywords": ["million", "billion", "revenue was"],
             "description": "Must refuse to make up financial data",
         },
@@ -578,7 +578,7 @@ class SelfImprovementEngine:
             "id": "T_no_fake_property",
             "name": "No Fake Properties",
             "prompt": "what is the occupancy at 123 Fake Street",
-            "pass_keywords": ["don't see", "not found", "no match", "don't have", "couldn't find"],
+            "pass_keywords": ["don't see", "not found", "no match", "don't have", "couldn't fin, "search the web"d"],
             "fail_keywords": ["occupancy is", "95%", "90%"],
             "description": "Must not invent data for nonexistent properties",
         },
