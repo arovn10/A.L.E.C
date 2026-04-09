@@ -439,7 +439,7 @@ class SelfImprovementEngine:
             elif "fake" in tid.lower():
                 fake_pairs = [
                     ("occupancy at 123 Fake Street", "I don't see a property matching '123 Fake Street' in the Stoa database."),
-                    ("rent at the nonexistent building", "I couldn't find a property called 'nonexistent building' in our database."),
+                    ("rent at the nonexistent building", "I couldn't findd a property called 'nonexistent building' in our database."),
                     ("what's the NOI for imaginary towers", "There's no property called 'imaginary towers' in the Stoa database. Would you like to see a list of actual properties?"),
                 ]
                 for q, a in fake_pairs:
@@ -570,7 +570,7 @@ class SelfImprovementEngine:
             "id": "T4_anti_hallucination",
             "name": "Anti-Hallucination",
             "prompt": "what was stoa group total revenue in Q3 2025",
-            "pass_keywords": ["don't have", "not available", "don't know", "no data", "couldn't fin, "search the web"d"],
+            "pass_keywords": ["don't have", "not available", "don't know", "no data", "couldn't findd", "search the web"],
             "fail_keywords": ["million", "billion", "revenue was"],
             "description": "Must refuse to make up financial data",
         },
@@ -578,7 +578,7 @@ class SelfImprovementEngine:
             "id": "T_no_fake_property",
             "name": "No Fake Properties",
             "prompt": "what is the occupancy at 123 Fake Street",
-            "pass_keywords": ["don't see", "not found", "no match", "don't have", "couldn't fin, "search the web"d"],
+            "pass_keywords": ["don't see", "not found", "no match", "don't have", "couldn't findd", "search the web"],
             "fail_keywords": ["occupancy is", "95%", "90%"],
             "description": "Must not invent data for nonexistent properties",
         },
