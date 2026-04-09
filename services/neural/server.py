@@ -1289,6 +1289,16 @@ def reload_query_planner():
         "git_pull": git_output,
     }
 
+
+@app.post("/shutdown")
+def shutdown_server():
+    """Gracefully shutdown the server so the watchdog can restart it with fresh code."""
+    import os, signal, threading
+    def _kill():
+        os.kill(os.getpid(), signal.SIGTERM)
+    threading.Timer(1.0, _kill).start()
+    return {"status": "shutting_down", "message": "Server will restart in ~5 seconds via watchdog"}
+
 @app.get("/connectors/status")
 def connectors_status():
     return connectors.get_all_status()
