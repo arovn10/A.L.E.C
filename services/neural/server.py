@@ -1235,7 +1235,7 @@ def test_query(q: str = "occupancy"):
 def reload_query_planner():
     """Force reload the query planner: clear cache, re-discover schema."""
     global query_planner
-        from pathlib import Path  # explicit local import for safety
+    from pathlib import Path  # explicit local import for safety
     # Auto-pull latest code from GitHub before reloading
     import subprocess
     project_root = Path(__file__).resolve().parent.parent.parent
