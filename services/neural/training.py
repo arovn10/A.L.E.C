@@ -171,7 +171,7 @@ class StoaTrainingDataGenerator:
                     continue
 
         # Also generate "I don't know" examples for unknown properties
-        unknown_props = ["Sunset Apartments", "Oak Ridge Place", "River Walk Towers"]
+                    unknown_props = ["Sunset Apartments", "Oak Ridge Place", "River Walk Towers", "Pine Valley Estates", "Lakewood Commons", "Highland Park Residences", "Maple Creek Village", "Grand Plaza Suites", "Willowbrook Terrace", "Cedarwood Heights"]
         for fake in unknown_props:
             examples.append({
                 "messages": [
@@ -180,6 +180,24 @@ class StoaTrainingDataGenerator:
                     {"role": "assistant", "content": f"I don't have data for '{fake}' in our portfolio. Our current properties are managed through the Stoa database. Would you like me to show you the properties we do track?"}
                 ]
             })
+
+                    # Add more diverse anti-hallucination training patterns
+            anti_hallucination_questions = [
+                ("How is {fake} performing?", "I don't have '{fake}' in my database. Would you like me to search the web for information about it?"),
+                ("What's the rent at {fake}?", "'{fake}' isn't in our portfolio database. I can only provide data for properties we track. Want me to look it up online?"),
+                ("Tell me about {fake}", "I don't have any data on '{fake}' in the Stoa database. Would you like me to search the web for information about this property?"),
+                ("What are the vacancy rates for {fake}?", "'{fake}' is not a property I have data for. I can show you vacancy rates for properties in our portfolio, or search the web for this one."),
+                ("Give me the NOI for {fake}", "I don't have '{fake}' in my records. Would you like me to search the web, or would you like to see NOI data for our tracked properties?"),
+            ]
+            for fake in unknown_props:
+                for q_template, a_template in anti_hallucination_questions:
+                    examples.append({
+                        "messages": [
+                            {"role": "system", "content": "You are A.L.E.C., an AI assistant with real-time access to property management data. Always use actual data from the database. Never fabricate numbers."},
+                            {"role": "user", "content": q_template.format(fake=fake)},
+                            {"role": "assistant", "content": a_template.format(fake=fake)}
+                        ]
+                    })
 
         with open(output_path, 'w') as f:
             for ex in examples:
