@@ -22,11 +22,11 @@ class TestJSONSafety:
 
     def test_inf_not_serializable(self):
         with pytest.raises(ValueError):
-            json.dumps({"value": float("inf")})
+            json.dumps({"value": float("inf")}, allow_nan=False)
 
     def test_nan_not_serializable(self):
         with pytest.raises(ValueError):
-            json.dumps({"value": float("nan")})
+            json.dumps({"value": float("nan")}, allow_nan=False)
 
     def test_json_safe_handles_inf(self):
         from server import json_safe
