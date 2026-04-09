@@ -1266,7 +1266,7 @@ def reload_query_planner():
     # Re-discover
     try:
         query_planner.discover_schema()
-                schema_tables = len(query_planner.schema)
+        schema_tables = len(query_planner.schema)
     except Exception as schema_err:
         schema_tables = f"schema error: {schema_err}"
     return {
