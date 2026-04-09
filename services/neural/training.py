@@ -81,6 +81,7 @@ class TrainingStatus:
         for k, v in d.items():
             if isinstance(v, float) and (v == float('inf') or v == float('-inf') or v != v):
                 d[k] = None
+        return d
 
 
 class StoaTrainingDataGenerator:
