@@ -1235,6 +1235,7 @@ def test_query(q: str = "occupancy"):
 def reload_query_planner():
     """Force reload the query planner: clear cache, re-discover schema."""
     global query_planner
+        from pathlib import Path  # explicit local import for safety
     # Auto-pull latest code from GitHub before reloading
     import subprocess
     project_root = Path(__file__).resolve().parent.parent.parent
@@ -1263,11 +1264,17 @@ def reload_query_planner():
     if cache_file.exists():
         cache_file.unlink()
     # Re-discover
-    query_planner.discover_schema()
+    try:
+        query_planner.discover_schema()
+                schema_tables = len(query_planner.schema)
+    except Exception as schema_err:
+        schema_tables = f"schema error: {schema_err}"
     return {
         "success": True,
         "message": "Query planner reloaded",
         "stats": query_planner.get_stats(),
+                "schema_tables": schema_tables,
+        "git_pull": git_output,
     }
 
 @app.get("/connectors/status")
