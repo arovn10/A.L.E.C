@@ -557,6 +557,15 @@ class QueryPlanner:
             'all properties', 'all ', 'every ', 'list ', 'show me', 'rank',
         ])
 
+        # Anti-hallucination: refuse queries about unknown properties
+        _loc_ind = ["at ", "about the ", "for the ", "of the "]
+        _mentions_specific = any(w in user_message.lower() for w in _loc_ind)
+        if _mentions_specific and not is_ranking:
+            matched = self._match_property(user_message)
+            if not matched:
+                logger.info("Anti-hallucination: unknown property, returning None")
+                return None
+
         cache_key = re.sub(r'[^a-z ]+', '', user_message.lower()).strip()[:100]
         cached_rows = None
 
