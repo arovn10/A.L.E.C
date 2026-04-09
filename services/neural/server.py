@@ -483,7 +483,7 @@ async def chat_completions(req: ChatRequest):
         # -- SYSTEM PROMPT: A.L.E.C. identity --
     ALEC_SYSTEM = (
         "You are A.L.E.C. (Adaptive Learning Executive Coordinator), a brilliant AI assistant "
-        "built by Alec Rovner for the Stoa Group, a real estate investment company in Baton Rouge, LA. "
+        "built by Alec Rovner for the Stoa Group, a real estate investment company in Hammond, LA. "
         "You have DEEP knowledge of the Stoa portfolio -- occupancy rates, rent rolls, leasing velocity, "
         "property performance, budgets, and every metric across 30+ properties. You know this data like "
         "the back of your hand. You don't 'query a database' -- you just KNOW the numbers. "
@@ -530,13 +530,25 @@ async def chat_completions(req: ChatRequest):
         # The 7B model can't reliably use injected data — it hallucinates.
         # Use query_planner.get_direct_response() which formats data into
         # natural language directly, no LLM needed.
-        logger.info(f"STOA DIRECT: attempting get_direct_response for: '{user_msg[:60]}'  stoa_connected={query_planner.stoa.connected if query_planner.stoa else False}  schema_tables={len(query_planner.schema)}")        
-        try:
-            direct_response = query_planner.get_direct_response(user_msg)
-        except Exception as e:
-            logger.warning(f"Stoa direct response failed (falling back to LLM): {e}")
-            import traceback; logger.warning(f"FULL TRACEBACK: {traceback.format_exc()}")
-            direct_response = None
+        # -- PRE-CHECK: if user asks about a specific property not in our DB, skip Stoa
+        _loc_words = ["at ", "about the ", "for the "]
+        _has_loc = any(w in user_msg.lower() for w in _loc_words)
+        _is_ranking = any(w in user_msg.lower() for w in ["top ", "bottom ", "all ", "every ", "portfolio", "average", "total", "across ", "overall", "summary", "rank", "list ", "show me", "each property", "compare", "highest", "lowest"])
+        _skip_stoa = False
+        if _has_loc and not _is_ranking and hasattr(query_planner, "_match_property"):
+            _matched = query_planner._match_property(user_msg)
+            if not _matched:
+                logger.info("Pre-check: user mentioned unknown property, skipping Stoa direct")
+                direct_response = None
+                _skip_stoa = True
+        if not _skip_stoa:
+            logger.info(f"STOA DIRECT: attempting get_direct_response for: '{user_msg[:60]}'  stoa_connected={query_planner.stoa.connected if query_planner.stoa else False}  schema_tables={len(query_planner.schema)}")        
+            try:
+                direct_response = query_planner.get_direct_response(user_msg)
+            except Exception as e:
+                logger.warning(f"Stoa direct response failed (falling back to LLM): {e}")
+                import traceback; logger.warning(f"FULL TRACEBACK: {traceback.format_exc()}")
+                direct_response = None
         if direct_response:
             logger.info(f"Stoa direct response ({len(direct_response)} chars) — bypassing LLM")
             # Log the conversation
