@@ -88,14 +88,26 @@ class ALECMemory:
         """
         now = datetime.now(timezone.utc).isoformat()
         try:
+            # Check if this key already exists (for version tracking)
+            existing = self._conn.execute(
+                "SELECT value, version FROM memories WHERE category = ? AND key = ?",
+                (category, key)
+            ).fetchone()
+            prev_value = None
+            new_version = 1
+            if existing:
+                prev_value = existing[0]
+                new_version = (existing[1] or 1) + 1
             self._conn.execute("""
-                INSERT INTO memories (category, key, value, source, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO memories (category, key, value, source, created_at, updated_at, previous_value, version)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(category, key) DO UPDATE SET
                     value = excluded.value,
                     source = excluded.source,
-                    updated_at = excluded.updated_at
-            """, (category, key, value, source, now, now))
+                    updated_at = excluded.updated_at,
+                    previous_value = memories.value,
+                    version = memories.version + 1
+            """, (category, key, value, source, now, now, prev_value, new_version))
             self._conn.commit()
             logger.info(f"Memory stored: [{category}] {key}")
             return {"success": True, "category": category, "key": key}
