@@ -54,6 +54,8 @@ from auth import AuthManager
 from excel import ExcelEngine
 from initiative import InitiativeEngine
 from memory import ALECMemory
+from knowledge_service import KnowledgeService
+from eval_harness import EvalHarness, TestCase
 from query_planner import QueryPlanner
 from agent import ALECAgent
 from self_improve import SelfImprovementEngine
@@ -80,6 +82,8 @@ auth_manager = AuthManager(db=db)
 excel_engine = ExcelEngine()
 initiative = InitiativeEngine(db=db)
 memory = ALECMemory()
+knowledge_service = None  # Initialized after query_planner loads
+eval_harness = None       # Initialized after knowledge_service loads
 query_planner = QueryPlanner(stoa)
 agent = None  # Initialized after engine loads
 self_improver = None  # Initialized after engine loads
@@ -116,6 +120,13 @@ async def lifespan(app: FastAPI):
     # 1b. Initialize agent (tool-calling loop)
     global agent, self_improver
     agent = ALECAgent(engine=engine, query_planner=query_planner, memory_module=memory)
+    
+    # Initialize KnowledgeService (unified truth arbitration)
+    global knowledge_service, eval_harness
+    knowledge_service = KnowledgeService(memory=memory, query_planner=query_planner)
+    logger.info("KnowledgeService initialized")
+    eval_harness = EvalHarness(knowledge_service=knowledge_service, memory=memory, engine=engine)
+    logger.info(f"EvalHarness initialized with {len(eval_harness.tests)} tests")
     logger.info(f"Agent initialized with {len(agent.tools)} tools: {list(agent.tools.keys())}")
 
     # 1c. Initialize self-improvement engine
@@ -530,7 +541,61 @@ async def chat_completions(req: ChatRequest):
         # The 7B model can't reliably use injected data — it hallucinates.
         # Use query_planner.get_direct_response() which formats data into
         # natural language directly, no LLM needed.
-        # -- PRE-CHECK: if user asks about a specific property not in our DB, skip Stoa
+        # ── KNOWLEDGE SERVICE: unified truth arbitration ──────────────────
+    # Routes through KnowledgeService first: corrections > database > memory > LLM
+    evidence = None
+    if knowledge_service and user_msg:
+        try:
+            evidence = knowledge_service.gather_evidence(user_msg)
+            if evidence.can_compose_directly:
+                # Short-circuit: return composed answer directly, skip LLM and old Stoa path
+                logger.info(f"KnowledgeService direct compose: {evidence.source_model}")
+                try:
+                    conv_id = db.log_conversation(
+                        session_id=session_id,
+                        user_message=user_msg,
+                        alec_response=evidence.composed_answer,
+                        confidence=1.0,
+                        model_used=evidence.source_model or "alec-v2+direct",
+                        tokens_in=0, tokens_out=0, latency_ms=0,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to log KS conversation: {e}")
+                    conv_id = None
+                return {
+                    "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+                    "object": "chat.completion",
+                    "created": int(time.time()),
+                    "model": "alec-v2",
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": evidence.composed_answer},
+                        "finish_reason": "stop",
+                    }],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                    "conversation_id": conv_id,
+                    "latency_ms": 0,
+                    "tool_calls": [],
+                }
+            elif evidence.context_injection:
+                # Inject verified evidence context into messages
+                ctx_msg = {
+                    "role": "system",
+                    "content": (
+                        "[A.L.E.C. VERIFIED KNOWLEDGE — use ONLY these facts]\n"
+                        + evidence.context_injection
+                        + "\n\nIMPORTANT: Do not claim facts about the owner or portfolio that are not listed above."
+                    )
+                }
+                if messages and messages[0]["role"] == "system":
+                    messages.insert(1, ctx_msg)
+                else:
+                    messages.insert(0, ctx_msg)
+        except Exception as ks_err:
+            logger.warning(f"KnowledgeService failed: {ks_err}")
+            evidence = None
+
+    # -- PRE-CHECK: if user asks about a specific property not in our DB, skip Stoa
         _loc_words = ["at ", "about the ", "for the ", "of the ", "on the ", "what is ", "what's ", "how much", "how many", "tell me about", "show me ", "give me "]
         _has_loc = any(w in user_msg.lower() for w in _loc_words)
         _is_ranking = any(w in user_msg.lower() for w in ["top ", "bottom ", "all ", "every ", "portfolio", "average", "total", "across ", "overall", "summary", "rank", "list ", "show me", "each property", "compare", "highest", "lowest"])
@@ -1289,6 +1354,56 @@ def reload_query_planner():
         "git_pull": git_output,
     }
 
+
+
+# ══════════════════════════════════════════════════════════════
+# EVALUATION HARNESS
+# ══════════════════════════════════════════════════════════════
+@app.post("/eval/run")
+def eval_run():
+    """Run all evaluation tests and return results."""
+    if not eval_harness:
+        raise HTTPException(status_code=503, detail="Eval harness not initialized")
+    task_id = task_runner.run_task(
+        "Eval Harness Run",
+        lambda task_info=None: eval_harness.run_all(),
+    )
+    return {"success": True, "task_id": task_id}
+
+@app.post("/eval/run-sync")
+def eval_run_sync():
+    """Run all evaluation tests synchronously (for quick checks)."""
+    if not eval_harness:
+        raise HTTPException(status_code=503, detail="Eval harness not initialized")
+    return eval_harness.run_all()
+
+@app.get("/eval/trend")
+def eval_trend():
+    """Get evaluation trend data across all runs."""
+    if not eval_harness:
+        raise HTTPException(status_code=503, detail="Eval harness not initialized")
+    return eval_harness.get_trend()
+
+@app.get("/eval/knowledge-stats")
+def eval_knowledge_stats():
+    """Get KnowledgeService statistics (direct rates, abstain rates)."""
+    if not knowledge_service:
+        raise HTTPException(status_code=503, detail="KnowledgeService not initialized")
+    return knowledge_service.get_stats()
+
+
+# ══════════════════════════════════════════════════════════════
+# MEMORY CONTRADICTION TRACKING
+# ══════════════════════════════════════════════════════════════
+@app.get("/memory/contradictions")
+def memory_contradictions(limit: int = 20):
+    """Get memories that have been updated (have previous values for audit)."""
+    return {"contradictions": memory.get_contradictions(limit=limit)}
+
+@app.get("/memory/history/{category}/{key}")
+def memory_history(category: str, key: str):
+    """Get the history of a specific memory (current + previous values)."""
+    return memory.get_memory_history(category, key)
 
 @app.post("/shutdown")
 def shutdown_server():
