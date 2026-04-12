@@ -24,9 +24,16 @@ const STATES = {
 };
 
 // ── System prompt for LM Studio ─────────────────────────────────
-const SYSTEM_PROMPT = `You are A.L.E.C. (Adaptive Learning Executive Companion), a personal AI assistant for Alec Rovner.
+const SYSTEM_PROMPT = `You are A.L.E.C. (Adaptive Learning Executive Companion), Alec Rovner's personal AI assistant.
 You help with smart home control, STOA real estate database queries, reminders, grocery lists, and general conversation.
-Be concise, helpful, and natural. Do not claim capabilities you do not have. Answer in 1-3 sentences unless the user asks for detail.`;
+
+VOICE MODE RULES (important — your responses will be read aloud):
+- Answer in 1-2 short sentences. Never use bullet points, markdown, or emojis.
+- Do not say things like "Certainly!" or "Of course!" — just answer directly.
+- If you need to list things, say them naturally: "You have three items: milk, eggs, and bread."
+- If the user asks for something complex, give a brief spoken summary and offer to elaborate.
+- Sound like a smart friend, not a search engine.
+- Always refer to yourself as "Alec" — never "A.L.E.C." or "ALEC" with dots. Your name is spoken, not spelled.`;
 
 // ── LM Studio client ─────────────────────────────────────────────
 const LM_BASE = process.env.OLLAMA_URL || process.env.LM_STUDIO_URL || 'http://127.0.0.1:11434';
@@ -41,18 +48,26 @@ async function detectModel() {
   }
 }
 
-async function callLMStudio(messages) {
+/**
+ * Call Ollama.
+ * voiceMode = true → shorter, snappier replies (max 120 tokens, lower temp)
+ * voiceMode = false → richer text replies (max 512 tokens)
+ */
+async function callLMStudio(messages, voiceMode = false) {
   const resp = await fetch(`${LM_BASE}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: process.env.OLLAMA_MODEL || 'gemma3:27b-it-qat',
       messages,
-      temperature: 0.7,
-      max_tokens: 512,
+      temperature: voiceMode ? 0.5 : 0.7,   // snappier + more focused in voice mode
+      max_tokens:  voiceMode ? 120  : 512,   // concise spoken answers vs. rich text
+      // top_p and repeat_penalty also help speed when using smaller token budget
+      top_p:          voiceMode ? 0.85 : 0.95,
+      repeat_penalty: voiceMode ? 1.1  : 1.05,
       stream: false,
     }),
-    signal: AbortSignal.timeout(90000),
+    signal: AbortSignal.timeout(voiceMode ? 30000 : 90000),
   });
   if (!resp.ok) throw new Error(`Ollama HTTP ${resp.status}`);
   const data = await resp.json();
@@ -214,7 +229,7 @@ class VoiceInterface {
         ...session.history,
       ];
 
-      const reply = await callLMStudio(messages);
+      const reply = await callLMStudio(messages, true /* voiceMode */);
       session.history.push({ role: 'assistant', content: reply });
 
       session.send({

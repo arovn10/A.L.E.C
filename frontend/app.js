@@ -1360,19 +1360,18 @@ function addAssistantMessage(response) {
   scrollToBottom();
 }
 
-window.submitFeedback = async function(msgId, rating, btn) {
+window.submitFeedback = async function(msgId, rating, btn, responseText) {
   try {
     await api('POST', '/api/feedback', {
       conversation_id: msgId,
       rating,
-      session_id: state.sessionId
+      session_id:    state.sessionId,
+      response_text: responseText || '',
     });
     const container = btn.closest('.feedback-btns');
-    container.querySelectorAll('.feedback-btn').forEach(b => {
-      b.classList.remove('active-up', 'active-down');
-    });
+    container.querySelectorAll('.feedback-btn').forEach(b => b.classList.remove('active-up', 'active-down'));
     btn.classList.add(rating === 1 ? 'active-up' : 'active-down');
-    toast(rating === 1 ? 'Thanks for the positive feedback!' : 'Feedback recorded.', 'info');
+    toast(rating === 1 ? 'Thanks! Alec will keep learning from this.' : 'Noted. Alec will improve from this.', 'info');
   } catch (err) {
     toast('Could not save feedback: ' + err.message, 'error');
   }
@@ -1407,62 +1406,149 @@ async function sendMessage() {
   // Typing indicator
   addTypingIndicator();
 
+  // Build conversation history for continuity
+  if (!state.chatHistory) state.chatHistory = [];
+  state.chatHistory.push({ role: 'user', content: userText });
+  if (state.chatHistory.length > 20) state.chatHistory = state.chatHistory.slice(-20);
+
+  const body = {
+    message: userText,
+    messages: state.chatHistory,
+    session_id: state.sessionId,
+  };
+  if (attachments.length) body.file_ids = attachments.map(a => a.fileId);
+
   try {
-    // Build conversation history for continuity
-    if (!state.chatHistory) state.chatHistory = [];
-    state.chatHistory.push({ role: 'user', content: userText });
-    // Keep last 20 messages for context (10 exchanges)
-    if (state.chatHistory.length > 20) state.chatHistory = state.chatHistory.slice(-20);
-
-    const body = {
-      message: userText,
-      messages: state.chatHistory,
-      session_id: state.sessionId,
-    };
-    if (attachments.length) {
-      body.file_ids = attachments.map(a => a.fileId);
-    }
-
-    const data = await api('POST', '/api/chat', body);
-
-    removeTypingIndicator();
-    const responseText = data.response || data.message || data.text || data.content || '(no response)';
-    // Store assistant response in history for continuity
-    if (!state.chatHistory) state.chatHistory = [];
-    state.chatHistory.push({ role: 'assistant', content: responseText });
-    if (state.chatHistory.length > 20) state.chatHistory = state.chatHistory.slice(-20);
-    addAssistantMessage({
-      text: responseText,
-      latency_ms: data.latency_ms || data.latency,
-      tokens_out: data.tokens_out || data.tokens,
-      tokens_in: data.tokens_in,
-      conversation_id: data.conversationId || data.conversation_id || data.id,
-      session_id: data.session_id
+    // ── Streaming via SSE ─────────────────────────────────────────
+    const streamResp = await fetch('/api/chat/stream', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(state.token ? { 'Authorization': `Bearer ${state.token}` } : {}),
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(120000),
     });
 
-    // Speak the response if this was a voice-triggered message
+    if (!streamResp.ok) throw new Error(`Server error ${streamResp.status}`);
+
+    removeTypingIndicator();
+    hideWelcome();
+
+    // Create the streaming bubble
+    const msgId  = Date.now();
+    const msgEl  = document.createElement('div');
+    msgEl.className = 'chat-message assistant streaming';
+    msgEl.dataset.msgId = String(msgId);
+
+    const bubbleEl = document.createElement('div');
+    bubbleEl.className = 'msg-bubble';
+
+    const cursorEl = document.createElement('span');
+    cursorEl.className = 'stream-cursor';
+    cursorEl.textContent = '▋';
+    bubbleEl.appendChild(cursorEl);
+    msgEl.appendChild(bubbleEl);
+    chatMessages.appendChild(msgEl);
+    scrollToBottom();
+
+    // Read SSE stream
+    const reader  = streamResp.body.getReader();
+    const decoder = new TextDecoder();
+    let fullText = '';
+    let buf      = '';
+    const t0     = Date.now();
+
+    outer: while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const payload = line.slice(6).trim();
+        if (payload === '[DONE]') break outer;
+        try {
+          const parsed = JSON.parse(payload);
+          if (parsed.error) throw new Error(parsed.error);
+          if (parsed.token) {
+            fullText += parsed.token;
+            bubbleEl.innerHTML = renderMarkdown(fullText);
+            const cur = document.createElement('span');
+            cur.className = 'stream-cursor';
+            cur.textContent = '▋';
+            bubbleEl.appendChild(cur);
+            scrollToBottom();
+          }
+        } catch (e) { if (e.message && !e.message.includes('JSON')) throw e; }
+      }
+    }
+
+    // Finalise — remove cursor, render final markdown
+    bubbleEl.innerHTML = renderMarkdown(fullText);
+
+    // Build meta row using DOM (avoids innerHTML with dynamic content)
+    const metaEl = document.createElement('div');
+    metaEl.className = 'msg-meta';
+
+    const latBadge = document.createElement('span');
+    latBadge.className = 'msg-badge latency';
+    latBadge.textContent = `⚡ ${((Date.now() - t0)/1000).toFixed(1)}s`;
+
+    const srcBadge = document.createElement('span');
+    srcBadge.className = 'alec-src-badge alec-src-llm';
+    srcBadge.textContent = '⚡ Ollama';
+
+    const fbDiv = document.createElement('div');
+    fbDiv.className = 'feedback-btns';
+
+    const thumbUp = document.createElement('button');
+    thumbUp.className = 'feedback-btn';
+    thumbUp.title = 'Good response';
+    thumbUp.textContent = '👍';
+    thumbUp.addEventListener('click', () => submitFeedback(msgId, 1, thumbUp, fullText));
+
+    const thumbDn = document.createElement('button');
+    thumbDn.className = 'feedback-btn';
+    thumbDn.title = 'Bad response';
+    thumbDn.textContent = '👎';
+    thumbDn.addEventListener('click', () => submitFeedback(msgId, -1, thumbDn, fullText));
+
+    fbDiv.appendChild(thumbUp);
+    fbDiv.appendChild(thumbDn);
+    metaEl.appendChild(latBadge);
+    metaEl.appendChild(srcBadge);
+    metaEl.appendChild(fbDiv);
+    msgEl.appendChild(metaEl);
+    msgEl.classList.remove('streaming');
+
+    // Store in history
+    state.chatHistory.push({ role: 'assistant', content: fullText });
+    if (state.chatHistory.length > 20) state.chatHistory = state.chatHistory.slice(-20);
+
+    // Speak if voice-triggered
     if (state._voiceTriggered && typeof speakResponse === 'function') {
-      // Fire TTS and ensure wake word resumes regardless of outcome
-      speakResponse(responseText)
-        .catch(() => {})
-        .finally(() => {
-          // Safety: always resume wake word after response, even if TTS fails
-          setTimeout(() => {
-            if (_voiceListening && !_voiceSpeaking && !_voiceCommandMode) {
-              _startWakeWordLoop();
-            }
-          }, 2000);
-        });
+      speakResponse(fullText).catch(() => {}).finally(() => {
+        setTimeout(() => {
+          if (typeof _voiceListening !== 'undefined' && _voiceListening && !_voiceSpeaking && !_voiceCommandMode) {
+            _startWakeWordLoop();
+          }
+        }, 2000);
+      });
     }
     state._voiceTriggered = false;
+
   } catch (err) {
     removeTypingIndicator();
-    const el = document.createElement('div');
-    el.className = 'chat-message assistant';
-    el.innerHTML = `<div class="msg-bubble" style="border-color:rgba(239,68,68,0.4);">
-      ⚠️ Error: ${escapeHtml(err.message)}
-    </div>`;
-    chatMessages.appendChild(el);
+    const errEl = document.createElement('div');
+    errEl.className = 'chat-message assistant';
+    const errBubble = document.createElement('div');
+    errBubble.className = 'msg-bubble';
+    errBubble.style.borderColor = 'rgba(239,68,68,0.4)';
+    errBubble.textContent = `Error: ${err.message}`;
+    errEl.appendChild(errBubble);
+    chatMessages.appendChild(errEl);
     scrollToBottom();
   } finally {
     state.isWaiting = false;

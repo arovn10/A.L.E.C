@@ -138,6 +138,20 @@ function injectStyles() {
     #alec-mic-btn.thinking { border-color:#8b5cf6; color:#8b5cf6; }
     @keyframes alec-pulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.1)} }
 
+    /* ── Streaming cursor ── */
+    .stream-cursor {
+      display:inline-block; width:.6em; background:#06b6d4; border-radius:1px;
+      animation:alec-blink .7s step-end infinite; margin-left:1px; vertical-align:text-bottom;
+    }
+    @keyframes alec-blink { 0%,100%{opacity:1} 50%{opacity:0} }
+    .chat-message.streaming .msg-bubble { opacity:.9; }
+
+    /* ── Feedback buttons ── */
+    .feedback-btn { background:none; border:none; cursor:pointer; font-size:14px; opacity:.4; transition:opacity .2s,transform .1s; padding:0 2px; }
+    .feedback-btn:hover { opacity:1; transform:scale(1.2); }
+    .feedback-btn.active-up   { opacity:1; filter:drop-shadow(0 0 4px #10b981); }
+    .feedback-btn.active-down { opacity:1; filter:drop-shadow(0 0 4px #ef4444); }
+
     /* ── Source badges ── */
     .alec-src-badge { display:inline-flex;align-items:center;gap:3px;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:500;margin-right:6px; }
     .alec-src-llm          { background:rgba(59,130,246,.12); border:1px solid rgba(59,130,246,.25); color:#60a5fa; }
@@ -184,14 +198,20 @@ function injectOverlay() {
   dismiss.type = 'button';
   dismiss.textContent = '✕  Cancel';
   dismiss.addEventListener('click', () => {
+    _endConversation();                     // kill auto-resume session
     overlay.classList.remove('active');
-    currentState = 'idle';
-    if (typeof setState === 'function') setState('idle');
-    // Stop any active recognition
-    if (typeof stopMic === 'function') stopMic();
-    // Resume wake word loop
-    if (typeof _startWakeWordLoop === 'function' && typeof _voiceListening !== 'undefined' && _voiceListening) {
-      setTimeout(_startWakeWordLoop, 500);
+    window.setState('idle');
+    // Stop any active recognition / TTS
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
+    if (window._ttsAudio) { try { window._ttsAudio.pause(); } catch(_){} }
+    if (recognition) { try { recognition.abort(); } catch(_){} recognition = null; }
+    stopAmpMeter();
+    isRecording = false;
+    updateMicBtn();
+    // Resume wake word loop if it was active before
+    if (_wakeWasActive && typeof startVoiceListening === 'function') {
+      _wakeWasActive = false;
+      setTimeout(startVoiceListening, 600);
     }
   });
 
@@ -279,11 +299,49 @@ let ampInterval = null;
 
 let _wakeWasActive = false; // track if wake word loop was running when we took over
 
+// ── Continuous conversation session ──────────────────────────
+let conversationActive = false;   // true = auto-resume mic after each response
+let conversationTimer  = null;    // 2-min silence timeout handle
+const CONVERSATION_TIMEOUT = 2 * 60 * 1000; // 2 minutes
+
+function _resetConversationTimer() {
+  clearTimeout(conversationTimer);
+  if (conversationActive) {
+    conversationTimer = setTimeout(() => {
+      conversationActive = false;
+      _showToast('Conversation ended — no activity for 2 minutes.');
+      if (isRecording) stopMic(); else window.setState('idle');
+    }, CONVERSATION_TIMEOUT);
+  }
+}
+
+function _endConversation() {
+  conversationActive = false;
+  clearTimeout(conversationTimer);
+}
+
+function _showToast(msg) {
+  if (typeof toast === 'function') toast(msg, 'info');
+  else console.info('[ALEC]', msg);
+}
+
+// Update overlay cancel / dismiss button text to reflect session
+function _updateDismissBtn() {
+  const btn = document.getElementById('alec-ov-dismiss');
+  if (!btn) return;
+  btn.textContent = conversationActive ? '✕  End Conversation' : '✕  Cancel';
+}
+
 function toggleMic() {
-  if (isRecording) { stopMic(); } else { startMic(); }
+  if (isRecording || conversationActive) {
+    stopMic();           // stop + end conversation session
+  } else {
+    startMic({ conversation: true });   // manual tap begins a conversation session
+  }
 }
 
 window.stopMic = function stopMic() {
+  _endConversation();                                // kill auto-resume session
   if (recognition) { try { recognition.abort(); } catch(_){} recognition = null; }
   stopAmpMeter();
   isRecording = false;
@@ -296,11 +354,18 @@ window.stopMic = function stopMic() {
   }
 };
 
-function startMic() {
+function startMic(opts) {
+  // opts = { conversation: true } to begin/continue auto-resume loop
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) {
-    if (typeof toast === 'function') toast('Voice recognition requires Chrome or Edge.', 'warning');
+    _showToast('Voice recognition requires Chrome or Edge.');
     return;
+  }
+
+  if (opts && opts.conversation) {
+    conversationActive = true;
+    _resetConversationTimer();
+    _updateDismissBtn();
   }
 
   // Pause wake word loop — Chrome only allows one SpeechRecognition at a time
@@ -378,6 +443,11 @@ function _doStart() {
     }
     if (final.trim()) {
       sentFinal = true;
+      // Mark conversation active — mic will auto-resume after ALEC responds
+      conversationActive = true;
+      _resetConversationTimer();
+      _updateDismissBtn();
+
       if (bar) { bar.textContent=''; bar.classList.remove('active'); }
       if (ovt) ovt.textContent = final.trim();
       const ci = document.getElementById('chat-input');
@@ -400,8 +470,11 @@ function _handleStop() {
   stopAmpMeter();
   isRecording = false;
   updateMicBtn();
-  if (currentState === 'listening' || currentState === 'transcribing') window.setState('idle');
-  if (_wakeWasActive && typeof startVoiceListening === 'function') {
+  // Only go idle if no conversation is continuing (speakResponse will drive state)
+  if (!conversationActive && (currentState === 'listening' || currentState === 'transcribing')) {
+    window.setState('idle');
+  }
+  if (_wakeWasActive && !conversationActive && typeof startVoiceListening === 'function') {
     _wakeWasActive = false;
     setTimeout(startVoiceListening, 400);
   }
@@ -450,6 +523,9 @@ function stopAmpMeter() {
 /* ── Clean text for natural speech ── */
 function cleanForSpeech(text) {
   return text
+    // Always pronounce the name naturally — never spell out the acronym
+    .replace(/A\.L\.E\.C\./gi, 'Alec')
+    .replace(/\bALEC\b/g, 'Alec')
     // Strip all emoji (Unicode ranges)
     .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
     .replace(/[\u{2600}-\u{27BF}]/gu, '')
@@ -603,7 +679,7 @@ function hookAppFunctions() {
   // Override _startCommandCapture so "Hey ALEC" uses the same startMic() flow
   // (overlay, continuous listening, natural restart) instead of the old one-shot capture
   window._startCommandCapture = function() {
-    startMic();
+    startMic({ conversation: true });    // wake word starts a conversation session
   };
 
   // addAssistantMessage → source badge + speaking state
@@ -646,13 +722,34 @@ function hookAppFunctions() {
     };
   }
 
-  // speakResponse → strip emojis/markdown, drive TTS amplitude
+  // speakResponse → strip emojis/markdown, drive TTS amplitude, auto-resume mic
   if (typeof speakResponse === 'function') {
     const orig = speakResponse;
     window.speakResponse = function(text) {
       window.setState('speaking');
       let iv = setInterval(()=>{ ttsAmp=.25+Math.sin(Date.now()/130)*.2; }, 40);
-      const done = ()=>{ clearInterval(iv); ttsAmp=0; if(currentState==='speaking') window.setState('idle'); };
+
+      const done = () => {
+        clearInterval(iv);
+        ttsAmp = 0;
+        if (currentState === 'speaking') window.setState('idle');
+
+        // Auto-resume listening for follow-up (continuous conversation loop)
+        if (conversationActive && !isRecording) {
+          _resetConversationTimer();
+          // Brief pause so the speaker isn't instantly re-triggered by reverb
+          setTimeout(() => {
+            if (conversationActive) {
+              startMic({ conversation: true });
+            }
+          }, 700);
+        } else if (_wakeWasActive && typeof startVoiceListening === 'function') {
+          // If not in conversation mode, restore wake word loop
+          _wakeWasActive = false;
+          setTimeout(startVoiceListening, 500);
+        }
+      };
+
       const p = orig.call(this, cleanForSpeech(text));
       if (p && p.finally) p.finally(done); else setTimeout(done, 8000);
       return p;

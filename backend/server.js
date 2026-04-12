@@ -42,6 +42,166 @@ const PORT = process.env.PORT || 3001;
 const HOST = process.env.HOST || '0.0.0.0'; // LAN-accessible by default
 const NEURAL_URL = `http://localhost:${process.env.NEURAL_PORT || 8000}`;
 
+// ════════════════════════════════════════════════════════════════
+//  MULTI-BACKEND LLM CLIENT
+//  Priority: 1. Anthropic Claude API  2. Ollama  3. Error
+//  Ollama has a Metal shader bug on macOS 15.4+ that prevents GPU
+//  use. Claude API is the reliable fallback.
+// ════════════════════════════════════════════════════════════════
+const OLLAMA_BASE  = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'gemma3:27b-it-qat';
+
+// Lazy-load Anthropic SDK (only if API key is set)
+let _anthropicClient = null;
+function getAnthropicClient() {
+  if (_anthropicClient) return _anthropicClient;
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key) return null;
+  const { Anthropic } = require('@anthropic-ai/sdk');
+  _anthropicClient = new Anthropic({ apiKey: key });
+  return _anthropicClient;
+}
+
+const ALEC_SYSTEM_PROMPT = `You are Alec, Alec Rovner's personal AI executive assistant.
+You help with smart home control, STOA real estate database queries, reminders, grocery lists, web research, and general conversation.
+You can search the web, remember past conversations, and take initiative to be proactive.
+Use markdown formatting for clarity (headers, code blocks, bullet points where appropriate).
+Refer to yourself as "Alec" — never "A.L.E.C." or "ALEC" with dots. Be direct, smart, and friendly.`;
+
+/**
+ * Call the best available LLM.
+ * Returns: { type: 'claude'|'ollama', response: Response|object, stream }
+ */
+async function callLLM(messages, { stream = false, voiceMode = false } = {}) {
+  const anthropic = getAnthropicClient();
+
+  // ── Path 1: Anthropic Claude API ────────────────────────────────
+  if (anthropic) {
+    const model   = process.env.CLAUDE_MODEL || 'claude-opus-4-5';
+    const sysMsg  = messages.find(m => m.role === 'system')?.content || ALEC_SYSTEM_PROMPT;
+    const msgs    = messages.filter(m => m.role !== 'system');
+    const maxTok  = voiceMode ? 150 : 1500;
+
+    if (stream) {
+      // Return a readable SSE-like async iterator wrapping Anthropic's stream
+      const sdkStream = await anthropic.messages.stream({
+        model,
+        system: sysMsg,
+        messages: msgs,
+        max_tokens: maxTok,
+      });
+      return { type: 'claude', stream: true, sdkStream };
+    } else {
+      const msg = await anthropic.messages.create({
+        model,
+        system: sysMsg,
+        messages: msgs,
+        max_tokens: maxTok,
+      });
+      const text = msg.content?.[0]?.text || '';
+      return { type: 'claude', stream: false, text };
+    }
+  }
+
+  // ── Path 2: Ollama (OpenAI-compatible API) ───────────────────────
+  const resp = await fetch(`${OLLAMA_BASE}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: OLLAMA_MODEL,
+      messages,
+      temperature:    voiceMode ? 0.5  : 0.7,
+      max_tokens:     voiceMode ? 120  : 1024,
+      top_p:          voiceMode ? 0.85 : 0.95,
+      repeat_penalty: voiceMode ? 1.1  : 1.05,
+      stream,
+    }),
+    signal: AbortSignal.timeout(voiceMode ? 30000 : 120000),
+  });
+  if (!resp.ok) throw new Error(`Ollama HTTP ${resp.status}`);
+  return { type: 'ollama', stream, resp };
+}
+
+// Convenience: non-streaming call, returns text string
+async function callLLMText(messages, voiceMode = false) {
+  const result = await callLLM(messages, { stream: false, voiceMode });
+  if (result.type === 'claude') return result.text;
+  const data = await result.resp.json();
+  return data.choices?.[0]?.message?.content?.trim() || 'I could not generate a response.';
+}
+
+// ════════════════════════════════════════════════════════════════
+//  PERSISTENT MEMORY
+//  JSON file at data/memory.json — no extra dependencies needed.
+//  Stores: facts (extracted entities/preferences), conversation
+//  summaries, and feedback-driven prompt improvements.
+// ════════════════════════════════════════════════════════════════
+const MEMORY_FILE    = path.join(__dirname, '../data/memory.json');
+const FEEDBACK_FILE  = path.join(__dirname, '../data/feedback.jsonl');
+
+function loadMemory() {
+  try {
+    if (fs.existsSync(MEMORY_FILE)) return JSON.parse(fs.readFileSync(MEMORY_FILE, 'utf8'));
+  } catch (_) {}
+  return { facts: [], preferences: [], summaries: [], promptVersion: 1 };
+}
+
+function saveMemory(mem) {
+  fs.writeFileSync(MEMORY_FILE, JSON.stringify(mem, null, 2));
+}
+
+function buildMemoryContext(mem) {
+  const lines = [];
+  if (mem.facts?.length)       { lines.push('Known facts about Alec:');      mem.facts.slice(-20).forEach(f => lines.push(`- ${f}`)); }
+  if (mem.preferences?.length) { lines.push("Alec's known preferences:");    mem.preferences.slice(-10).forEach(p => lines.push(`- ${p}`)); }
+  if (mem.summaries?.length)   { lines.push('Recent conversation context:'); lines.push(mem.summaries[mem.summaries.length-1]); }
+  return lines.join('\n');
+}
+
+// Asynchronously extract new facts from a conversation turn via Ollama
+async function extractAndStoreFacts(userMsg, assistantReply) {
+  try {
+    const raw = await callLLMText([
+      { role: 'system', content: 'Extract concise factual statements about the user (Alec) from this conversation snippet. Return ONLY a JSON array of short fact strings, max 3. Example: ["Alec works in real estate","Alec prefers short answers"]. Return [] if nothing new.' },
+      { role: 'user',   content: `User: ${userMsg}\nAssistant: ${assistantReply}` },
+    ], true); // voiceMode = fast/cheap settings
+    // Extract the JSON array from the response (handle leading text)
+    const match = (raw || '').match(/\[[\s\S]*\]/);
+    if (!match) return;
+    const newFacts = JSON.parse(match[0]);
+    if (!Array.isArray(newFacts) || newFacts.length === 0) return;
+    const mem = loadMemory();
+    mem.facts = [...(mem.facts || []), ...newFacts].slice(-50); // keep last 50 facts
+    saveMemory(mem);
+  } catch (_) { /* non-critical */ }
+}
+
+// ════════════════════════════════════════════════════════════════
+//  WEB SEARCH (DuckDuckGo Instant Answers — no API key needed)
+// ════════════════════════════════════════════════════════════════
+const SEARCH_TRIGGERS = /\b(search|find|look up|what is|who is|latest|news|current|today|weather|price|how much|when did|when is|define|meaning of)\b/i;
+
+async function webSearch(query) {
+  try {
+    const encoded = encodeURIComponent(query);
+    const resp = await fetch(
+      `https://api.duckduckgo.com/?q=${encoded}&format=json&no_redirect=1&no_html=1&skip_disambig=1`,
+      { signal: AbortSignal.timeout(5000) }
+    );
+    const data = await resp.json();
+    const results = [];
+    if (data.Abstract)      results.push(data.Abstract);
+    if (data.Answer)        results.push(data.Answer);
+    if (data.Definition)    results.push(data.Definition);
+    if (data.RelatedTopics) {
+      data.RelatedTopics.slice(0, 3).forEach(t => { if (t.Text) results.push(t.Text); });
+    }
+    return results.length > 0 ? results.join('\n') : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 // ── Directory setup ─────────────────────────────────────────────
 const UPLOADS_DIR = path.join(__dirname, '../data/uploads');
 if (!fs.existsSync(UPLOADS_DIR)) {
@@ -222,15 +382,22 @@ app.get('/health', async (req, res) => {
     neuralStatus = await neuralEngine.getModelInfo();
   } catch (_) {}
 
+  const anthropicAvail = !!process.env.ANTHROPIC_API_KEY;
+  const mem = loadMemory();
+
   res.json({
     status: 'ok',
     service: 'A.L.E.C.',
     version: '2.0.0',
     timestamp: new Date().toISOString(),
-    neuralEngine: {
-      url: NEURAL_URL,
-      ...neuralStatus,
+    llm: {
+      backend:       anthropicAvail ? 'anthropic' : 'ollama',
+      model:         anthropicAvail ? (process.env.CLAUDE_MODEL || 'claude-opus-4-5') : OLLAMA_MODEL,
+      ready:         anthropicAvail,
+      note:          anthropicAvail ? 'Claude API active' : 'Add ANTHROPIC_API_KEY to .env — Ollama Metal GPU broken on this macOS version',
     },
+    memory: { facts: mem.facts?.length || 0, preferences: mem.preferences?.length || 0 },
+    neuralEngine: { url: NEURAL_URL, ...neuralStatus },
     lanAddresses: getLanAddresses(),
     uptime: process.uptime(),
   });
@@ -318,78 +485,160 @@ app.post('/api/auth/login', async (req, res) => {
 
 /**
  * POST /api/chat
- * Forwards to Python /v1/chat/completions.
- * Returns { conversationId, usage, latencyMs, response }.
+ * Routes to Ollama directly for reliable, fast responses.
+ * Returns { response, latency_ms, tokens_out }.
  */
 app.post('/api/chat', authenticateToken, async (req, res) => {
+  const startTime = Date.now();
   try {
-    const { message, context, voice = false, messages } = req.body;
+    const { message, messages = [], session_id } = req.body;
+    const userText = message || messages.at(-1)?.content || '';
 
     // Log interaction for adaptive learning
-    await adaptiveLearning.logInteraction({
-      userId: req.user.userId,
-      message: message || (messages && messages[messages.length - 1]?.content),
-      timestamp: Date.now(),
-      tokenType: req.user.tokenType,
-    });
+    try { await adaptiveLearning.logInteraction({ userId: req.user.userId, message: userText, timestamp: Date.now() }); } catch(_){}
 
-    // Build the messages array for the Python engine
-    const chatMessages = messages || [];
-    if (message && chatMessages.length === 0) {
-      if (context && context.history && Array.isArray(context.history)) {
-        chatMessages.push(...context.history);
-      }
-      chatMessages.push({ role: 'user', content: message });
-    }
+    // Build system prompt with memory
+    const mem = loadMemory();
+    const memCtx = buildMemoryContext(mem);
+    const systemContent = ALEC_SYSTEM_PROMPT + (memCtx ? '\n\n' + memCtx : '');
 
-    const startTime = Date.now();
-    const data = await proxyToNeural('/v1/chat/completions', {
-      method: 'POST',
-      body: {
-        model: 'alec-v2',
-        messages: chatMessages,
-        temperature: 0.7,
-        max_tokens: 1024,
-        session_id: context?.sessionId || undefined,
-      },
-    });
-
-    const latencyMs = data.latency_ms || Date.now() - startTime;
-    const choice = data.choices?.[0];
-    const responseText = choice?.message?.content || 'I had trouble generating a response.';
-
-    if (voice && responseText) {
-      try {
-        const audioBuffer = await voiceInterface.textToSpeech(responseText);
-        res.set('Content-Type', 'audio/wav');
-        return res.send(audioBuffer);
-      } catch (_) {
-        // Fall through to JSON response if TTS fails
+    // Web search augmentation
+    let augmentedMessages = [...messages];
+    if (SEARCH_TRIGGERS.test(userText)) {
+      const searchResult = await webSearch(userText);
+      if (searchResult && augmentedMessages.length > 0) {
+        const lastMsg = augmentedMessages.at(-1);
+        augmentedMessages[augmentedMessages.length - 1] = {
+          ...lastMsg,
+          content: lastMsg.content + `\n\n[Web search results for context]:\n${searchResult}`,
+        };
       }
     }
+
+    const llmMessages = [{ role: 'system', content: systemContent }, ...augmentedMessages];
+    const responseText = await callLLMText(llmMessages);
+    const latency_ms = Date.now() - startTime;
+
+    // Async: extract and store facts from this exchange
+    extractAndStoreFacts(userText, responseText).catch(() => {});
 
     res.json({
       success: true,
       response: responseText,
-      confidence: 0.85,
-      personality: 'companion',
-      suggestions: [
-        'Would you like me to analyze your recent data?',
-        'Want me to check something in the database?',
-        'Shall we kick off a training run?',
-      ],
-      conversationId: data.conversation_id,
-      usage: data.usage,
-      latencyMs,
-      timestamp: new Date().toISOString(),
+      latency_ms,
+      tokens_out: data.usage?.completion_tokens,
+      tokens_in:  data.usage?.prompt_tokens,
+      timestamp:  new Date().toISOString(),
     });
   } catch (error) {
-    console.error('Chat error:', error);
+    console.error('Chat error:', error.message);
+    const isNoBackend = !getAnthropicClient() && error.message.includes('Ollama');
     res.status(500).json({
       success: false,
-      error: 'A.L.E.C. is thinking hard right now',
-      message: error.message || 'Please try again',
+      error: isNoBackend
+        ? 'No LLM backend available'
+        : 'Alec is thinking hard right now',
+      message: isNoBackend
+        ? 'Add your ANTHROPIC_API_KEY to .env — Ollama has a Metal GPU bug on this macOS version. Get your key at console.anthropic.com'
+        : error.message,
     });
+  }
+});
+
+/**
+ * POST /api/chat/stream
+ * SSE streaming endpoint — tokens arrive one-by-one like Claude.
+ * Browser reads via ReadableStream / EventSource.
+ */
+app.post('/api/chat/stream', authenticateToken, async (req, res) => {
+  // SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // disable nginx buffering
+  res.flushHeaders();
+
+  const { message, messages = [], session_id } = req.body;
+  const userText = message || messages.at(-1)?.content || '';
+
+  try {
+    // System prompt + memory
+    const mem = loadMemory();
+    const memCtx = buildMemoryContext(mem);
+    const systemContent = ALEC_SYSTEM_PROMPT + (memCtx ? '\n\n' + memCtx : '');
+
+    // Web search augmentation
+    let augmentedMessages = [...messages];
+    if (SEARCH_TRIGGERS.test(userText)) {
+      res.write('data: {"token":"🔍 Searching the web…\\n"}\n\n');
+      const searchResult = await webSearch(userText);
+      if (searchResult && augmentedMessages.length > 0) {
+        const lastMsg = augmentedMessages.at(-1);
+        augmentedMessages[augmentedMessages.length - 1] = {
+          ...lastMsg,
+          content: lastMsg.content + `\n\n[Web search results for context]:\n${searchResult}`,
+        };
+        res.write('data: {"token":"\\n"}\n\n');
+      }
+    }
+
+    const llmMessages = [{ role: 'system', content: systemContent }, ...augmentedMessages];
+    const llmResult   = await callLLM(llmMessages, { stream: true });
+    let fullResponse  = '';
+
+    if (llmResult.type === 'claude') {
+      // ── Anthropic SDK streaming ────────────────────────────────
+      for await (const event of llmResult.sdkStream) {
+        if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+          const token = event.delta.text || '';
+          if (token) {
+            fullResponse += token;
+            res.write(`data: ${JSON.stringify({ token })}\n\n`);
+          }
+        }
+      }
+    } else {
+      // ── Ollama SSE streaming ───────────────────────────────────
+      const reader  = llmResult.resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const payload = line.slice(6).trim();
+          if (payload === '[DONE]') continue;
+          try {
+            const parsed = JSON.parse(payload);
+            const token = parsed.choices?.[0]?.delta?.content;
+            if (token) {
+              fullResponse += token;
+              res.write(`data: ${JSON.stringify({ token })}\n\n`);
+            }
+          } catch (_) {}
+        }
+      }
+    }
+
+    // Signal completion with metadata
+    res.write(`data: ${JSON.stringify({ done: true, latency_ms: Date.now() })}\n\n`);
+    res.write('data: [DONE]\n\n');
+    res.end();
+
+    // Async: extract facts, log interaction
+    extractAndStoreFacts(userText, fullResponse).catch(() => {});
+    try { await adaptiveLearning.logInteraction({ userId: 'stream', message: userText, timestamp: Date.now() }); } catch(_){}
+
+  } catch (err) {
+    console.error('Stream error:', err.message);
+    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+    res.write('data: [DONE]\n\n');
+    res.end();
   }
 });
 
@@ -405,22 +654,62 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
 app.post('/api/feedback', authenticateToken, async (req, res) => {
   try {
     const convId = req.body.conversationId || req.body.conversation_id;
-    const { rating, feedback } = req.body;
+    const { rating, feedback, response_text, prompt_text } = req.body;
 
-    if (!convId || rating === undefined) {
-      return res.status(400).json({ error: 'conversationId and rating are required' });
+    if (rating === undefined) return res.status(400).json({ error: 'rating is required' });
+
+    // Write to JSONL feedback log for self-improvement analysis
+    const entry = {
+      ts:           new Date().toISOString(),
+      conversation_id: convId,
+      rating,           // 1 = thumbs up, -1 = thumbs down
+      feedback:     feedback || '',
+      prompt:       prompt_text || '',
+      response:     response_text || '',
+      user_id:      req.user?.userId,
+    };
+    fs.appendFileSync(FEEDBACK_FILE, JSON.stringify(entry) + '\n');
+
+    // If negative feedback, store a preference note
+    if (rating === -1 && response_text) {
+      const mem = loadMemory();
+      mem.preferences = mem.preferences || [];
+      mem.preferences.push(`Alec rated this response poorly: "${response_text.slice(0, 100)}…"`);
+      mem.preferences = mem.preferences.slice(-20); // keep last 20
+      saveMemory(mem);
     }
 
-    const data = await proxyToNeural('/feedback', {
-      method: 'POST',
-      body: { conversation_id: convId, rating, feedback: feedback || '' },
-    });
-
-    res.json({ success: true, ...data });
+    res.json({ success: true, logged: true });
   } catch (error) {
     console.error('Feedback error:', error);
     res.status(500).json({ error: 'Feedback submission failed', message: error.message });
   }
+});
+
+// ════════════════════════════════════════════════════════════════
+//  MEMORY ENDPOINTS
+//  Read / write Alec's persistent facts and preferences.
+// ════════════════════════════════════════════════════════════════
+
+/** GET /api/memory — return current memory */
+app.get('/api/memory', authenticateToken, (req, res) => {
+  res.json(loadMemory());
+});
+
+/** POST /api/memory/fact — add a fact manually */
+app.post('/api/memory/fact', authenticateToken, (req, res) => {
+  const { fact } = req.body;
+  if (!fact) return res.status(400).json({ error: 'fact is required' });
+  const mem = loadMemory();
+  mem.facts = [...(mem.facts || []), fact].slice(-50);
+  saveMemory(mem);
+  res.json({ success: true, total_facts: mem.facts.length });
+});
+
+/** DELETE /api/memory — wipe all memory */
+app.delete('/api/memory', authenticateToken, (req, res) => {
+  saveMemory({ facts: [], preferences: [], summaries: [], promptVersion: 1 });
+  res.json({ success: true, message: 'Memory cleared.' });
 });
 
 // ════════════════════════════════════════════════════════════════
