@@ -536,23 +536,28 @@
           </div>
         </div>
 
-        <!-- Skill Config Modal -->
-        <div id="skill-config-modal" style="position:fixed;inset:0;z-index:1000;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.75);backdrop-filter:blur(4px);">
-          <div class="card" style="max-width:520px;width:92%;max-height:85vh;overflow-y:auto;border:1px solid var(--border);box-shadow:0 24px 60px rgba(0,0,0,.6);">
-            <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-              <div>
-                <div id="skill-config-icon" style="font-size:1.5rem;display:inline;margin-right:8px;"></div>
-                <span id="skill-config-title" style="font-weight:700;font-size:1rem;">Configure Skill</span>
+        <!-- Skill Config Modal (polished) -->
+        <div id="skill-config-modal" class="skill-modal-overlay">
+          <div class="skill-modal-card">
+            <!-- Header -->
+            <div class="skill-modal-header">
+              <div class="skill-modal-header-icon" id="skill-modal-icon">🔌</div>
+              <div class="skill-modal-header-text">
+                <div class="skill-modal-header-title" id="skill-modal-title">Configure Skill</div>
+                <div class="skill-modal-header-subtitle" id="skill-modal-subtitle"></div>
+                <span class="skill-modal-header-badge personal" id="skill-modal-scope-badge">Per Account</span>
               </div>
-              <button onclick="closeSkillConfig()" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:20px;line-height:1;">✕</button>
+              <button class="skill-modal-close-btn" onclick="closeSkillConfig()" title="Close">✕</button>
             </div>
-            <p id="skill-config-instructions" style="color:var(--text-muted);font-size:12.5px;margin-bottom:16px;line-height:1.5;"></p>
-            <div id="skill-config-fields"></div>
-            <div style="display:flex;gap:8px;margin-top:16px;">
-              <button class="btn btn-primary" onclick="saveSkillConfig()" style="flex:1;" id="skill-save-btn">💾 Save & Connect</button>
-              <button class="btn btn-ghost" onclick="closeSkillConfig()">Cancel</button>
+            <!-- Body: fields rendered by app.js -->
+            <div class="skill-modal-body" id="skill-config-fields"></div>
+            <!-- Status line -->
+            <div id="skill-config-result" class="skill-modal-status" style="display:none;"></div>
+            <!-- Footer buttons -->
+            <div class="skill-modal-footer">
+              <button class="btn btn-ghost btn-sm" onclick="closeSkillConfig()">Cancel</button>
+              <button class="btn btn-primary" id="skill-save-btn" onclick="saveSkillConfig()">💾 Save &amp; Connect</button>
             </div>
-            <div id="skill-config-result" style="margin-top:10px;font-size:12.5px;padding:8px 0;"></div>
           </div>
         </div>
 

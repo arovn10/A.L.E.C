@@ -691,8 +691,21 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
   res.setHeader('X-Accel-Buffering', 'no'); // disable nginx buffering
   res.flushHeaders();
 
-  const { message, messages = [], session_id } = req.body;
+  const { message, messages = [], session_id, conversation_id } = req.body;
   const userText = message || messages.at(-1)?.content || '';
+
+  // ── Persist to chat history (streaming) ─────────────────────
+  let convId = conversation_id || null;
+  const streamUserId = req.user?.userId || req.user?.email || 'unknown';
+  if (chatHistory && userText) {
+    try {
+      const conv = chatHistory.getOrCreate(convId, streamUserId);
+      convId = conv.id;
+      chatHistory.addMessage(convId, 'user', userText);
+    } catch (histErr) {
+      console.warn('[ChatHistory stream]', histErr.message);
+    }
+  }
 
   try {
     // System prompt + memory
@@ -775,14 +788,19 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
       }
     }
 
-    // Signal completion with metadata
-    res.write(`data: ${JSON.stringify({ done: true, latency_ms: Date.now() })}\n\n`);
+    // Save assistant response to history
+    if (chatHistory && convId && fullResponse) {
+      try { chatHistory.addMessage(convId, 'assistant', fullResponse); } catch (_) {}
+    }
+
+    // Signal completion with metadata (including conversation_id so frontend can persist it)
+    res.write(`data: ${JSON.stringify({ done: true, latency_ms: Date.now(), conversation_id: convId })}\n\n`);
     res.write('data: [DONE]\n\n');
     res.end();
 
     // Async: extract facts, log interaction
     extractAndStoreFacts(userText, fullResponse).catch(() => {});
-    try { await adaptiveLearning.logInteraction({ userId: 'stream', message: userText, timestamp: Date.now() }); } catch(_){}
+    try { await adaptiveLearning.logInteraction({ userId: streamUserId, message: userText, timestamp: Date.now() }); } catch(_){}
 
   } catch (err) {
     console.error('Stream error:', err.message);
@@ -2478,29 +2496,32 @@ app.delete('/api/history/conversations/:id', authenticateToken, (req, res) => {
 //  Replaces the old Python-proxy /api/skills/* endpoints.
 // ════════════════════════════════════════════════════════════════
 
+// ── Catalog: enrich with per-user configured status ──────────────
 app.get('/api/connectors/catalog', authenticateToken, (req, res) => {
   if (!skillsReg) return res.json({ success: true, catalog: { skills: [], byCategory: {} } });
   try {
-    const catalog = skillsReg.getCatalog(); // { skills: [...], byCategory: {...} }
-
-    // Enrich each skill with current configured status (without exposing values)
-    const cfg = (() => {
-      try { return require('fs').existsSync(require('path').join(__dirname, '../data/skills-config.json'))
-        ? JSON.parse(require('fs').readFileSync(require('path').join(__dirname, '../data/skills-config.json'), 'utf8'))
-        : { skills: {} }; } catch { return { skills: {} }; }
-    })();
+    const userId  = req.user?.id || req.user?.email || '_legacy';
+    const catalog = skillsReg.getCatalog();
 
     const enrich = (skill) => {
-      const saved   = cfg.skills?.[skill.id] || {};
-      const envVars = (skill.fields || []).filter(f => f.required).map(f => f.envVar);
-      const configured = envVars.length === 0
-        ? true  // no required creds (e.g. VS Code)
-        : envVars.some(k => process.env[k] || saved[k]);
+      let configured = false;
+      if (skill.fields.length === 0 && !skill.multiInstance) {
+        configured = true; // no creds needed
+      } else if (skill.multiInstance) {
+        // configured if at least one instance exists
+        const instances = skillsReg.getInstances(userId, skill.id);
+        configured = instances.length > 0;
+      } else {
+        // check env OR per-user config
+        const statusArr = skillsReg.getCredentialStatus(userId, skill.id);
+        const required  = statusArr.filter(f => f.required);
+        configured = required.length === 0 || required.some(f => f.configured);
+      }
       return { ...skill, configured };
     };
 
     const enriched = {
-      skills: catalog.skills.map(enrich),
+      skills:     catalog.skills.map(enrich),
       byCategory: Object.fromEntries(
         Object.entries(catalog.byCategory).map(([cat, skills]) => [cat, skills.map(enrich)])
       ),
@@ -2512,25 +2533,28 @@ app.get('/api/connectors/catalog', authenticateToken, (req, res) => {
   }
 });
 
+// ── Save credentials (per-user) ───────────────────────────────────
 app.post('/api/connectors/:skillId/credentials', authenticateToken, requireFullCapabilities, async (req, res) => {
   if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
   try {
-    const result = await skillsReg.saveCredentials(req.params.skillId, req.body);
+    const userId = req.user?.id || req.user?.email || '_legacy';
+    const result = await skillsReg.saveCredentials(userId, req.params.skillId, req.body);
     res.json({ success: true, ...result });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
+// ── Status check ──────────────────────────────────────────────────
 app.get('/api/connectors/:skillId/status', authenticateToken, async (req, res) => {
   if (!skillsReg) return res.json({ configured: false, connected: false });
   try {
     const status = await skillsReg.getSkillStatus(req.params.skillId);
-    // Normalize: always include a top-level `connected` boolean so UI can check one field
     const connected = !!(
       status.connected || status.authenticated || status.configured ||
-      status.ownerPhoneConfigured || status.propertyCount >= 0 ||
-      status.serviceCount >= 0 || !status.error
+      status.ownerPhoneConfigured || (status.propertyCount != null && status.propertyCount >= 0) ||
+      (status.serviceCount != null && status.serviceCount >= 0) ||
+      (status.available && !status.error)
     );
     res.json({ success: true, connected, ...status });
   } catch (err) {
@@ -2538,12 +2562,12 @@ app.get('/api/connectors/:skillId/status', authenticateToken, async (req, res) =
   }
 });
 
+// ── Get credential status (masked — which fields are filled) ──────
 app.get('/api/connectors/:skillId/credentials', authenticateToken, requireFullCapabilities, (req, res) => {
   if (!skillsReg) return res.json({ fields: {} });
   try {
-    // Returns array of {key, label, required, configured, source}
-    // Convert to { fields: { KEY: true/false } } for the frontend
-    const statusArr = skillsReg.getCredentialStatus(req.params.skillId);
+    const userId = req.user?.id || req.user?.email || '_legacy';
+    const statusArr = skillsReg.getCredentialStatus(userId, req.params.skillId);
     const fields = {};
     if (Array.isArray(statusArr)) {
       statusArr.forEach(f => { fields[f.key] = f.configured; });
@@ -2554,6 +2578,66 @@ app.get('/api/connectors/:skillId/credentials', authenticateToken, requireFullCa
   }
 });
 
+// ── Reveal decrypted credentials (authorized peek) ────────────────
+app.post('/api/connectors/:skillId/reveal', authenticateToken, requireFullCapabilities, (req, res) => {
+  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
+  try {
+    const userId = req.user?.id || req.user?.email || '_legacy';
+    const values = skillsReg.revealCredentials(userId, req.params.skillId);
+    res.json({ success: true, values });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Multi-instance management (Microsoft 365, etc.) ───────────────
+app.get('/api/connectors/:skillId/instances', authenticateToken, requireFullCapabilities, (req, res) => {
+  if (!skillsReg) return res.json({ success: true, instances: [] });
+  try {
+    const userId    = req.user?.id || req.user?.email || '_legacy';
+    const instances = skillsReg.getInstances(userId, req.params.skillId);
+    res.json({ success: true, instances });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/connectors/:skillId/instances', authenticateToken, requireFullCapabilities, (req, res) => {
+  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
+  try {
+    const userId = req.user?.id || req.user?.email || '_legacy';
+    const { name, instId, ...creds } = req.body;
+    if (!name) return res.status(400).json({ error: 'name is required' });
+    const result = skillsReg.addInstance(userId, req.params.skillId, name, creds, instId || null);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete('/api/connectors/:skillId/instances/:instanceId', authenticateToken, requireFullCapabilities, (req, res) => {
+  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
+  try {
+    const userId = req.user?.id || req.user?.email || '_legacy';
+    skillsReg.deleteInstance(userId, req.params.skillId, req.params.instanceId);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/connectors/:skillId/instances/:instanceId/reveal', authenticateToken, requireFullCapabilities, (req, res) => {
+  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
+  try {
+    const userId = req.user?.id || req.user?.email || '_legacy';
+    const values = skillsReg.revealInstance(userId, req.params.skillId, req.params.instanceId);
+    res.json({ success: true, values });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Custom skills ──────────────────────────────────────────────────
 app.post('/api/connectors/custom', authenticateToken, requireFullCapabilities, (req, res) => {
   if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
   try {
@@ -2571,6 +2655,87 @@ app.delete('/api/connectors/custom/:skillId', authenticateToken, requireFullCapa
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Phone verification for notification number ────────────────────
+// OTP store: { phone: { code, expiresAt, attempts } }
+const _phoneOTPs = new Map();
+
+app.post('/api/connectors/sms/send-verification', authenticateToken, async (req, res) => {
+  try {
+    const { phone } = req.body;
+    if (!phone) return res.status(400).json({ error: 'phone required' });
+
+    const code = String(Math.floor(100000 + Math.random() * 900000)); // 6-digit
+    const expiresAt = Date.now() + 5 * 60 * 1000; // 5 min
+    _phoneOTPs.set(phone, { code, expiresAt, attempts: 0 });
+
+    // Try Twilio if configured, otherwise iMessage/fallback
+    const twilioSid    = process.env.TWILIO_ACCOUNT_SID;
+    const twilioToken  = process.env.TWILIO_AUTH_TOKEN;
+    const twilioFrom   = process.env.TWILIO_FROM_NUMBER;
+    const message      = `Your ALEC verification code is: ${code}. Expires in 5 minutes.`;
+
+    if (twilioSid && twilioToken && twilioFrom) {
+      const url  = `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`;
+      const body = new URLSearchParams({ From: twilioFrom, To: phone, Body: message });
+      const resp = await fetch(url, {
+        method: 'POST', body,
+        headers: { Authorization: 'Basic ' + Buffer.from(`${twilioSid}:${twilioToken}`).toString('base64'), 'Content-Type': 'application/x-www-form-urlencoded' },
+      });
+      if (!resp.ok) {
+        const err = await resp.json();
+        return res.status(500).json({ error: 'SMS failed: ' + (err.message || resp.status) });
+      }
+    } else if (iMessage) {
+      // Fallback to native iMessage
+      await iMessage.send(phone, message);
+    } else {
+      return res.status(503).json({ error: 'No SMS service configured. Add Twilio credentials to the Skills panel.' });
+    }
+
+    res.json({ success: true, message: `Verification code sent to ${phone}` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/connectors/sms/verify', authenticateToken, async (req, res) => {
+  try {
+    const { phone, code } = req.body;
+    if (!phone || !code) return res.status(400).json({ error: 'phone and code required' });
+
+    const entry = _phoneOTPs.get(phone);
+    if (!entry) return res.status(400).json({ error: 'No verification pending for this number. Request a new code.' });
+    if (Date.now() > entry.expiresAt) {
+      _phoneOTPs.delete(phone);
+      return res.status(400).json({ error: 'Code expired. Request a new one.' });
+    }
+    entry.attempts++;
+    if (entry.attempts > 5) {
+      _phoneOTPs.delete(phone);
+      return res.status(400).json({ error: 'Too many attempts. Request a new code.' });
+    }
+    if (entry.code !== String(code).trim()) {
+      return res.status(400).json({ error: `Incorrect code (${5 - entry.attempts} attempts remaining).` });
+    }
+
+    // Verified! Save phone as OWNER_PHONE
+    _phoneOTPs.delete(phone);
+    process.env.OWNER_PHONE = phone;
+    const envPath = require('path').join(__dirname, '../.env');
+    let envContent = '';
+    try { envContent = require('fs').readFileSync(envPath, 'utf8'); } catch (_) {}
+    const regex = /^OWNER_PHONE=.*$/m;
+    const line  = `OWNER_PHONE=${phone}`;
+    if (regex.test(envContent)) envContent = envContent.replace(regex, line);
+    else envContent += `\n${line}`;
+    try { require('fs').writeFileSync(envPath, envContent, 'utf8'); } catch (_) {}
+
+    res.json({ success: true, message: 'Phone verified and saved as notification number.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

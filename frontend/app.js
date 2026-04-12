@@ -1622,6 +1622,10 @@ async function sendMessage() {
         try {
           const parsed = JSON.parse(payload);
           if (parsed.error) throw new Error(parsed.error);
+          // Capture conversation_id from done event so history persists
+          if (parsed.done && parsed.conversation_id) {
+            state.currentConversationId = parsed.conversation_id;
+          }
           if (parsed.token) {
             fullText += parsed.token;
             bubbleEl.innerHTML = renderMarkdown(fullText);
@@ -1995,68 +1999,326 @@ switchPanel = function(panelId) {
 
 let _currentSkillConfig = null;
 
+// ── Helper: render a single credential field ──────────────────
+function renderCredField(f, isFilled) {
+  const ph = isFilled ? '(already set — leave blank to keep)' : (f.placeholder || '');
+  const isPass = f.type === 'password';
+  return `<div class="cred-field">
+    <div class="cred-label">
+      ${escapeHtml(f.label)}
+      ${f.required ? '<span class="cred-required">*</span>' : ''}
+      ${isFilled ? '<span class="cred-set-badge">✓ set</span>' : ''}
+    </div>
+    <div class="cred-input-wrap">
+      <input
+        type="${isPass ? 'password' : (f.type || 'text')}"
+        class="input-field skill-config-input"
+        data-key="${escapeHtml(f.key)}"
+        data-env="${escapeHtml(f.envVar || f.key)}"
+        placeholder="${escapeHtml(ph)}"
+        autocomplete="off"
+      >
+      ${isPass ? `<button type="button" class="cred-toggle-btn" onclick="togglePwVisibility(this)" title="Show/hide">👁</button>` : ''}
+    </div>
+    ${f.hint ? `<div class="cred-hint">${escapeHtml(f.hint)}</div>` : ''}
+  </div>`;
+}
+
+// ── Show/hide password field ──────────────────────────────────
+window.togglePwVisibility = function(btn) {
+  const input = btn.closest('.cred-input-wrap')?.querySelector('input');
+  if (!input) return;
+  const isHidden = input.type === 'password';
+  input.type = isHidden ? 'text' : 'password';
+  btn.textContent = isHidden ? '🙈' : '👁';
+};
+
+// ── Show/hide all values via "Reveal credentials" ─────────────
+window.revealSkillCredentials = async function(skillId) {
+  const btn = document.getElementById('skill-reveal-btn');
+  const box = document.getElementById('skill-revealed-box');
+  if (!btn || !box) return;
+
+  if (box.style.display === 'block') {
+    box.style.display = 'none';
+    btn.textContent = '👁 Reveal stored credentials';
+    return;
+  }
+
+  btn.textContent = '⏳ Loading…';
+  btn.disabled = true;
+  try {
+    const data = await api('POST', `/api/connectors/${skillId}/reveal`);
+    const values = data.values || {};
+    if (Object.keys(values).length === 0) {
+      box.textContent = '(no credentials stored for this skill)';
+    } else {
+      box.textContent = Object.entries(values).map(([k,v]) => `${k} = ${v}`).join('\n');
+    }
+    box.style.display = 'block';
+    btn.textContent = '🙈 Hide credentials';
+  } catch (e) {
+    toast('Could not reveal: ' + e.message, 'error');
+    btn.textContent = '👁 Reveal stored credentials';
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+// ── MS365: open instance config form ─────────────────────────
+window.openInstanceForm = async function(skillId, instanceId) {
+  const skill = _currentSkillConfig;
+  if (!skill) return;
+  const fields = skill.instanceFields || skill.fields || [];
+
+  let existingVals = {};
+  if (instanceId) {
+    try {
+      const d = await api('POST', `/api/connectors/${skillId}/instances/${instanceId}/reveal`);
+      existingVals = d.values || {};
+    } catch {}
+  }
+
+  const fieldsEl = document.getElementById('skill-config-fields');
+  const existing = instanceId ? (skill._instances || []).find(i => i.id === instanceId) : null;
+  const nameVal  = existing?.name || '';
+
+  fieldsEl.innerHTML = `
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;">
+      <button class="btn btn-ghost btn-sm" onclick="renderInstanceList('${escapeHtml(skillId)}')">← Back</button>
+      <span style="font-weight:700;">${instanceId ? 'Edit Account' : 'Add Microsoft 365 Account'}</span>
+    </div>
+    <div class="cred-field">
+      <div class="cred-label">Account Name <span class="cred-required">*</span></div>
+      <div class="cred-input-wrap">
+        <input type="text" class="input-field" id="inst-name" placeholder="e.g. STOA Group, CampusRentals…" value="${escapeHtml(nameVal)}">
+      </div>
+    </div>
+    ${fields.map(f => renderCredField(f, !!(existingVals[f.key]))).join('')}
+    <button class="btn btn-primary" style="width:100%;margin-top:8px;" onclick="saveInstance('${escapeHtml(skillId)}','${instanceId || ''}')">
+      ${instanceId ? '💾 Update Account' : '➕ Add Account'}
+    </button>`;
+
+  // Pre-fill revealed values
+  Object.entries(existingVals).forEach(([k,v]) => {
+    const input = fieldsEl.querySelector(`[data-key="${k}"]`);
+    if (input && v) { input.value = v; input.type = 'text'; }
+  });
+};
+
+window.saveInstance = async function(skillId, instanceId) {
+  const name = document.getElementById('inst-name')?.value?.trim();
+  if (!name) { toast('Account name is required', 'warning'); return; }
+
+  const creds = { name };
+  if (instanceId) creds.instId = instanceId;
+  document.querySelectorAll('.skill-config-input').forEach(el => {
+    const key = el.dataset.env || el.dataset.key;
+    const val = el.value.trim();
+    if (key && val) creds[key] = val;
+  });
+
+  try {
+    await api('POST', `/api/connectors/${skillId}/instances`, creds);
+    toast(`Account "${name}" saved!`, 'success');
+    await renderInstanceList(skillId);
+    loadSkills();
+  } catch (e) {
+    toast('Save failed: ' + e.message, 'error');
+  }
+};
+
+window.deleteInstance = async function(skillId, instanceId, name) {
+  if (!confirm(`Remove "${name}"?`)) return;
+  try {
+    await api('DELETE', `/api/connectors/${skillId}/instances/${instanceId}`);
+    toast('Account removed', 'success');
+    await renderInstanceList(skillId);
+    loadSkills();
+  } catch (e) {
+    toast('Remove failed: ' + e.message, 'error');
+  }
+};
+
+async function renderInstanceList(skillId) {
+  const fieldsEl = document.getElementById('skill-config-fields');
+  let instances = [];
+  try {
+    const d = await api('GET', `/api/connectors/${skillId}/instances`);
+    instances = d.instances || [];
+    if (_currentSkillConfig) _currentSkillConfig._instances = instances;
+  } catch {}
+
+  const rows = instances.length === 0
+    ? `<div style="text-align:center;padding:24px;color:var(--text-dim);font-size:13px;">No accounts yet. Add your first Microsoft 365 connection below.</div>`
+    : `<div class="instances-list">${instances.map(inst => `
+        <div class="instance-row">
+          <div class="instance-row-icon">📎</div>
+          <div class="instance-row-name">${escapeHtml(inst.name)}</div>
+          <div class="instance-row-status">${Object.values(inst.fields || {}).filter(Boolean).length}/${Object.keys(inst.fields || {}).length} fields set</div>
+          <div class="instance-row-btns">
+            <button class="instance-action-btn" onclick="openInstanceForm('${escapeHtml(skillId)}','${escapeHtml(inst.id)}')">✏️ Edit</button>
+            <button class="instance-action-btn danger" onclick="deleteInstance('${escapeHtml(skillId)}','${escapeHtml(inst.id)}','${escapeHtml(inst.name)}')">🗑</button>
+          </div>
+        </div>`).join('')}
+      </div>`;
+
+  fieldsEl.innerHTML = rows + `
+    <button class="add-instance-btn" onclick="openInstanceForm('${escapeHtml(skillId)}','')">
+      ➕ Add Microsoft 365 / SharePoint Account
+    </button>`;
+
+  // Update save button to not be needed for instances (managed inline)
+  const saveBtn = document.getElementById('skill-save-btn');
+  if (saveBtn) { saveBtn.style.display = 'none'; }
+}
+
+// ── Phone verification helper (for iMessage / Twilio skill) ───
+window.sendPhoneVerification = async function() {
+  const btn   = document.getElementById('phone-send-code-btn');
+  const input = document.getElementById('phone-number-input');
+  const status= document.getElementById('phone-verify-status');
+  if (!input) return;
+  const phone = input.value.trim();
+  if (!phone) { toast('Enter a phone number first', 'warning'); return; }
+  btn.disabled = true; btn.textContent = 'Sending…';
+  try {
+    await api('POST', '/api/connectors/sms/send-verification', { phone });
+    status.style.color = 'var(--success)';
+    status.textContent = `✅ Code sent to ${phone}. Check your messages.`;
+    document.getElementById('phone-otp-row')?.style.setProperty('display', 'flex');
+  } catch (e) {
+    status.style.color = 'var(--danger)';
+    status.textContent = '❌ ' + e.message;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Send Code';
+  }
+};
+
+window.verifyPhoneCode = async function() {
+  const phone = document.getElementById('phone-number-input')?.value?.trim();
+  const code  = document.getElementById('phone-otp-input')?.value?.trim();
+  const status= document.getElementById('phone-verify-status');
+  if (!phone || !code) { toast('Enter code first', 'warning'); return; }
+  try {
+    await api('POST', '/api/connectors/sms/verify', { phone, code });
+    status.style.color = 'var(--success)';
+    status.textContent = `✅ Phone verified and saved! ALEC will text you at ${phone}.`;
+    document.getElementById('phone-otp-row')?.style.setProperty('display', 'none');
+    loadSkills();
+  } catch (e) {
+    status.style.color = 'var(--danger)';
+    status.textContent = '❌ ' + e.message;
+  }
+};
+
+// ── Open skill config modal ───────────────────────────────────
 window.openSkillConfig = async function(skillId) {
   try {
-    // Get full catalog to find skill definition
-    const data = await api('GET', '/api/connectors/catalog');
-    const byCategory = data.catalog?.byCategory || data.catalog || {};
-    const allSkills = (data.catalog?.skills || Object.values(byCategory).flat());
-    const skill = allSkills.find(s => s.id === skillId);
+    const data       = await api('GET', '/api/connectors/catalog');
+    const allSkills  = data.catalog?.skills || Object.values(data.catalog?.byCategory || {}).flat();
+    const skill      = allSkills.find(s => s.id === skillId);
     if (!skill) { toast('Skill not found', 'error'); return; }
 
     _currentSkillConfig = skill;
-    const modal = document.getElementById('skill-config-modal');
-    document.getElementById('skill-config-icon').textContent = skill.icon || '🔌';
-    document.getElementById('skill-config-title').textContent = `Configure ${skill.name}`;
-    document.getElementById('skill-config-instructions').textContent = skill.description || '';
-    document.getElementById('skill-config-result').textContent = '';
 
-    // Load existing credential status (which fields are filled)
-    let existingStatus = {};
-    try {
-      const statusData = await api('GET', `/api/connectors/${skillId}/credentials`);
-      existingStatus = statusData.fields || {};
-    } catch {}
-
-    const fieldsEl = document.getElementById('skill-config-fields');
-    const fields = skill.fields || [];
-    if (fields.length === 0) {
-      fieldsEl.innerHTML = '<p style="color:var(--text-muted);font-size:13px;">This connector requires no additional credentials.</p>';
-    } else {
-      fieldsEl.innerHTML = fields.map(f => {
-        const isFilled = existingStatus[f.key] === true;
-        const placeholder = isFilled ? `(already set — leave blank to keep)` : (f.placeholder || '');
-        return `<div style="margin-bottom:12px;">
-          <label style="font-size:11.5px;color:var(--text-muted);display:block;margin-bottom:4px;font-weight:600;">
-            ${escapeHtml(f.label)}${f.required ? ' <span style="color:#ef4444;">*</span>' : ''}
-            ${isFilled ? ' <span style="color:#10b981;font-size:10px;">✓ set</span>' : ''}
-          </label>
-          <input
-            type="${f.type === 'password' ? 'password' : (f.type || 'text')}"
-            class="input-field skill-config-input"
-            data-key="${escapeHtml(f.key)}"
-            data-env="${escapeHtml(f.envVar || f.key)}"
-            placeholder="${escapeHtml(placeholder)}"
-            style="width:100%;box-sizing:border-box;"
-          >
-          ${f.hint ? `<div style="font-size:11px;color:var(--text-dim);margin-top:3px;">${escapeHtml(f.hint)}</div>` : ''}
-        </div>`;
-      }).join('');
+    // Populate header
+    document.getElementById('skill-modal-icon').textContent     = skill.icon || '🔌';
+    document.getElementById('skill-modal-title').textContent    = `Configure ${skill.name}`;
+    document.getElementById('skill-modal-subtitle').textContent = skill.description || '';
+    const badge = document.getElementById('skill-modal-scope-badge');
+    if (badge) {
+      if (skill.global) {
+        badge.textContent = '🌐 Global (server-level)';
+        badge.className = 'skill-modal-header-badge global';
+      } else {
+        badge.textContent = '👤 Per Account';
+        badge.className = 'skill-modal-header-badge personal';
+      }
     }
 
-    modal.style.display = 'flex';
+    // Reset status / save button
+    const resultEl = document.getElementById('skill-config-result');
+    if (resultEl) { resultEl.style.display = 'none'; resultEl.textContent = ''; }
+    const saveBtn = document.getElementById('skill-save-btn');
+    if (saveBtn) { saveBtn.style.display = ''; saveBtn.disabled = false; saveBtn.textContent = '💾 Save & Connect'; }
+
+    const fieldsEl = document.getElementById('skill-config-fields');
+
+    // ── Multi-instance skill (Microsoft 365) ─────────────────
+    if (skill.multiInstance) {
+      await renderInstanceList(skillId);
+      document.getElementById('skill-config-modal').classList.add('open');
+      return;
+    }
+
+    // ── Special: iMessage — add phone verification flow ───────
+    if (skillId === 'imessage' || skillId === 'twilio') {
+      const statusData = await api('GET', `/api/connectors/${skillId}/credentials`).catch(() => ({ fields: {} }));
+      const existing   = statusData.fields || {};
+      const fields     = skill.fields || [];
+      const isPhone    = skillId === 'imessage';
+
+      fieldsEl.innerHTML = fields.map(f => renderCredField(f, existing[f.key] === true)).join('') +
+        (isPhone ? `
+          <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
+            <div class="cred-label">📱 Verify Your Phone Number</div>
+            <p style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Enter your number, then tap Send Code. ALEC will text you a 6-digit code to confirm.</p>
+            <div class="phone-verify-row">
+              <input type="tel" id="phone-number-input" class="input-field" placeholder="+15551234567" value="${process?.env?.OWNER_PHONE || ''}">
+              <button class="send-code-btn" id="phone-send-code-btn" onclick="sendPhoneVerification()">Send Code</button>
+            </div>
+            <div class="otp-verify-row" id="phone-otp-row" style="display:none;">
+              <input type="text" id="phone-otp-input" class="input-field" placeholder="6-digit code" style="letter-spacing:4px;font-size:18px;text-align:center;" maxlength="6">
+              <button class="verify-btn" onclick="verifyPhoneCode()">✓ Verify</button>
+            </div>
+            <div class="verify-status" id="phone-verify-status"></div>
+          </div>` : '');
+    } else {
+      // ── Standard credential fields ────────────────────────
+      const statusData = await api('GET', `/api/connectors/${skillId}/credentials`).catch(() => ({ fields: {} }));
+      const existing   = statusData.fields || {};
+      const fields     = skill.fields || [];
+
+      if (fields.length === 0) {
+        fieldsEl.innerHTML = `<p style="color:var(--text-muted);font-size:13px;text-align:center;padding:20px 0;">
+          This connector works out-of-the-box — no credentials needed.</p>`;
+        if (saveBtn) saveBtn.style.display = 'none';
+      } else {
+        fieldsEl.innerHTML = fields.map(f => renderCredField(f, existing[f.key] === true)).join('');
+      }
+    }
+
+    // Add "Reveal credentials" button at bottom (for all non-empty skills)
+    if ((skill.fields || []).length > 0) {
+      fieldsEl.innerHTML += `
+        <button id="skill-reveal-btn" class="cred-reveal-btn" onclick="revealSkillCredentials('${escapeHtml(skillId)}')">
+          👁 Reveal stored credentials
+        </button>
+        <div id="skill-revealed-box" class="cred-revealed-box" style="display:none;"></div>`;
+    }
+
+    document.getElementById('skill-config-modal').classList.add('open');
   } catch (e) {
     toast('Failed to load skill config: ' + e.message, 'error');
+    console.error('[openSkillConfig]', e);
   }
 };
 
 window.closeSkillConfig = function() {
-  document.getElementById('skill-config-modal').style.display = 'none';
+  document.getElementById('skill-config-modal').classList.remove('open');
   _currentSkillConfig = null;
 };
 
+// Close on overlay click
+document.getElementById('skill-config-modal')?.addEventListener('click', function(e) {
+  if (e.target === this) closeSkillConfig();
+});
+
 window.saveSkillConfig = async function() {
   if (!_currentSkillConfig) return;
+  const skillId = _currentSkillConfig.id;
+
   const credentials = {};
   document.querySelectorAll('.skill-config-input').forEach(el => {
     const key = el.dataset.env || el.dataset.key;
@@ -2070,26 +2332,34 @@ window.saveSkillConfig = async function() {
   saveBtn.textContent = '⏳ Saving…';
 
   try {
-    await api('POST', `/api/connectors/${_currentSkillConfig.id}/credentials`, credentials);
-    resultEl.style.color = '#10b981';
-    resultEl.innerHTML = '✅ Credentials saved and applied — no restart needed! Testing connection…';
+    await api('POST', `/api/connectors/${skillId}/credentials`, credentials);
 
-    // Live status check
+    if (resultEl) {
+      resultEl.style.display = 'block';
+      resultEl.style.color   = 'var(--text-muted)';
+      resultEl.textContent   = 'Saved. Testing connection…';
+    }
+
+    // Live connection test
     try {
-      const statusData = await api('GET', `/api/connectors/${_currentSkillConfig.id}/status`);
-      if (statusData.connected || statusData.authenticated || statusData.configured) {
-        resultEl.innerHTML = '✅ Connected and verified! Ready to use in chat.';
-      } else {
-        resultEl.innerHTML = '⚠️ Saved, but connection test failed: ' + (statusData.error || 'unknown error');
-        resultEl.style.color = '#f59e0b';
+      const statusData = await api('GET', `/api/connectors/${skillId}/status`);
+      const ok = !!(statusData.connected || statusData.authenticated || statusData.configured || statusData.available);
+      if (resultEl) {
+        resultEl.style.color   = ok ? 'var(--success)' : 'var(--warning)';
+        resultEl.textContent   = ok
+          ? `✅ Connected and verified! Ready to use in chat.`
+          : `⚠️ Saved, but couldn't confirm connection: ${statusData.error || 'check credentials and try again'}`;
       }
-    } catch {}
+    } catch { /* status check is optional */ }
 
     loadSkills();
-    setTimeout(closeSkillConfig, 2500);
+    setTimeout(closeSkillConfig, 3000);
   } catch (e) {
-    resultEl.style.color = '#ef4444';
-    resultEl.textContent = 'Failed: ' + e.message;
+    if (resultEl) {
+      resultEl.style.display = 'block';
+      resultEl.style.color   = 'var(--danger)';
+      resultEl.textContent   = '❌ Save failed: ' + e.message;
+    }
   } finally {
     saveBtn.disabled = false;
     saveBtn.textContent = '💾 Save & Connect';
