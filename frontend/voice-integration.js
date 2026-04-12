@@ -447,6 +447,30 @@ function stopAmpMeter() {
 /* ══════════════════════════════════════════════════════
    NEURON CANVAS ANIMATION
 ══════════════════════════════════════════════════════ */
+/* ── Clean text for natural speech ── */
+function cleanForSpeech(text) {
+  return text
+    // Strip all emoji (Unicode ranges)
+    .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
+    .replace(/[\u{2600}-\u{27BF}]/gu, '')
+    .replace(/[\u{FE00}-\u{FEFF}]/gu, '')
+    // Strip markdown: **bold**, *italic*, `code`, # headers, > quotes, --- dividers
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/`{1,3}[^`]*`{1,3}/g, '')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^>\s+/gm, '')
+    .replace(/^-{3,}$/gm, '')
+    // Strip URLs
+    .replace(/https?:\/\/\S+/g, '')
+    // Strip leftover symbols that sound bad read aloud
+    .replace(/[•◦▸▹►▻–—]/g, ',')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // markdown links → label only
+    // Collapse extra whitespace
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 function hexToRgb(h){ const n=parseInt(h.replace('#',''),16); return[(n>>16)&255,(n>>8)&255,n&255]; }
 function lerpC(a,b,t){ return[a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t]; }
 function rgb(c,a){ return`rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a})`; }
@@ -576,6 +600,12 @@ function startNeuronLoop() {
    HOOK APP.JS GLOBALS
 ══════════════════════════════════════════════════════ */
 function hookAppFunctions() {
+  // Override _startCommandCapture so "Hey ALEC" uses the same startMic() flow
+  // (overlay, continuous listening, natural restart) instead of the old one-shot capture
+  window._startCommandCapture = function() {
+    startMic();
+  };
+
   // addAssistantMessage → source badge + speaking state
   if (typeof addAssistantMessage === 'function') {
     const orig = addAssistantMessage;
@@ -616,14 +646,14 @@ function hookAppFunctions() {
     };
   }
 
-  // speakResponse → TTS amplitude animation
+  // speakResponse → strip emojis/markdown, drive TTS amplitude
   if (typeof speakResponse === 'function') {
     const orig = speakResponse;
     window.speakResponse = function(text) {
       window.setState('speaking');
       let iv = setInterval(()=>{ ttsAmp=.25+Math.sin(Date.now()/130)*.2; }, 40);
       const done = ()=>{ clearInterval(iv); ttsAmp=0; if(currentState==='speaking') window.setState('idle'); };
-      const p = orig.apply(this, arguments);
+      const p = orig.call(this, cleanForSpeech(text));
       if (p && p.finally) p.finally(done); else setTimeout(done, 8000);
       return p;
     };
