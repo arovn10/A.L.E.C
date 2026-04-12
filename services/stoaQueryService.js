@@ -85,6 +85,8 @@ const INTENT_PATTERNS = {
   contract:  /\b(contract|vendor|supplier|agreement|expir|renew|service)\b/i,
   renewal:   /\b(renewal|renew|retention|t-?12|notice.?to.?vacate|ntv|expir)\b/i,
   portfolio: /\b(portfolio|all.?propert|overall|total|across.?all|summary|overview|how.?many)\b/i,
+  trend:     /\b(trend|history|histor|over.?time|past.?\d|last.?\d|previous.?\d|month|quarter|year.?over.?year|yoy|ytd|growth|trajectory|progress|chart|graph|show.?me.?over|over.?the.?past)\b/i,
+  export:    /\b(export|excel|spreadsheet|download|\.xlsx|csv|sheet|generate.?report|create.?report)\b/i,
 };
 
 /**
@@ -125,12 +127,16 @@ function detectStoaIntent(text) {
     }
   }
 
+  // Extract "past N months" or "last N months" for trend queries
+  const monthsMatch = t.match(/(?:past|last|previous|over\s+the\s+(?:last|past))\s+(\d+)\s+months?/i);
+  const trendMonths = monthsMatch ? parseInt(monthsMatch[1]) : 6;
+
   // If we found a property but no specific intent, default to occupancy+project (most common ask)
   const finalIntents = intents.length > 0
     ? intents
     : property ? ['occupancy', 'project'] : [];
 
-  return finalIntents.length > 0 || property ? { intents: finalIntents, property } : null;
+  return finalIntents.length > 0 || property ? { intents: finalIntents, property, trendMonths } : null;
 }
 
 // ── STOA query functions ───────────────────────────────────────────
@@ -306,6 +312,69 @@ async function getPipelineDeals(statusFilter = null) {
 }
 
 /**
+ * Get weekly MMR history for a property over the past N months.
+ * Returns rows ordered oldest→newest so the LLM can read trends left-to-right.
+ * Uses leasing.MMRData which has weekly snapshots going back to Jan 2023.
+ */
+async function getMMRHistory(propertySearch, months = 6) {
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - months);
+  const cutoffStr = cutoff.toISOString().split('T')[0];
+
+  return query(
+    `SELECT m.Property, m.ReportDate,
+       m.[Occupancy %]      AS OccupancyPct,
+       m.[Current Leased %] AS LeasedPct,
+       m.[Occ Units]        AS OccupiedUnits,
+       m.[Total Units]      AS TotalUnits,
+       m.OccupiedRent       AS AvgRent,
+       m.BudgetedRent,
+       m.MI AS MoveIns,
+       m.MO AS MoveOuts,
+       m.Delinquent
+     FROM leasing.MMRData m
+     WHERE (m.Property LIKE @prop OR m.Location LIKE @prop OR m.City LIKE @prop)
+       AND m.ReportDate >= @cutoff
+     ORDER BY m.ReportDate ASC`,
+    {
+      prop:   { type: sql.NVarChar(256), value: `%${propertySearch}%` },
+      cutoff: { type: sql.Date,          value: cutoffStr },
+    }
+  );
+}
+
+/**
+ * Get pre-computed rent growth percentages from leasing.HistoricalRentGrowth.
+ * Columns: ReportDate, Property, LatestRent, Rent3Mo, Rent6Mo, Rent12Mo,
+ *          RentGrowth3MoPct, RentGrowth6MoPct, RentGrowth12MoPct, RentGrowthAllTimePct
+ */
+async function getRentGrowthHistory(propertySearch) {
+  return query(
+    `SELECT TOP 1 Property, LatestDate, LatestRent,
+       Rent3Mo, Rent6Mo, Rent12Mo, RentAllTime,
+       RentGrowth3MoPct, RentGrowth6MoPct, RentGrowth12MoPct, RentGrowthAllTimePct,
+       ComputedAt
+     FROM leasing.HistoricalRentGrowth
+     WHERE Property LIKE @prop
+     ORDER BY ComputedAt DESC`,
+    { prop: { type: sql.NVarChar(256), value: `%${propertySearch}%` } }
+  );
+}
+
+/**
+ * Get portfolio-wide rent growth trends.
+ */
+async function getPortfolioRentGrowth() {
+  return query(
+    `SELECT Property, LatestRent, Rent3Mo, Rent6Mo, Rent12Mo,
+       RentGrowth3MoPct, RentGrowth6MoPct, RentGrowth12MoPct, RentGrowthAllTimePct
+     FROM leasing.HistoricalRentGrowth
+     WHERE ComputedAt = (SELECT MAX(ComputedAt) FROM leasing.HistoricalRentGrowth)
+     ORDER BY RentGrowth6MoPct DESC`
+  );
+}
+
+/**
  * Get contracts expiring soon.
  */
 async function getExpiringContracts(daysAhead = 90) {
@@ -330,7 +399,7 @@ async function buildStoaContext(userMessage) {
   const detected = detectStoaIntent(userMessage);
   if (!detected) return null;
 
-  const { intents, property } = detected;
+  const { intents, property, trendMonths = 6 } = detected;
   const sections = [];
 
   // ── Property occupancy & leasing ─────────────────────────────
@@ -393,6 +462,75 @@ async function buildStoaContext(userMessage) {
 - Construction: ${p.ConstructionStatus || 'N/A'} | Financing: ${p.FinancingStatus || 'N/A'}
 `
         );
+      }
+    }
+  }
+
+  // ── Trend / Historical data ───────────────────────────────────
+  if (intents.includes('trend')) {
+    if (property) {
+      // Weekly occupancy trend for the property
+      const history = await getMMRHistory(property, trendMonths);
+      if (history.length > 0) {
+        sections.push(`## Occupancy & Rent Trend — ${history[0].Property} (Past ${trendMonths} Months)\n`);
+
+        // Build ASCII table: Date | Occ% | Leased% | Avg Rent | Move-ins | Move-outs
+        const header = '| Week Ending   | Occupancy | Leased  | Avg Rent | Move-ins | Move-outs | Delinquent |';
+        const divider = '|---------------|-----------|---------|----------|----------|-----------|------------|';
+        const rows = history.map(r => {
+          const d = r.ReportDate ? new Date(r.ReportDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' }) : 'N/A';
+          return `| ${d.padEnd(13)} | ${pct(r.OccupancyPct).padEnd(9)} | ${pct(r.LeasedPct).padEnd(7)} | ${dollar(r.AvgRent).padEnd(8)} | ${String(r.MoveIns ?? '-').padEnd(8)} | ${String(r.MoveOuts ?? '-').padEnd(9)} | ${String(r.Delinquent ?? '-').padEnd(10)} |`;
+        });
+
+        // Summarize trend direction
+        const first = history[0];
+        const last  = history[history.length - 1];
+        const occDelta = first.OccupancyPct && last.OccupancyPct
+          ? (((last.OccupancyPct - first.OccupancyPct) / first.OccupancyPct) * 100).toFixed(1)
+          : null;
+        const rentDelta = first.AvgRent && last.AvgRent
+          ? (last.AvgRent - first.AvgRent).toFixed(0)
+          : null;
+
+        sections.push([header, divider, ...rows].join('\n'));
+        sections.push('');
+
+        if (occDelta !== null) {
+          const occDir = Number(occDelta) > 0 ? '▲' : Number(occDelta) < 0 ? '▼' : '→';
+          sections.push(`**Trend Summary (${date(first.ReportDate)} → ${date(last.ReportDate)}):**`);
+          sections.push(`- Occupancy: ${occDir} ${Math.abs(occDelta)}% ${Number(occDelta) >= 0 ? 'increase' : 'decrease'} over the period`);
+          if (rentDelta !== null) {
+            const rentDir = Number(rentDelta) > 0 ? '▲' : Number(rentDelta) < 0 ? '▼' : '→';
+            sections.push(`- Avg rent: ${rentDir} ${dollar(Math.abs(Number(rentDelta)))} change (${dollar(first.AvgRent)} → ${dollar(last.AvgRent)})`);
+          }
+          sections.push('');
+        }
+      }
+
+      // Rent growth percentages
+      const rentGrowth = await getRentGrowthHistory(property);
+      if (rentGrowth.length > 0) {
+        const rg = rentGrowth[0];
+        const fmtPct = (v) => v != null ? (Number(v) >= 0 ? '+' : '') + (Number(v) * 100).toFixed(1) + '%' : 'N/A';
+        sections.push(
+          `**Rent Growth — ${rg.Property}:**
+- Current rent: ${dollar(rg.LatestRent)} | 3-mo ago: ${dollar(rg.Rent3Mo)} | 6-mo ago: ${dollar(rg.Rent6Mo)} | 12-mo ago: ${dollar(rg.Rent12Mo)}
+- Growth rates: 3-mo: ${fmtPct(rg.RentGrowth3MoPct)} | 6-mo: ${fmtPct(rg.RentGrowth6MoPct)} | 12-mo: ${fmtPct(rg.RentGrowth12MoPct)} | All-time: ${fmtPct(rg.RentGrowthAllTimePct)}
+`
+        );
+      }
+    } else {
+      // Portfolio-wide rent growth rankings
+      const pgrowth = await getPortfolioRentGrowth();
+      if (pgrowth.length > 0) {
+        const fmtPct = (v) => v != null ? (Number(v) >= 0 ? '+' : '') + (Number(v) * 100).toFixed(1) + '%' : 'N/A';
+        sections.push(`## Portfolio Rent Growth Rankings\n`);
+        sections.push('| Property | Current Rent | 3-Mo | 6-Mo | 12-Mo |');
+        sections.push('|----------|-------------|------|------|-------|');
+        for (const rg of pgrowth) {
+          sections.push(`| ${rg.Property} | ${dollar(rg.LatestRent)} | ${fmtPct(rg.RentGrowth3MoPct)} | ${fmtPct(rg.RentGrowth6MoPct)} | ${fmtPct(rg.RentGrowth12MoPct)} |`);
+        }
+        sections.push('');
       }
     }
   }
@@ -499,6 +637,9 @@ module.exports = {
   detectStoaIntent,
   buildStoaContext,
   getMMRData,
+  getMMRHistory,
+  getRentGrowthHistory,
+  getPortfolioRentGrowth,
   getPortfolioSummary,
   findProjects,
   getUnitDetails,

@@ -54,6 +54,7 @@ const NEURAL_URL = `http://localhost:${process.env.NEURAL_PORT || 8000}`;
 const llamaEngine      = require('../services/llamaEngine.js');
 const desktopControl   = require('../services/desktopControl.js');
 const stoaQuery        = require('../services/stoaQueryService.js');
+const excelExport      = require('../services/excelExport.js');
 
 // Warm up the embedded engine on startup
 llamaEngine.warmUp();
@@ -506,6 +507,27 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     const memCtx = buildMemoryContext(mem);
     let systemContent = buildSystemPrompt() + (memCtx ? '\n\n' + memCtx : '');
 
+    // ── Excel export detection — short-circuit before LLM if user wants a file ──
+    const exportIntent = excelExport.detectExportIntent(userText);
+    if (exportIntent) {
+      try {
+        console.log('[Excel] Generating export:', exportIntent);
+        const result = await excelExport.generateExport(exportIntent);
+        const friendlyType = { portfolio: 'portfolio occupancy & rent growth', trend: `${exportIntent.property || ''} trend`, pipeline: 'acquisition pipeline', loans: 'loan summary', full: 'full STOA report' }[result.type] || result.type;
+        return res.json({
+          success: true,
+          response: `📊 Here's your **${friendlyType}** Excel report:\n\n**[Download ${result.fileName}](${result.url})**\n\nGenerated at ${new Date(result.generatedAt).toLocaleTimeString('en-US')} — includes real-time data pulled directly from the STOA database.`,
+          download_url: result.url,
+          latency_ms: Date.now() - startTime,
+          source: 'stoa-export',
+        });
+      } catch (exportErr) {
+        console.warn('[Excel] Export failed:', exportErr.message?.slice(0, 100));
+        // Fall through to LLM with error note
+        systemContent += '\n\n*Note: Excel export was attempted but failed. Provide a text summary instead.*';
+      }
+    }
+
     // ── STOA RAG: inject live database context before LLM call ──
     // Detects property/leasing/deal questions and pulls real numbers from
     // Azure SQL — this prevents hallucination by grounding the LLM in facts.
@@ -579,6 +601,24 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
     const mem = loadMemory();
     const memCtx = buildMemoryContext(mem);
     let systemContent = buildSystemPrompt() + (memCtx ? '\n\n' + memCtx : '');
+
+    // ── Excel export detection (stream) — send download link immediately ──
+    const exportIntentStream = excelExport.detectExportIntent(userText);
+    if (exportIntentStream) {
+      try {
+        res.write('data: {"token":"📊 Generating Excel report…\\n"}\n\n');
+        const result = await excelExport.generateExport(exportIntentStream);
+        const friendlyType = { portfolio: 'portfolio occupancy & rent growth', trend: `${exportIntentStream.property || ''} trend`, pipeline: 'acquisition pipeline', loans: 'loan summary', full: 'full STOA report' }[result.type] || result.type;
+        const msg = `\\n**[Download ${result.fileName}](${result.url})**\\n\\nReal-time data from the STOA database, generated at ${new Date(result.generatedAt).toLocaleTimeString('en-US')}.`;
+        res.write(`data: {"token":${JSON.stringify(msg)}}\n\n`);
+        res.write('data: [DONE]\n\n');
+        return res.end();
+      } catch (exportErr) {
+        res.write('data: {"token":"⚠️ Export failed, providing text summary instead.\\n\\n"}\n\n');
+        console.warn('[Excel stream] Export failed:', exportErr.message?.slice(0, 100));
+        // Fall through to LLM
+      }
+    }
 
     // ── STOA RAG: inject live database context ────────────────
     try {
@@ -1071,6 +1111,62 @@ app.post('/api/tasks/:id/cancel', authenticateToken, async (req, res) => {
 app.get('/api/stoa/ping', authenticateToken, async (req, res) => {
   const result = await stoaQuery.ping();
   res.json(result);
+});
+
+/**
+ * POST /api/stoa/export
+ * Generate a STOA Excel workbook and return a download URL.
+ * Body: { type, property, months }
+ *   type: 'portfolio' | 'trend' | 'pipeline' | 'loans' | 'full'
+ */
+app.post('/api/stoa/export', authenticateToken, async (req, res) => {
+  try {
+    const { type = 'portfolio', property = null, months = 6 } = req.body || {};
+    console.log('[STOA Export] Generating:', { type, property, months });
+    const result = await excelExport.generateExport({ type, property, months });
+    res.json({
+      success: true,
+      url: result.url,
+      fileName: result.fileName,
+      type: result.type,
+      property: result.property,
+      generatedAt: result.generatedAt,
+    });
+  } catch (err) {
+    console.error('[STOA Export] Error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/stoa/trend?property=...&months=6
+ * Returns weekly MMR history for a property.
+ */
+app.get('/api/stoa/trend', authenticateToken, async (req, res) => {
+  try {
+    const { property, months = '6' } = req.query;
+    if (!property) return res.status(400).json({ success: false, error: 'property param required' });
+    const rows = await stoaQuery.getMMRHistory(property, parseInt(months));
+    res.json({ success: true, count: rows.length, property, months: parseInt(months), data: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/stoa/rent-growth?property=...
+ * Returns pre-computed rent growth percentages.
+ */
+app.get('/api/stoa/rent-growth', authenticateToken, async (req, res) => {
+  try {
+    const { property } = req.query;
+    const rows = property
+      ? await stoaQuery.getRentGrowthHistory(property)
+      : await stoaQuery.getPortfolioRentGrowth();
+    res.json({ success: true, count: rows.length, data: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 /**
