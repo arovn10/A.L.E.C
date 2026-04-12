@@ -609,7 +609,7 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
         res.write('data: {"token":"📊 Generating Excel report…\\n"}\n\n');
         const result = await excelExport.generateExport(exportIntentStream);
         const friendlyType = { portfolio: 'portfolio occupancy & rent growth', trend: `${exportIntentStream.property || ''} trend`, pipeline: 'acquisition pipeline', loans: 'loan summary', full: 'full STOA report' }[result.type] || result.type;
-        const msg = `\\n**[Download ${result.fileName}](${result.url})**\\n\\nReal-time data from the STOA database, generated at ${new Date(result.generatedAt).toLocaleTimeString('en-US')}.`;
+        const msg = `\n**[Download ${result.fileName}](${result.url})**\n\nReal-time data from the STOA database, generated at ${new Date(result.generatedAt).toLocaleTimeString('en-US')}.`;
         res.write(`data: {"token":${JSON.stringify(msg)}}\n\n`);
         res.write('data: [DONE]\n\n');
         return res.end();

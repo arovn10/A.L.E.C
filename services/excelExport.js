@@ -140,7 +140,8 @@ async function buildRentGrowthSheet(wb) {
   headerStyle(ws, ws.getRow(1));
 
   const rows = await stoaQuery.getPortfolioRentGrowth();
-  const fmtG = (v) => v != null ? ((Number(v) >= 0 ? '+' : '') + (Number(v) * 100).toFixed(1) + '%') : 'N/A';
+  // RentGrowthXxxPct is already in percentage points (e.g., -4.83 = -4.83%) — do NOT × 100
+  const fmtG = (v) => v != null ? ((Number(v) >= 0 ? '+' : '') + Number(v).toFixed(1) + '%') : 'N/A';
 
   rows.forEach((r, i) => {
     const row = ws.addRow({

@@ -94,8 +94,14 @@ function renderMarkdown(text) {
   html = html.replace(/(<li>.*<\/li>\n?)+/g, (m) => `<ul>${m}</ul>`);
   // Ordered list
   html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
-  // Links
+  // Download buttons — /exports/*.xlsx gets a styled download button
+  html = html.replace(/\[([^\]]+)\]\((\/exports\/[^\)]+\.xlsx)\)/g,
+    (_, label, url) => `<a href="${url}" download class="download-btn">⬇️ ${label}</a>`
+  );
+  // Absolute links
   html = html.replace(/\[(.+?)\]\((https?:\/\/.+?)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // Relative links (non-export)
+  html = html.replace(/\[(.+?)\]\((\/[^\)]+)\)/g, '<a href="$2">$1</a>');
   // Horizontal rule
   html = html.replace(/^---$/gm, '<hr/>');
   // Line breaks / paragraphs

@@ -505,17 +505,43 @@ async function buildStoaContext(userMessage) {
           }
           sections.push('');
         }
+
+        // Anomaly detection — flag statistical outliers in the data
+        const anomalies = [];
+        const delinquents = history.map(r => r.Delinquent).filter(v => v != null);
+        if (delinquents.length > 2) {
+          const avgDelinquent = delinquents.reduce((a, b) => a + b, 0) / delinquents.length;
+          const maxDelinquent = Math.max(...delinquents);
+          if (maxDelinquent > avgDelinquent * 3 && maxDelinquent > 20) {
+            const peakRow = history.find(r => r.Delinquent === maxDelinquent);
+            anomalies.push(`⚠️ **Delinquency spike**: ${maxDelinquent} on ${date(peakRow?.ReportDate)} (avg: ${avgDelinquent.toFixed(0)}) — this looks like a data anomaly, not an operational issue, but worth verifying`);
+          }
+        }
+        const occs = history.map(r => r.OccupancyPct).filter(v => v != null);
+        if (occs.length > 2) {
+          const minOcc = Math.min(...occs);
+          const maxOcc = Math.max(...occs);
+          if ((maxOcc - minOcc) * 100 > 5) {
+            anomalies.push(`⚠️ **Occupancy swing**: ${pct(minOcc)} min → ${pct(maxOcc)} max (${((maxOcc - minOcc) * 100).toFixed(1)}pp range over ${trendMonths} months)`);
+          }
+        }
+        if (anomalies.length > 0) {
+          sections.push(`**Data Flags & Anomalies:**`);
+          sections.push(anomalies.join('\n'));
+          sections.push('');
+        }
       }
 
       // Rent growth percentages
+      // NOTE: RentGrowthXxxPct columns are ALREADY in percentage points (e.g. -4.83 = -4.83%), NOT decimals.
       const rentGrowth = await getRentGrowthHistory(property);
       if (rentGrowth.length > 0) {
         const rg = rentGrowth[0];
-        const fmtPct = (v) => v != null ? (Number(v) >= 0 ? '+' : '') + (Number(v) * 100).toFixed(1) + '%' : 'N/A';
+        const fmtG = (v) => v != null ? (Number(v) >= 0 ? '+' : '') + Number(v).toFixed(1) + '%' : 'N/A';
         sections.push(
           `**Rent Growth — ${rg.Property}:**
 - Current rent: ${dollar(rg.LatestRent)} | 3-mo ago: ${dollar(rg.Rent3Mo)} | 6-mo ago: ${dollar(rg.Rent6Mo)} | 12-mo ago: ${dollar(rg.Rent12Mo)}
-- Growth rates: 3-mo: ${fmtPct(rg.RentGrowth3MoPct)} | 6-mo: ${fmtPct(rg.RentGrowth6MoPct)} | 12-mo: ${fmtPct(rg.RentGrowth12MoPct)} | All-time: ${fmtPct(rg.RentGrowthAllTimePct)}
+- Growth rates: 3-mo: ${fmtG(rg.RentGrowth3MoPct)} | 6-mo: ${fmtG(rg.RentGrowth6MoPct)} | 12-mo: ${fmtG(rg.RentGrowth12MoPct)} | All-time: ${fmtG(rg.RentGrowthAllTimePct)}
 `
         );
       }
@@ -523,12 +549,13 @@ async function buildStoaContext(userMessage) {
       // Portfolio-wide rent growth rankings
       const pgrowth = await getPortfolioRentGrowth();
       if (pgrowth.length > 0) {
-        const fmtPct = (v) => v != null ? (Number(v) >= 0 ? '+' : '') + (Number(v) * 100).toFixed(1) + '%' : 'N/A';
+        // RentGrowthXxxPct is already in % points — do NOT multiply by 100
+        const fmtG = (v) => v != null ? (Number(v) >= 0 ? '+' : '') + Number(v).toFixed(1) + '%' : 'N/A';
         sections.push(`## Portfolio Rent Growth Rankings\n`);
         sections.push('| Property | Current Rent | 3-Mo | 6-Mo | 12-Mo |');
         sections.push('|----------|-------------|------|------|-------|');
         for (const rg of pgrowth) {
-          sections.push(`| ${rg.Property} | ${dollar(rg.LatestRent)} | ${fmtPct(rg.RentGrowth3MoPct)} | ${fmtPct(rg.RentGrowth6MoPct)} | ${fmtPct(rg.RentGrowth12MoPct)} |`);
+          sections.push(`| ${rg.Property} | ${dollar(rg.LatestRent)} | ${fmtG(rg.RentGrowth3MoPct)} | ${fmtG(rg.RentGrowth6MoPct)} | ${fmtG(rg.RentGrowth12MoPct)} |`);
         }
         sections.push('');
       }
@@ -616,7 +643,18 @@ async function buildStoaContext(userMessage) {
     '',
     ...sections,
     '---',
-    'Answer the user using the data above. Be specific with numbers. If something is not in the data, say so honestly.',
+    `## Analysis Instructions
+Use ONLY the data above. Be specific with numbers. If something is not in the data, say so honestly.
+
+When answering:
+1. **Lead with the key metric** — state the current occupancy/rent clearly upfront
+2. **Flag anomalies** — highlight anything unusual (e.g., delinquent count spike, occupancy drop >3%, rent far below budget). Use ⚠️ for concerns, ✅ for positives.
+3. **Identify trends** — if trend data is present, note the direction (improving/declining/stable), the rate of change, and whether it's concerning
+4. **Benchmark against budget** — compare actuals to budgeted occupancy and rent, quantify the gap
+5. **Be concise and actionable** — finish with 1-2 sentences on what management should watch or do
+6. **Use markdown formatting** — headers for sections, bold for key numbers, bullet points for lists
+
+Rent growth % values are already in percentage points (e.g., -4.83 means -4.83% — do not multiply by 100).`,
   ].join('\n');
 }
 
