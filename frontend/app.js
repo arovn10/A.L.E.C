@@ -1018,7 +1018,7 @@ async function loadSkills() {
 
   try {
     const data = await api('GET', '/api/connectors/catalog');
-    const byCategory = data.catalog || {};
+    const byCategory = data.catalog?.byCategory || data.catalog || {};
 
     if (Object.keys(byCategory).length === 0) {
       catalog.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-dim);font-size:0.8rem;">No connectors available.</div>';
@@ -1999,7 +1999,8 @@ window.openSkillConfig = async function(skillId) {
   try {
     // Get full catalog to find skill definition
     const data = await api('GET', '/api/connectors/catalog');
-    const allSkills = Object.values(data.catalog || {}).flat();
+    const byCategory = data.catalog?.byCategory || data.catalog || {};
+    const allSkills = (data.catalog?.skills || Object.values(byCategory).flat());
     const skill = allSkills.find(s => s.id === skillId);
     if (!skill) { toast('Skill not found', 'error'); return; }
 
