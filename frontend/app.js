@@ -53,10 +53,17 @@ function formatDate(val) {
 
 function timeAgo(val) {
   if (!val) return '—';
-  const d = new Date(val);
+  // SQLite datetime('now') returns 'YYYY-MM-DD HH:MM:SS' without timezone.
+  // Force UTC parsing by appending 'Z' if no zone indicator is present.
+  let str = String(val);
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(str) && !str.endsWith('Z') && !str.includes('+')) {
+    str = str.replace(' ', 'T') + 'Z';
+  }
+  const d = new Date(str);
   if (isNaN(d)) return val;
-  const diff = Math.floor((Date.now() - d) / 1000);
-  if (diff < 60) return `${diff}s ago`;
+  const diff = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (diff < 5)   return 'just now';
+  if (diff < 60)  return `${diff}s ago`;
   if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
   if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
   return d.toLocaleDateString();
@@ -950,7 +957,8 @@ window.loadConversation = async function(convId) {
       if (m.role === 'user') {
         addUserMessage(m.content);
       } else if (m.role === 'assistant') {
-        addAssistantMessage(m.content);
+        // addAssistantMessage expects an object {text, ...}
+        addAssistantMessage({ text: m.content });
       }
     });
     scrollToBottom();
@@ -2265,7 +2273,7 @@ window.openSkillConfig = async function(skillId) {
             <div class="cred-label">📱 Verify Your Phone Number</div>
             <p style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Enter your number, then tap Send Code. ALEC will text you a 6-digit code to confirm.</p>
             <div class="phone-verify-row">
-              <input type="tel" id="phone-number-input" class="input-field" placeholder="+15551234567" value="${process?.env?.OWNER_PHONE || ''}">
+              <input type="tel" id="phone-number-input" class="input-field" placeholder="+15551234567">
               <button class="send-code-btn" id="phone-send-code-btn" onclick="sendPhoneVerification()">Send Code</button>
             </div>
             <div class="otp-verify-row" id="phone-otp-row" style="display:none;">

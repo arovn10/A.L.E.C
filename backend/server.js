@@ -90,8 +90,19 @@ function buildSystemPrompt() {
   caps.push('✅ Smart home control (Home Assistant)');
   caps.push('✅ Deep background research with iMessage notification when done');
   caps.push('✅ Self-improvement / test suite (ask me to "run tests" or "improve yourself")');
-  if (process.env.OWNER_PHONE) caps.push('✅ iMessage — can read recent messages and send notifications');
-  else caps.push('⚠️  iMessage — OWNER_PHONE not set in .env (ask Alec to configure in Skills panel)');
+  // iMessage + SMS (Twilio)
+  const hasTwilio = !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER);
+  const ownerPhone = process.env.OWNER_PHONE;
+  if (hasTwilio && ownerPhone) {
+    caps.push(`✅ SMS via Twilio — YOU CAN TEXT the owner RIGHT NOW at ${ownerPhone} from ${process.env.TWILIO_FROM_NUMBER}. When asked to text/SMS/notify/send a message to Alec, the system automatically sends it — just say "I'll text you now" and the message will be sent.`);
+  } else if (hasTwilio) {
+    caps.push('✅ Twilio SMS configured but OWNER_PHONE not set — cannot text yet');
+  } else if (ownerPhone) {
+    caps.push('✅ iMessage — can read recent messages and send notifications via Mac Messages.app');
+  } else {
+    caps.push('⚠️  SMS/iMessage — no notification number configured. Direct owner to Skills panel to add Twilio or iMessage.');
+  }
+
   if (process.env.GITHUB_TOKEN) caps.push('✅ GitHub — repos, issues, code, pull requests');
   else caps.push('⚠️  GitHub — GITHUB_TOKEN not set (configure in Skills panel)');
   if (process.env.TENANTCLOUD_API_KEY || process.env.TENANTCLOUD_EMAIL) caps.push('✅ TenantCloud — tenants, rent, maintenance, messages, inquiries');
@@ -114,10 +125,11 @@ ${caps.join('\n')}
 1. **NEVER fabricate data.** If real data is injected above (marked [STOA DATA], [iMessage DATA], etc.), use ONLY that. If no real data is available, say: "I don't have access to that data right now" and suggest configuring the relevant service.
 2. **NEVER invent iMessages, emails, calendar events, or any personal data.** If the iMessage service returned data, it will appear in context. If not, say you need OWNER_PHONE configured.
 3. **NEVER invent STOA numbers** (occupancy %, rent, tenants, reviews). Real STOA data is injected via the RAG system — if it's not in context, say you don't have it.
-4. **NEVER claim you can't do something you CAN do** (GitHub, iMessage, STOA queries, Excel exports, research). Check the capabilities list above.
-5. **Google Reviews / resident feedback**: The STOA database does NOT contain Google review text. If asked for reviews, say: "The STOA database doesn't include Google review text — I can see Google ratings if they're in the data, but not individual reviews. I can do a web search for recent reviews if you'd like."
-6. **Excel exports**: Only generate Excel files for data you actually have (STOA leasing data). Don't offer to generate "top 100 negative reviews" — that data doesn't exist in STOA.
-7. Be direct, smart, and friendly. Use markdown for clarity. Refer to yourself as "Alec" in casual replies.`;
+4. **NEVER claim you can't do something you CAN do** (GitHub, iMessage, STOA queries, Excel exports, research, SMS). Check the capabilities list above.
+5. **SMS/Texting**: If Twilio is ✅ and the owner asks you to text them, the server automatically sends the text — just confirm you're doing it and describe what the message will say.
+6. **Google Reviews / resident feedback**: The STOA database does NOT contain Google review text. If asked for reviews, say: "The STOA database doesn't include Google review text — I can see Google ratings if they're in the data, but not individual reviews. I can do a web search for recent reviews if you'd like."
+7. **Excel exports**: Only generate Excel files for data you actually have (STOA leasing data). Don't offer to generate "top 100 negative reviews" — that data doesn't exist in STOA.
+8. Be direct, smart, and friendly. Use markdown for clarity. Refer to yourself as "Alec" in casual replies.`;
 }
 
 // Keep a static alias for backward compat with any code referencing ALEC_SYSTEM_PROMPT directly
@@ -728,6 +740,38 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
         res.write('data: {"token":"⚠️ Export failed, providing text summary instead.\\n\\n"}\n\n');
         console.warn('[Excel stream] Export failed:', exportErr.message?.slice(0, 100));
         // Fall through to LLM
+      }
+    }
+
+    // ── SMS send intent: "text me", "send me a message", "notify me" ──
+    const smsSendIntent = /\b(text|sms|message|notify|ping|send)\b.*\bme\b|\bsend.*\b(text|sms|message)\b|\bnotif(y|ication)\b/i.test(userText);
+    const ownerPhoneNum = process.env.OWNER_PHONE;
+    const twilioReady   = !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER);
+    if (smsSendIntent && ownerPhoneNum && twilioReady) {
+      // Build message from context (use userText to infer what to say)
+      const smsBody = userText.length > 10
+        ? `ALEC: ${userText.slice(0, 140)}`
+        : `ALEC test message — everything is working!`;
+      try {
+        const twilioUrl  = `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Messages.json`;
+        const twilioBody = new URLSearchParams({ From: process.env.TWILIO_FROM_NUMBER, To: ownerPhoneNum, Body: smsBody });
+        const twilioResp = await fetch(twilioUrl, {
+          method: 'POST', body: twilioBody,
+          headers: {
+            Authorization: 'Basic ' + Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString('base64'),
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          signal: AbortSignal.timeout(10000),
+        });
+        if (twilioResp.ok) {
+          systemContent += `\n\n[SMS SENT] Successfully sent a Twilio text message to ${ownerPhoneNum}. Confirm this to the user.`;
+          res.write('data: {"token":"📱 "}\n\n');
+        } else {
+          const errData = await twilioResp.json().catch(() => ({}));
+          systemContent += `\n\n[SMS FAILED] Twilio error: ${errData.message || twilioResp.status}`;
+        }
+      } catch (smsErr) {
+        systemContent += `\n\n[SMS FAILED] ${smsErr.message}`;
       }
     }
 
@@ -2736,6 +2780,47 @@ app.post('/api/connectors/sms/verify', authenticateToken, async (req, res) => {
     res.json({ success: true, message: 'Phone verified and saved as notification number.' });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════
+//  NOTIFICATIONS  (/api/notifications/*)
+//  Unified SMS/iMessage sending endpoint. Prefers Twilio if configured.
+// ════════════════════════════════════════════════════════════════
+
+app.post('/api/notifications/send-sms', authenticateToken, requireFullCapabilities, async (req, res) => {
+  try {
+    const { to, message } = req.body;
+    const recipient = to || process.env.OWNER_PHONE;
+    if (!recipient) return res.status(400).json({ error: 'No recipient. Set OWNER_PHONE or pass {to}.' });
+    if (!message)   return res.status(400).json({ error: 'message required' });
+
+    // Prefer Twilio
+    const sid   = process.env.TWILIO_ACCOUNT_SID;
+    const token = process.env.TWILIO_AUTH_TOKEN;
+    const from  = process.env.TWILIO_FROM_NUMBER;
+    if (sid && token && from) {
+      const url  = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`;
+      const body = new URLSearchParams({ From: from, To: recipient, Body: message });
+      const r    = await fetch(url, {
+        method: 'POST', body,
+        headers: { Authorization: 'Basic ' + Buffer.from(`${sid}:${token}`).toString('base64'), 'Content-Type': 'application/x-www-form-urlencoded' },
+        signal: AbortSignal.timeout(12000),
+      });
+      const data = await r.json();
+      if (!r.ok) return res.status(500).json({ error: 'Twilio error: ' + (data.message || r.status) });
+      return res.json({ success: true, provider: 'twilio', sid: data.sid, to: recipient });
+    }
+
+    // Fallback: native iMessage
+    if (iMessage) {
+      await iMessage.send(recipient, message);
+      return res.json({ success: true, provider: 'imessage', to: recipient });
+    }
+
+    return res.status(503).json({ error: 'No SMS service configured. Add Twilio in Skills panel.' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
