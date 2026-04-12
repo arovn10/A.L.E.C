@@ -29,7 +29,7 @@ You help with smart home control, STOA real estate database queries, reminders, 
 Be concise, helpful, and natural. Do not claim capabilities you do not have. Answer in 1-3 sentences unless the user asks for detail.`;
 
 // ── LM Studio client ─────────────────────────────────────────────
-const LM_BASE = process.env.LM_STUDIO_URL || 'http://127.0.0.1:1234';
+const LM_BASE = process.env.OLLAMA_URL || process.env.LM_STUDIO_URL || 'http://127.0.0.1:11434';
 
 async function detectModel() {
   try {
@@ -46,15 +46,15 @@ async function callLMStudio(messages) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'local-model',
+      model: process.env.OLLAMA_MODEL || 'gemma3:27b-it-qat',
       messages,
       temperature: 0.7,
       max_tokens: 512,
       stream: false,
     }),
-    signal: AbortSignal.timeout(60000),
+    signal: AbortSignal.timeout(90000),
   });
-  if (!resp.ok) throw new Error(`LM Studio HTTP ${resp.status}`);
+  if (!resp.ok) throw new Error(`Ollama HTTP ${resp.status}`);
   const data = await resp.json();
   return data.choices?.[0]?.message?.content?.trim() || 'I could not generate a response.';
 }
@@ -227,7 +227,7 @@ class VoiceInterface {
 
     } catch (err) {
       console.error('LM Studio error:', err.message);
-      const fallback = 'I\'m having trouble reaching my language model right now. Please check that LM Studio is running on port 1234.';
+      const fallback = 'I\'m having trouble reaching my language model right now. Please check that Ollama is running (ollama serve).';
       session.send({
         type:     'response',
         response: fallback,
