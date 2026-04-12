@@ -1829,6 +1829,7 @@ let _voiceRecognition = null;
 let _voiceListening = false;
 let _voiceCommandMode = false;  // true while capturing a command after wake word
 let _voiceSpeaking = false;     // true while TTS is playing
+let _wakeDetected = false;      // set when wake word heard, cleared after command start
 const _isAndroid = /android/i.test(navigator.userAgent);
 const _isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
 
@@ -1966,18 +1967,25 @@ function _startWakeWordLoop() {
     for (let i = event.resultIndex; i < event.results.length; i++) {
       const transcript = event.results[i][0].transcript.toLowerCase().trim();
       if (transcript.includes('hey alec') || transcript.includes('hey a.l.e.c')
-          || transcript.includes('hey aleck') || transcript.includes('hey alex')) {
-        // Wake word detected!
-        _voiceRecognition.stop();
-        _startCommandCapture();
+          || transcript.includes('hey aleck') || transcript.includes('hey alex')
+          || (transcript.includes('alec') && transcript.length < 12)) {
+        // Wake word detected — set flag, stop loop; onend will start command capture
+        _wakeDetected = true;
+        try { _voiceRecognition.stop(); } catch {}
         return;
       }
     }
   };
 
   _voiceRecognition.onend = () => {
-    // Restart the loop unless we're in command mode or stopped
-    if (_voiceListening && !_voiceCommandMode && !_voiceSpeaking) {
+    if (!_voiceListening || _voiceSpeaking) return;
+    if (_voiceCommandMode) return; // already captured, don't restart loop
+    // Check if wake word was the last thing heard (onresult set _wakeDetected)
+    if (_wakeDetected) {
+      _wakeDetected = false;
+      // Mic is now fully released — safe to start command capture
+      setTimeout(_startCommandCapture, 200);
+    } else {
       setTimeout(_startWakeWordLoop, 300);
     }
   };
@@ -1998,62 +2006,84 @@ function _startWakeWordLoop() {
   try { _voiceRecognition.start(); } catch {}
 }
 
-function _startCommandCapture() {
+function _startCommandCapture(attempt) {
+  attempt = attempt || 1;
   _voiceCommandMode = true;
-  toast('🎤 Listening for your command...', 'info');
+
+  // Update neuron state if voice-integration.js is loaded
+  if (typeof setState === 'function') setState('listening');
+  toast('🎤 Go ahead…', 'info');
 
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) { _voiceCommandMode = false; return; }
 
   const cmdRecog = new SR();
   cmdRecog.continuous = false;
-  cmdRecog.interimResults = false;
+  cmdRecog.interimResults = true;   // show interim so user knows it's listening
   cmdRecog.lang = 'en-US';
+  cmdRecog.maxAlternatives = 1;
 
   let gotResult = false;
 
   cmdRecog.onresult = (event) => {
-    gotResult = true;
-    const command = event.results[0][0].transcript;
-    toast(`🎤 "${command}"`, 'info');
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      if (event.results[i].isFinal) {
+        gotResult = true;
+        const command = event.results[i][0].transcript.trim();
+        if (!command) break;
+        toast(`🎤 "${command}"`, 'info');
 
-    // Set flag so sendMessage knows to speak the response
-    state._voiceTriggered = true;
+        // Drive neuron to thinking
+        if (typeof setState === 'function') setState('thinking');
 
-    // Inject into chat and send
-    const ci = document.getElementById('chat-input');
-    if (ci) {
-      ci.value = command;
-      ci.dispatchEvent(new Event('input'));
-      sendMessage();
+        // Set flag so sendMessage fires TTS
+        state._voiceTriggered = true;
+
+        const ci = document.getElementById('chat-input');
+        if (ci) {
+          ci.value = command;
+          ci.dispatchEvent(new Event('input'));
+          sendMessage();
+        }
+      }
     }
   };
 
   cmdRecog.onend = () => {
     _voiceCommandMode = false;
     if (!gotResult) {
-      toast('Didn\'t catch that. Say "Hey ALEC" again.', 'warning');
-      // No result — resume wake word immediately
-      if (_voiceListening) setTimeout(_startWakeWordLoop, 1000);
+      if (attempt < 2) {
+        // Retry once automatically — user may have paused
+        setTimeout(() => _startCommandCapture(attempt + 1), 300);
+      } else {
+        toast('Didn\'t catch that — say "Hey ALEC" to try again.', 'warning');
+        if (typeof setState === 'function') setState('idle');
+        if (_voiceListening) setTimeout(_startWakeWordLoop, 800);
+      }
     } else {
-      // Got a result — speakResponse.onend SHOULD resume the loop,
-      // but set a safety fallback in case TTS doesn't fire onend
+      // Got command — resume wake word after response (with 20s safety fallback)
+      if (typeof setState === 'function') setState('idle');
       setTimeout(() => {
         if (_voiceListening && !_voiceSpeaking && !_voiceCommandMode) {
           _startWakeWordLoop();
         }
-      }, 15000); // 15s fallback
+      }, 20000);
     }
   };
 
-  cmdRecog.onerror = () => {
+  cmdRecog.onerror = (e) => {
     _voiceCommandMode = false;
-    if (_voiceListening) setTimeout(_startWakeWordLoop, 1000);
+    if (e.error === 'no-speech' && attempt < 2) {
+      setTimeout(() => _startCommandCapture(attempt + 1), 300);
+    } else {
+      if (typeof setState === 'function') setState('idle');
+      if (_voiceListening) setTimeout(_startWakeWordLoop, 800);
+    }
   };
 
   try { cmdRecog.start(); } catch {
     _voiceCommandMode = false;
-    if (_voiceListening) setTimeout(_startWakeWordLoop, 1000);
+    if (_voiceListening) setTimeout(_startWakeWordLoop, 800);
   }
 }
 
