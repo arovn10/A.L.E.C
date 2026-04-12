@@ -277,13 +277,23 @@ let micAmp = 0;
 let ttsAmp = 0;
 let ampInterval = null;
 
+let _wakeWasActive = false; // track if wake word loop was running when we took over
+
 function toggleMic() {
   if (isRecording) { stopMic(); } else { startMic(); }
 }
 
 window.stopMic = function stopMic() {
-  if (recognition) { try { recognition.stop(); } catch(_){} }
-  stopAmpMeter(); isRecording = false; updateMicBtn();
+  if (recognition) { try { recognition.abort(); } catch(_){} recognition = null; }
+  stopAmpMeter();
+  isRecording = false;
+  updateMicBtn();
+  window.setState('idle');
+  // Re-enable wake word loop if it was active before we took the mic
+  if (_wakeWasActive && typeof startVoiceListening === 'function') {
+    _wakeWasActive = false;
+    setTimeout(startVoiceListening, 400);
+  }
 };
 
 function startMic() {
@@ -292,16 +302,33 @@ function startMic() {
     if (typeof toast === 'function') toast('Voice recognition requires Chrome or Edge.', 'warning');
     return;
   }
+
+  // Pause wake word loop — Chrome only allows one SpeechRecognition at a time
+  if (typeof _voiceListening !== 'undefined' && _voiceListening) {
+    _wakeWasActive = true;
+    if (typeof stopVoiceListening === 'function') stopVoiceListening();
+  }
+
   if (window.speechSynthesis) window.speechSynthesis.cancel();
   if (window._ttsAudio) { try { window._ttsAudio.pause(); } catch(_){} }
 
+  // Small delay to ensure Chrome releases the mic from the wake word session
+  setTimeout(_doStart, 250);
+}
+
+function _doStart() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   recognition = new SR();
-  recognition.continuous = false;
+  recognition.continuous    = true;   // keep listening until ⏹ is tapped
   recognition.interimResults = true;
-  recognition.lang = 'en-US';
+  recognition.lang           = 'en-US';
+  recognition.maxAlternatives = 1;
+
+  let sentFinal = false;
 
   recognition.onstart = async () => {
     isRecording = true;
+    sentFinal = false;
     window.setState('listening');
     updateMicBtn();
     try {
@@ -311,28 +338,37 @@ function startMic() {
   };
 
   recognition.onend = () => {
-    isRecording = false; stopAmpMeter(); updateMicBtn();
-    const bar = document.getElementById('alec-interim');
-    if (bar) { bar.textContent=''; bar.classList.remove('active'); }
-    if (currentState === 'listening' || currentState === 'transcribing') window.setState('idle');
+    // continuous=true fires onend only when aborted or on error — restart unless user stopped
+    if (isRecording && !sentFinal) {
+      // Unexpected end — restart
+      try { recognition.start(); } catch(_) { _handleStop(); }
+    } else {
+      _handleStop();
+    }
   };
 
   recognition.onerror = (e) => {
-    isRecording = false; stopAmpMeter(); updateMicBtn();
     const code = (e && e.error) ? e.error : 'error';
-    if (code === 'not-allowed' && typeof toast === 'function')
-      toast('Microphone blocked — allow in browser settings.', 'error');
-    window.setState('idle');
+    if (code === 'not-allowed') {
+      if (typeof toast === 'function') toast('Microphone blocked — allow in browser settings.', 'error');
+      _handleStop();
+      return;
+    }
+    // aborted = user stopped, no-speech = silence, network = reconnect
+    if (code === 'aborted') { _handleStop(); return; }
+    // For no-speech just keep going (recognition restarts via onend)
   };
 
   recognition.onresult = (ev) => {
     let interim = '', final = '';
     for (let i = ev.resultIndex; i < ev.results.length; i++) {
-      if (ev.results[i].isFinal) final += ev.results[i][0].transcript;
+      if (ev.results[i].isFinal) final += ev.results[i][0].transcript + ' ';
       else interim += ev.results[i][0].transcript;
     }
+
     const bar = document.getElementById('alec-interim');
     const ovt = document.getElementById('alec-ov-transcript');
+
     if (interim) {
       window.setState('transcribing');
       if (bar) { bar.textContent = interim; bar.classList.add('active'); }
@@ -340,18 +376,35 @@ function startMic() {
       const ci = document.getElementById('chat-input');
       if (ci) ci.value = interim;
     }
-    if (final) {
+    if (final.trim()) {
+      sentFinal = true;
       if (bar) { bar.textContent=''; bar.classList.remove('active'); }
-      if (ovt) ovt.textContent = final;
+      if (ovt) ovt.textContent = final.trim();
       const ci = document.getElementById('chat-input');
       if (ci) { ci.value = final.trim(); ci.dispatchEvent(new Event('input')); }
       if (typeof state !== 'undefined') state._voiceTriggered = true;
       if (typeof sendMessage === 'function') sendMessage();
+      // Stop recording after a command is sent
+      try { recognition.abort(); } catch(_){}
     }
   };
 
   try { recognition.start(); }
-  catch(e) { if (typeof toast === 'function') toast('Cannot start mic: ' + e.message, 'error'); }
+  catch(e) {
+    isRecording = false; updateMicBtn();
+    if (typeof toast === 'function') toast('Cannot start mic: ' + e.message, 'error');
+  }
+}
+
+function _handleStop() {
+  stopAmpMeter();
+  isRecording = false;
+  updateMicBtn();
+  if (currentState === 'listening' || currentState === 'transcribing') window.setState('idle');
+  if (_wakeWasActive && typeof startVoiceListening === 'function') {
+    _wakeWasActive = false;
+    setTimeout(startVoiceListening, 400);
+  }
 }
 
 function updateMicBtn() {
