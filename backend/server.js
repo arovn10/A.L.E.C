@@ -2479,11 +2479,34 @@ app.delete('/api/history/conversations/:id', authenticateToken, (req, res) => {
 // ════════════════════════════════════════════════════════════════
 
 app.get('/api/connectors/catalog', authenticateToken, (req, res) => {
-  if (!skillsReg) return res.json({ success: true, catalog: {}, skills: [] });
+  if (!skillsReg) return res.json({ success: true, catalog: { skills: [], byCategory: {} } });
   try {
-    const catalog = skillsReg.getCatalog();
-    const flat = Object.values(catalog).flat();
-    res.json({ success: true, catalog, skills: flat });
+    const catalog = skillsReg.getCatalog(); // { skills: [...], byCategory: {...} }
+
+    // Enrich each skill with current configured status (without exposing values)
+    const cfg = (() => {
+      try { return require('fs').existsSync(require('path').join(__dirname, '../data/skills-config.json'))
+        ? JSON.parse(require('fs').readFileSync(require('path').join(__dirname, '../data/skills-config.json'), 'utf8'))
+        : { skills: {} }; } catch { return { skills: {} }; }
+    })();
+
+    const enrich = (skill) => {
+      const saved   = cfg.skills?.[skill.id] || {};
+      const envVars = (skill.fields || []).filter(f => f.required).map(f => f.envVar);
+      const configured = envVars.length === 0
+        ? true  // no required creds (e.g. VS Code)
+        : envVars.some(k => process.env[k] || saved[k]);
+      return { ...skill, configured };
+    };
+
+    const enriched = {
+      skills: catalog.skills.map(enrich),
+      byCategory: Object.fromEntries(
+        Object.entries(catalog.byCategory).map(([cat, skills]) => [cat, skills.map(enrich)])
+      ),
+    };
+
+    res.json({ success: true, catalog: enriched });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -2500,22 +2523,34 @@ app.post('/api/connectors/:skillId/credentials', authenticateToken, requireFullC
 });
 
 app.get('/api/connectors/:skillId/status', authenticateToken, async (req, res) => {
-  if (!skillsReg) return res.json({ configured: false });
+  if (!skillsReg) return res.json({ configured: false, connected: false });
   try {
-    const status = await skillsReg.checkStatus(req.params.skillId);
-    res.json({ success: true, ...status });
+    const status = await skillsReg.getSkillStatus(req.params.skillId);
+    // Normalize: always include a top-level `connected` boolean so UI can check one field
+    const connected = !!(
+      status.connected || status.authenticated || status.configured ||
+      status.ownerPhoneConfigured || status.propertyCount >= 0 ||
+      status.serviceCount >= 0 || !status.error
+    );
+    res.json({ success: true, connected, ...status });
   } catch (err) {
-    res.json({ success: false, error: err.message });
+    res.json({ success: false, connected: false, error: err.message });
   }
 });
 
 app.get('/api/connectors/:skillId/credentials', authenticateToken, requireFullCapabilities, (req, res) => {
   if (!skillsReg) return res.json({ fields: {} });
   try {
-    const status = skillsReg.getCredentialStatus(req.params.skillId);
-    res.json({ success: true, ...status });
+    // Returns array of {key, label, required, configured, source}
+    // Convert to { fields: { KEY: true/false } } for the frontend
+    const statusArr = skillsReg.getCredentialStatus(req.params.skillId);
+    const fields = {};
+    if (Array.isArray(statusArr)) {
+      statusArr.forEach(f => { fields[f.key] = f.configured; });
+    }
+    res.json({ success: true, fields });
   } catch (err) {
-    res.json({ success: false, error: err.message });
+    res.json({ success: false, fields: {}, error: err.message });
   }
 });
 
