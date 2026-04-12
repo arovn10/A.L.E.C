@@ -74,6 +74,19 @@ const skillsReg    = (() => { try { return require('../services/skillsRegistry.j
 llamaEngine.warmUp();
 
 /**
+ * Normalize a US phone number to E.164 (+1XXXXXXXXXX) for Twilio.
+ * Handles: 2154857259, 215-485-7259, (215) 485-7259, +12154857259, etc.
+ */
+function toE164(phone) {
+  if (!phone) return null;
+  const digits = String(phone).replace(/\D/g, '');
+  if (digits.length === 10) return '+1' + digits;          // domestic 10-digit
+  if (digits.length === 11 && digits[0] === '1') return '+' + digits; // 1XXXXXXXXXX
+  if (digits.length > 10) return '+' + digits;             // already has country code
+  return '+1' + digits; // best guess
+}
+
+/**
  * System prompt — generated fresh on every request so the date is always accurate.
  * LLMs have a training cutoff and don't know the current date unless told explicitly.
  */
@@ -122,8 +135,8 @@ Current date and time: ${dateStr} at ${timeStr}.
 ${caps.join('\n')}
 
 ## Critical Rules — NEVER Violate These
-1. **NEVER fabricate data.** If real data is injected above (marked [STOA DATA], [iMessage DATA], etc.), use ONLY that. If no real data is available, say: "I don't have access to that data right now" and suggest configuring the relevant service.
-2. **NEVER invent iMessages, emails, calendar events, or any personal data.** If the iMessage service returned data, it will appear in context. If not, say you need OWNER_PHONE configured.
+1. **NEVER fabricate data.** If real data is injected above (marked [STOA DATA], [iMessage DATA], etc.), use ONLY that. If no real data is available, say: "I don't have access to that data right now."
+2. **iMessages HARD RULE: If you do NOT see "[iMessage DATA" in this system prompt, you have ZERO iMessages to report. Say "I couldn't read your messages right now" — NEVER invent names, messages, or conversations. Not even as examples. Not even to be helpful.**
 3. **NEVER invent STOA numbers** (occupancy %, rent, tenants, reviews). Real STOA data is injected via the RAG system — if it's not in context, say you don't have it.
 4. **NEVER claim you can't do something you CAN do** (GitHub, iMessage, STOA queries, Excel exports, research, SMS). Check the capabilities list above.
 5. **SMS/Texting**: If Twilio is ✅ and the owner asks you to text them, the server automatically sends the text — just confirm you're doing it and describe what the message will say.
@@ -611,7 +624,7 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     }
 
     // ── iMessage RAG: inject real messages if user asks about them ──
-    const iMsgIntent = /\b(check|read|show|get|my)\b.*\b(i?message|texts?|sms|messages?)\b|\b(recent|new|unread)\b.*\b(message|text)\b|\bwho texted\b|\bdid.*message\b/i.test(userText);
+    const iMsgIntent = /\b(check|read|show|get|look at|fetch|see)\b.{0,30}\b(imessages?|messages?|texts?|sms)\b|\b(recent|new|unread|latest)\b.{0,20}\b(imessages?|messages?|texts?)\b|\bwho texted\b|\bdid.*text(ed)?\b|\bany.*messages\b/i.test(userText);
     if (iMsgIntent && iMessage) {
       try {
         const convos = await iMessage.getConversations();
@@ -754,7 +767,7 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
         : `ALEC test message — everything is working!`;
       try {
         const twilioUrl  = `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Messages.json`;
-        const twilioBody = new URLSearchParams({ From: process.env.TWILIO_FROM_NUMBER, To: ownerPhoneNum, Body: smsBody });
+        const twilioBody = new URLSearchParams({ From: process.env.TWILIO_FROM_NUMBER, To: toE164(ownerPhoneNum), Body: smsBody });
         const twilioResp = await fetch(twilioUrl, {
           method: 'POST', body: twilioBody,
           headers: {
@@ -776,7 +789,7 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
     }
 
     // ── iMessage RAG (stream) ─────────────────────────────────
-    const iMsgIntentStream = /\b(check|read|show|get|my)\b.*\b(i?message|texts?|sms|messages?)\b|\b(recent|new|unread)\b.*\b(message|text)\b|\bwho texted\b|\bdid.*message\b/i.test(userText);
+    const iMsgIntentStream = /\b(check|read|show|get|look at|fetch|see)\b.{0,30}\b(imessages?|messages?|texts?|sms)\b|\b(recent|new|unread|latest)\b.{0,20}\b(imessages?|messages?|texts?)\b|\bwho texted\b|\bdid.*text(ed)?\b|\bany.*messages\b/i.test(userText);
     if (iMsgIntentStream && iMessage) {
       try {
         res.write('data: {"token":"💬 "}\n\n');
@@ -2723,13 +2736,13 @@ app.post('/api/connectors/sms/send-verification', authenticateToken, async (req,
 
     if (twilioSid && twilioToken && twilioFrom) {
       const url  = `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`;
-      const body = new URLSearchParams({ From: twilioFrom, To: phone, Body: message });
+      const body = new URLSearchParams({ From: twilioFrom, To: toE164(phone), Body: message });
       const resp = await fetch(url, {
         method: 'POST', body,
         headers: { Authorization: 'Basic ' + Buffer.from(`${twilioSid}:${twilioToken}`).toString('base64'), 'Content-Type': 'application/x-www-form-urlencoded' },
       });
       if (!resp.ok) {
-        const err = await resp.json();
+        const err = await resp.json().catch(() => ({}));
         return res.status(500).json({ error: 'SMS failed: ' + (err.message || resp.status) });
       }
     } else if (iMessage) {
@@ -2801,7 +2814,7 @@ app.post('/api/notifications/send-sms', authenticateToken, requireFullCapabiliti
     const from  = process.env.TWILIO_FROM_NUMBER;
     if (sid && token && from) {
       const url  = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`;
-      const body = new URLSearchParams({ From: from, To: recipient, Body: message });
+      const body = new URLSearchParams({ From: from, To: toE164(recipient), Body: message });
       const r    = await fetch(url, {
         method: 'POST', body,
         headers: { Authorization: 'Basic ' + Buffer.from(`${sid}:${token}`).toString('base64'), 'Content-Type': 'application/x-www-form-urlencoded' },
