@@ -7,7 +7,8 @@
     "start": "node backend/server.js",
     "dev": "nodemon backend/server.js",
     "build": "echo 'No build step required'",
-    "test": "jest"
+    "test": "jest --testEnvironment=node --forceExit --detectOpenHandles",
+    "test:ci": "jest --testEnvironment=node --forceExit --detectOpenHandles --ci --coverage"
   },
   "keywords": [
     "ai",
@@ -16,7 +17,7 @@
     "adaptive-learning",
     "voice-interface"
   ],
-  "author": "Your Name",
+  "author": "Alec Rovner",
   "license": "MIT",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.25.0",
@@ -30,7 +31,16 @@
     "@types/express": "^4.17.21",
     "@types/jsonwebtoken": "^9.0.6",
     "@types/ws": "^8.5.11",
-    "nodemon": "^3.1.4"
+    "jest": "^29.7.0",
+    "nodemon": "^3.1.4",
+    "supertest": "^7.2.2"
+  },
+  "jest": {
+    "testMatch": [
+      "**/__tests__/**/*.test.js"
+    ],
+    "testEnvironment": "node",
+    "verbose": true
   },
   "engines": {
     "node": ">=18.0.0"

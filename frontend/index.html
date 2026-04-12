@@ -22,8 +22,8 @@
     <header class="header">
       <div class="logo-section">
         <div class="alec-avatar" id="alecAvatar">
-          <div class="avatar-ring"></div>
-          <div class="avatar-core"></div>
+          <canvas id="neuronCanvas" width="72" height="72" aria-label="A.L.E.C. neural activity"></canvas>
+          <div class="avatar-ring" id="avatarRing"></div>
         </div>
         <div class="header-text">
           <h1>A.L.E.C.</h1>
@@ -31,6 +31,9 @@
           <div class="status-indicator" id="statusIndicator">
             <span class="status-dot"></span>
             <span class="status-text">Online - Ready to Learn</span>
+          </div>
+          <div class="voice-state-badge hidden" id="voiceStateBadge">
+            <span id="voiceStateText">idle</span>
           </div>
         </div>
       </div>
@@ -204,6 +207,7 @@
   </div>
 
   <!-- JavaScript -->
+  <script src="neuron.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

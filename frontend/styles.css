@@ -105,41 +105,95 @@ body {
 }
 
 .alec-avatar {
-  width: 60px;
-  height: 60px;
+  width: 72px;
+  height: 72px;
   position: relative;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+  background: radial-gradient(circle at center, #0f172a 60%, #1e293b 100%);
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
+}
+
+#neuronCanvas {
+  border-radius: 50%;
+  display: block;
 }
 
 .avatar-ring {
   position: absolute;
-  width: 100%;
-  height: 100%;
+  inset: -3px;
   border-radius: 50%;
   border: 2px solid var(--accent-color);
+  box-shadow: 0 0 12px var(--accent-color);
   animation: pulseRing 2s ease-in-out infinite;
-}
-
-.avatar-core {
-  width: 60%;
-  height: 60%;
-  background: rgba(255, 255, 255, 0.9);
-  border-radius: 50%;
-  animation: corePulse 1.5s ease-in-out infinite;
+  transition: border-color 0.4s ease, box-shadow 0.4s ease;
+  pointer-events: none;
 }
 
 @keyframes pulseRing {
   0%, 100% { transform: scale(1); opacity: 0.8; }
-  50% { transform: scale(1.1); opacity: 1; }
+  50% { transform: scale(1.06); opacity: 1; }
 }
 
-@keyframes corePulse {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.05); }
+/* Voice state badge — shows under header text */
+.voice-state-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 500;
+  margin-top: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border: 1px solid currentColor;
+  opacity: 0.85;
+  transition: background 0.3s, color 0.3s;
+}
+
+.voice-state-badge.hidden { display: none; }
+
+.voice-state-idle        { color: #6366f1; }
+.voice-state-listening   { color: #06b6d4; animation: statePulse 0.6s ease-in-out infinite; }
+.voice-state-transcribing{ color: #06b6d4; }
+.voice-state-thinking    { color: #f59e0b; animation: statePulse 0.4s ease-in-out infinite; }
+.voice-state-speaking    { color: #10b981; }
+.voice-state-interrupted { color: #f97316; }
+.voice-state-error       { color: #ef4444; }
+.voice-state-muted       { color: #475569; }
+.voice-state-offline-fallback { color: #6b7280; }
+
+@keyframes statePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Source provenance badge on chat messages */
+.source-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-family: 'JetBrains Mono', monospace;
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-left: 6px;
+  vertical-align: middle;
+  opacity: 0.7;
+}
+.source-deterministic  { background: #1e3a5f; color: #60a5fa; }
+.source-home-assistant { background: #14532d; color: #4ade80; }
+.source-stoa-db        { background: #3b1f5e; color: #c084fc; }
+.source-lm-inference   { background: #451a03; color: #fb923c; }
+.source-refusal        { background: #450a0a; color: #f87171; }
+.source-error          { background: #450a0a; color: #ef4444; }
+
+@media (prefers-reduced-motion: reduce) {
+  .avatar-ring,
+  .voice-state-listening,
+  .voice-state-thinking { animation: none; }
 }
 
 .header-text h1 {

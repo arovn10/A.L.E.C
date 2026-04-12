@@ -1,67 +1,40 @@
-name: Deploy Notification & Tailscale IP
+name: Deploy Notification
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 jobs:
-  notify-and-deploy:
+  notify:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Get Tailscale IP (simulated)
+      - name: Get Tailscale IP (placeholder)
         id: tailscale
-        run: |
-          echo "tailscale_ip=192.168.1.100" >> $GITHUB_OUTPUT
+        run: echo "tailscale_ip=100.x.x.x" >> "$GITHUB_OUTPUT"
 
       - name: Send Telegram Notification
+        continue-on-error: true
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          TAILSCALE_IP: ${{ steps.tailscale.outputs.tailscale_ip }}
         run: |
-          COMMIT_MSG=$(git log -1 --pretty=%B)
-          MESSAGE="🚀 A.L.E.C. Deployment Complete!
-
-Latest Changes: ${COMMIT_MSG}
-
-Access Your AI Companion:
-- Tailscale IP: ${{ steps.taillescale.outputs.tailscale_ip }}
-- Port: 3001
-- URL: http://${{ steps.taillescale.outputs.tailscale_ip }}:3001
-
-Mobile Setup:
-1. Install Tailscale app on iPhone/iPad
-2. Connect to same network
-3. Navigate to IP in Safari
-4. Add to Home Screen for PWA experience"
-
-          curl -X POST \
+          MSG="A.L.E.C. deployed. Access: http://${TAILSCALE_IP}:3001"
+          curl -s -X POST \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -d chat_id="${CHAT_ID}" \
-            -d text="$MESSAGE" \
-            -d parse_mode=Markdown
+            -d "chat_id=${CHAT_ID}" \
+            --data-urlencode "text=${MSG}"
 
       - name: Send Email Notification
+        continue-on-error: true
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
           server_port: 587
           username: ${{ secrets.EMAIL_USERNAME }}
           password: ${{ secrets.EMAIL_PASSWORD }}
-          subject: "🚀 A.L.E.C. Deployment Complete - Tailscale IP Inside!"
-          body: |
-            Your A.L.E.C. Personal AI Companion has been successfully deployed!
-
-            Latest Changes: ${COMMIT_MSG}
-
-            Access Details:
-            - Tailscale IP: ${{ steps.taillescale.outputs.tailscale_ip }}
-            - Port: 3001
-
-            Mobile Setup Instructions included in repository.
-
-            Repository: https://github.com/arovn10/A.L.E.C
+          subject: "A.L.E.C. Deployment Complete"
+          body: "A.L.E.C. deployed. Tailscale: ${{ steps.tailscale.outputs.tailscale_ip }}:3001"

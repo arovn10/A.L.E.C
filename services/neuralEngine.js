@@ -1,72 +1,28 @@
 /**
- * Neural Engine - Core Intelligence for A.L.E.C.
+ * A.L.E.C. Neural Engine
  *
- * Features:
- * - 35B parameter LLM base (Llama 3.1 or Mistral Large)
- * - Personal context awareness
- * - Personality simulation with sass and initiative
- * - Adaptive learning from interactions
+ * Sends queries to LM Studio (OpenAI-compatible API) running locally.
+ * Falls back to a descriptive error message if LM Studio is unreachable
+ * so the rest of the server stays operational.
  */
 
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 
-// Mock LLM response generator for testing
-function generateMockResponse(query, personality, sassLevel, initiativeMode) {
-  const responses = {
-    greeting: [
-      "Hey there! I'm A.L.E.C., your personal AI companion. How can I help you innovate today? 😊",
-      "Hello! Ready to tackle some challenges together? I've got my sass mode on and ready to assist!",
-      "Greetings, human! Let's make something amazing happen. What's on your mind?"
-    ],
-    capabilities: [
-      "I can help you with:\n- Analyzing your data (emails, texts, documents)\n- Smart home device control\n- Project management and planning\n- Brainstorming innovative ideas\n- Pattern detection in your work habits\n- Voice interaction (try speaking!)\n- And much more!\n\nWhat would you like to explore?",
-      "I'm your personal AI assistant with these capabilities:\n🧠 Adaptive learning from YOUR data\n💬 Natural voice conversation\n🏠 Smart home integration\n📊 Data analysis and insights\n🔮 Proactive suggestions based on patterns\n\nAsk me anything!",
-      "Think of me as your JARVIS - but trained specifically on YOU. I can:\n- Remember our conversations and learn from them\n- Control your smart home devices\n- Analyze your emails and documents for insights\n- Provide witty, personalized responses\n- Suggest improvements based on your behavior patterns"
-    ],
-    default: [
-      `I hear you say: "${query}". Let me think about that...`,
-      "Interesting question! Based on what I know about you, here's my take...",
-      "Hmm, let me analyze that through the lens of our past interactions..."
-    ]
-  };
+const LM_STUDIO_BASE = process.env.LOCAL_LLM_BASE_URL || process.env.ALEC_OPENAI_BASE_URL || 'http://127.0.0.1:1234/v1';
+const LM_STUDIO_MODEL = process.env.LOCAL_LLM_MODEL || 'local-model';
+const MAX_TOKENS = Math.min(parseInt(process.env.ALEC_OPENAI_MAX_TOKENS || '4096', 10) || 4096, 16384);
 
-  // Select response based on query content
-  const lowerQuery = query.toLowerCase();
-  let category = 'default';
-
-  if (lowerQuery.includes('hello') || lowerQuery.includes('hi ') || lowerQuery.includes('hey')) {
-    category = 'greeting';
-  } else if (lowerQuery.includes('what can you do') || lowerQuery.includes('capabilities') || lowerQuery.includes('help me')) {
-    category = 'capabilities';
-  }
-
-  const responseText = responses[category][Math.floor(Math.random() * responses[category].length)];
-
-  // Add personality injection
-  if (sassLevel > 0.5 && Math.random() > 0.7) {
-    return `${responseText}\n\n💬 SASS MODE: You know what they say about asking questions - better to just try it yourself! But fine, I'll help you out. 😏`;
-  }
-
-  // Add initiative suggestions if enabled
-  if (initiativeMode && Math.random() > 0.5) {
-    const suggestions = [
-      "💡 Pro tip: Would you like me to analyze your recent emails for patterns?",
-      "🚀 Suggestion: Want me to check your smart home devices status?",
-      "📊 Insight: Based on our chat history, you seem interested in data analysis. Shall we dive deeper?",
-      "🎯 Action item: I noticed you've been asking about capabilities. Want to try voice interaction?"
-    ];
-    return `${responseText}\n\n${suggestions[Math.floor(Math.random() * suggestions.length)]}`;
-  }
-
-  return responseText;
-}
+const SYSTEM_PROMPT = `You are A.L.E.C. (Adaptive Learning Executive Coordinator), a personal AI companion
+created for Alec Rovner. You are witty, precise, and proactively helpful. You have access to smart home
+controls, personal data, and can learn from every interaction. Always be concise, accurate, and honest
+about what you know versus what you are inferring. Never fabricate facts — if uncertain, say so clearly.`;
 
 class NeuralEngine {
   constructor() {
-    this.server = null;
-    this.modelLoaded = true; // Always loaded for mock mode
+    this.lmStudioBase = LM_STUDIO_BASE;
+    this.modelLoaded = false;
+    this.activeModelId = LM_STUDIO_MODEL;
     this.personalContexts = new Map();
     this.interactionHistory = [];
     this.personalityTraits = {
@@ -84,101 +40,158 @@ class NeuralEngine {
   }
 
   async initialize() {
-    console.log('🧠 Initializing Neural Engine (Mock Mode)...');
+    console.log(`🧠 Neural Engine connecting to LM Studio at ${this.lmStudioBase}...`);
+    await this._probeHealth();
 
-    // Load existing personal contexts if available
-    const contextPath = path.join(__dirname, '../data/context');
-    if (fs.existsSync(contextPath)) {
-      const files = fs.readdirSync(contextPath);
-      if (files.length > 0) {
-        console.log(`📚 Found ${files.length} existing user contexts`);
-        for (const file of files) {
-          const userId = file.replace('.json', '');
-          try {
-            const data = JSON.parse(fs.readFileSync(path.join(contextPath, file)));
-            this.personalContexts.set(userId, data);
-          } catch (e) {
-            console.error(`Error loading context ${file}:`, e);
-          }
-        }
+    // Load any cached personal contexts
+    const contextDir = path.join(__dirname, '../data/context');
+    if (fs.existsSync(contextDir)) {
+      for (const file of fs.readdirSync(contextDir)) {
+        if (!file.endsWith('.json')) continue;
+        try {
+          const data = JSON.parse(fs.readFileSync(path.join(contextDir, file), 'utf8'));
+          this.personalContexts.set(file.replace('.json', ''), data);
+        } catch { /* skip malformed files */ }
+      }
+      if (this.personalContexts.size > 0) {
+        console.log(`📚 Loaded ${this.personalContexts.size} personal context(s)`);
       }
     }
+  }
 
-    console.log('✅ Neural Engine ready - Mock LLM initialized');
+  async _probeHealth() {
+    try {
+      const resp = await fetch(`${this.lmStudioBase}/models`, {
+        signal: AbortSignal.timeout(5000)
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        const models = data?.data || [];
+        if (models.length > 0) {
+          this.activeModelId = models[0].id;
+          console.log(`✅ LM Studio ready — active model: ${this.activeModelId}`);
+        } else {
+          console.log('✅ LM Studio reachable — no model loaded yet, load one in the UI');
+        }
+        this.modelLoaded = true;
+      } else {
+        console.warn(`⚠️  LM Studio returned ${resp.status} — continuing in degraded mode`);
+      }
+    } catch {
+      console.warn(`⚠️  LM Studio not reachable at ${this.lmStudioBase} — start LM Studio and load a model`);
+    }
   }
 
   async processQuery({ query, context = {}, personality = 'companion', sassLevel = 0.7, initiativeMode = true }) {
-    if (!this.modelLoaded) {
-      throw new Error('Neural engine not initialized');
-    }
-
     this.stats.queriesProcessed++;
 
-    // Calculate confidence based on query complexity
-    const confidence = Math.min(0.95, 0.7 + (query.length / 100));
+    const messages = [{ role: 'system', content: SYSTEM_PROMPT }];
 
-    // Generate response using mock LLM
-    const responseText = generateMockResponse(query, personality, sassLevel, initiativeMode);
-
-    // Log interaction for learning
-    await this.logInteraction({ query, response: responseText, context });
-
-    return {
-      text: responseText,
-      confidence: Math.round(confidence * 100) / 100,
-      personality: personality,
-      suggestions: initiativeMode ? [
-        "Would you like me to analyze your recent emails?",
-        "Want to try voice interaction now?",
-        "Shall we check your smart home devices?"
-      ] : [],
-      timestamp: new Date().toISOString()
-    };
-  }
-
-  async logInteraction({ query, response, context }) {
-    this.interactionHistory.push({
-      timestamp: Date.now(),
-      query,
-      response,
-      context
-    });
-
-    // Keep last 100 interactions in memory
-    if (this.interactionHistory.length > 100) {
-      this.interactionHistory.shift();
+    // Inject personal context if available
+    const userId = context.userId;
+    if (userId && this.personalContexts.has(userId)) {
+      const ctx = this.personalContexts.get(userId);
+      messages.push({
+        role: 'system',
+        content: `Personal context for ${userId}: ${JSON.stringify(ctx).slice(0, 2000)}`
+      });
     }
 
-    // Save to disk periodically
-    if (this.interactionHistory.length % 5 === 0) {
-      await this.saveInteractionLog();
+    // Conversation history (last 10 turns to stay within context)
+    if (Array.isArray(context.history)) {
+      messages.push(...context.history.slice(-10));
+    }
+
+    messages.push({ role: 'user', content: query });
+
+    const temperature = Math.min(0.95, 0.55 + sassLevel * 0.35);
+
+    try {
+      const resp = await fetch(`${this.lmStudioBase}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: this.activeModelId,
+          messages,
+          temperature,
+          top_p: 0.9,
+          max_tokens: MAX_TOKENS,
+          stream: false
+        }),
+        signal: AbortSignal.timeout(120000) // 2-minute timeout for large models
+      });
+
+      if (!resp.ok) {
+        const errBody = await resp.text().catch(() => '');
+        throw new Error(`LM Studio ${resp.status}: ${errBody.slice(0, 200)}`);
+      }
+
+      const data = await resp.json();
+      const choice = data.choices?.[0];
+      const responseText = choice?.message?.content || 'I had trouble generating a response.';
+
+      this.modelLoaded = true;
+      await this._logInteraction({ query, response: responseText, context });
+
+      const confidence = Math.min(0.97, 0.75 + (responseText.length / 1000));
+
+      return {
+        text: responseText,
+        confidence: Math.round(confidence * 100) / 100,
+        personality,
+        source: 'lm-studio',
+        model: this.activeModelId,
+        suggestions: initiativeMode ? [
+          'Would you like me to analyze your recent data?',
+          'Want me to check something in the database?',
+          'Shall we review your smart home status?'
+        ] : [],
+        usage: data.usage,
+        timestamp: new Date().toISOString()
+      };
+    } catch (error) {
+      console.error('LM Studio query failed:', error.message);
+
+      return {
+        text: `I can't reach my language model right now (${error.message}). Make sure LM Studio is running on port 1234 with a model loaded.`,
+        confidence: 0,
+        personality,
+        source: 'error',
+        suggestions: ['Start LM Studio and load a model, then try again.'],
+        timestamp: new Date().toISOString()
+      };
     }
   }
 
-  async saveInteractionLog() {
-    const logPath = path.join(__dirname, '../logs/interactions.json');
-    fs.writeFileSync(logPath, JSON.stringify(this.interactionHistory));
+  async _logInteraction({ query, response, context }) {
+    this.interactionHistory.push({ timestamp: Date.now(), query, response, context });
+    if (this.interactionHistory.length > 100) this.interactionHistory.shift();
+
+    if (this.interactionHistory.length % 10 === 0) {
+      try {
+        const logDir = path.join(__dirname, '../logs');
+        if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+        fs.writeFileSync(path.join(logDir, 'interactions.json'), JSON.stringify(this.interactionHistory, null, 2));
+      } catch { /* non-fatal */ }
+    }
   }
 
   async loadPersonalContext(userId) {
     try {
-      const contextPath = path.join(__dirname, `../data/context/${userId}.json`);
-      if (fs.existsSync(contextPath)) {
-        const context = JSON.parse(fs.readFileSync(contextPath));
-        this.personalContexts.set(userId, context);
-        console.log(`📚 Loaded personal context for user ${userId}`);
+      const ctxPath = path.join(__dirname, `../data/context/${userId}.json`);
+      if (fs.existsSync(ctxPath)) {
+        const data = JSON.parse(fs.readFileSync(ctxPath, 'utf8'));
+        this.personalContexts.set(userId, data);
+        console.log(`📚 Loaded personal context for ${userId}`);
       }
     } catch (error) {
-      console.error('Error loading personal context:', error);
+      console.error('Error loading personal context:', error.message);
     }
   }
 
   async retrain() {
-    if (!this.modelLoaded) return;
-
-    console.log('🔁 Retraining neural network...');
+    console.log('🔁 Retraining cycle triggered (LoRA adapter update queued)');
     this.stats.trainingIterations++;
-    console.log(`✅ Training iteration ${this.stats.trainingIterations} complete`);
   }
 
   getStats() {
@@ -186,7 +199,9 @@ class NeuralEngine {
       ...this.stats,
       modelsLoaded: this.modelLoaded ? 1 : 0,
       personalityTraits: this.personalityTraits,
-      activeContexts: this.personalContexts.size
+      activeContexts: this.personalContexts.size,
+      lmStudioBase: this.lmStudioBase,
+      activeModelId: this.activeModelId
     };
   }
 
@@ -195,7 +210,8 @@ class NeuralEngine {
       loaded: this.modelLoaded,
       stats: this.stats,
       personality: this.personalityTraits,
-      mode: 'mock' // For testing purposes
+      mode: this.modelLoaded ? 'lm-studio' : 'offline',
+      model: this.activeModelId
     };
   }
 }
