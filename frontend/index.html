@@ -197,40 +197,53 @@
     <div class="panel-area">
 
       <!-- ─── CHAT PANEL ──────────────────────────────────── -->
-      <div id="panel-chat" class="panel active" style="display:flex;flex-direction:column;padding:0;">
-        <div class="chat-messages" id="chat-messages">
-          <!-- Welcome shown until first message -->
-          <div class="chat-welcome" id="chat-welcome">
-            <div style="font-size:3rem;">🤖</div>
-            <h2>Hey, I'm A.L.E.C. — your autonomous AI</h2>
-            <p>Adaptive Learning Executive Coordinator — your personal AI, trained on your data and continuously improving.</p>
-            <div class="suggestion-chips" id="suggestion-chips">
-              <div class="chip" data-prompt="What can you help me with?">What can you help me with?</div>
-              <div class="chip" data-prompt="Summarize the latest Stoa data">Summarize Stoa data</div>
-              <div class="chip" data-prompt="What's my model's current performance?">Model performance</div>
-              <div class="chip" data-prompt="Show me recent training metrics">Training metrics</div>
-              <div class="chip" data-prompt="Help me analyze a real estate deal">Analyze a deal</div>
-            </div>
+      <div id="panel-chat" class="panel active" style="display:flex;flex-direction:row;padding:0;overflow:hidden;">
+
+        <!-- Chat History Sidebar -->
+        <div id="chat-history-sidebar" style="width:220px;flex-shrink:0;border-right:1px solid var(--border);display:flex;flex-direction:column;background:var(--surface-1);overflow:hidden;">
+          <div style="padding:10px 12px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);">
+            <span style="font-size:0.75rem;font-weight:700;color:var(--text-muted);letter-spacing:.06em;text-transform:uppercase;">Chats</span>
+            <button id="new-chat-btn" title="New chat" style="background:var(--accent);border:none;color:#fff;border-radius:5px;padding:3px 8px;font-size:0.75rem;cursor:pointer;font-weight:600;">+ New</button>
           </div>
+          <div id="chat-history-list" style="flex:1;overflow-y:auto;padding:6px 0;"></div>
         </div>
 
-        <!-- Chat Input -->
-        <div class="chat-input-area">
-          <div class="attachment-preview" id="attachment-preview"></div>
-          <div class="chat-input-wrapper">
-            <button class="attach-btn" id="attach-btn" title="Attach file" type="button">📎</button>
-            <textarea
-              class="chat-input"
-              id="chat-input"
-              placeholder="Message A.L.E.C.…"
-              rows="1"
-              aria-label="Chat message input"
-            ></textarea>
-            <button class="send-btn" id="send-btn" title="Send message" type="button" disabled>
-              ➤
-            </button>
+        <!-- Main Chat Area -->
+        <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;">
+          <div class="chat-messages" id="chat-messages">
+            <!-- Welcome shown until first message -->
+            <div class="chat-welcome" id="chat-welcome">
+              <div style="font-size:3rem;">🤖</div>
+              <h2>Hey, I'm A.L.E.C. — your autonomous AI</h2>
+              <p>Adaptive Learning Executive Coordinator — your personal AI, trained on your data and continuously improving.</p>
+              <div class="suggestion-chips" id="suggestion-chips">
+                <div class="chip" data-prompt="What can you help me with?">What can you help me with?</div>
+                <div class="chip" data-prompt="How is the STOA portfolio performing?">STOA portfolio</div>
+                <div class="chip" data-prompt="Check my recent iMessages">Check iMessages</div>
+                <div class="chip" data-prompt="Research Google Ads optimization for apartment rentals">Research Google Ads</div>
+                <div class="chip" data-prompt="How is settlers trace performing over the last 6 months?">Settlers Trace trend</div>
+              </div>
+            </div>
           </div>
-          <input type="file" id="file-attach-input" style="display:none;" multiple />
+
+          <!-- Chat Input -->
+          <div class="chat-input-area">
+            <div class="attachment-preview" id="attachment-preview"></div>
+            <div class="chat-input-wrapper">
+              <button class="attach-btn" id="attach-btn" title="Attach file" type="button">📎</button>
+              <textarea
+                class="chat-input"
+                id="chat-input"
+                placeholder="Message A.L.E.C.…"
+                rows="1"
+                aria-label="Chat message input"
+              ></textarea>
+              <button class="send-btn" id="send-btn" title="Send message" type="button" disabled>
+                ➤
+              </button>
+            </div>
+            <input type="file" id="file-attach-input" style="display:none;" multiple />
+          </div>
         </div>
       </div>
 
@@ -506,40 +519,67 @@
 
       <!-- ─── SKILLS PANEL ─────────────────────────────────── -->
       <div id="panel-skills" class="panel">
-        <div class="panel-title"><span class="ptitle-icon">🔌</span> Skills & Connectors</div>
-        <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">Connect A.L.E.C. to your accounts and services. Credentials are encrypted at rest.</p>
+        <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;">
+          <span><span class="ptitle-icon">🔌</span> Skills & Connectors</span>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-ghost btn-sm" id="skills-refresh-btn">↻ Refresh</button>
+            <button class="btn btn-accent btn-sm" id="add-custom-skill-btn">+ Custom</button>
+          </div>
+        </div>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:20px;">Credentials are encrypted at rest. Configure any service to unlock its capabilities in chat.</p>
 
-        <!-- Installed Skills -->
-        <div class="section-header mb-16">
-          <div class="section-title"><span>✅</span> Installed</div>
-          <button class="btn btn-ghost btn-sm" id="skills-refresh-btn">↻ Refresh</button>
-        </div>
-        <div id="installed-skills-list" class="mb-24">
-          <div style="text-align:center;padding:24px;color:var(--text-dim);font-size:0.8rem;">Loading…</div>
-        </div>
-
-        <!-- Available Skills -->
-        <div class="section-header mb-16">
-          <div class="section-title"><span>📦</span> Available</div>
-        </div>
-        <div id="available-skills-list">
-          <div style="text-align:center;padding:24px;color:var(--text-dim);font-size:0.8rem;">Loading…</div>
+        <!-- Skill Catalog (rendered dynamically by app.js) -->
+        <div id="skills-catalog">
+          <div style="text-align:center;padding:40px;color:var(--text-dim);font-size:0.85rem;">
+            <div style="font-size:2rem;margin-bottom:8px;">🔌</div>
+            Loading connectors…
+          </div>
         </div>
 
         <!-- Skill Config Modal -->
-        <div id="skill-config-modal" style="position:fixed;inset:0;z-index:1000;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.7);">
-          <div class="card" style="max-width:500px;width:90%;max-height:80vh;overflow-y:auto;">
-            <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
-              <span id="skill-config-title">Configure Skill</span>
-              <button onclick="closeSkillConfig()" style="background:none;border:none;color:var(--text);cursor:pointer;font-size:18px;">✕</button>
+        <div id="skill-config-modal" style="position:fixed;inset:0;z-index:1000;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.75);backdrop-filter:blur(4px);">
+          <div class="card" style="max-width:520px;width:92%;max-height:85vh;overflow-y:auto;border:1px solid var(--border);box-shadow:0 24px 60px rgba(0,0,0,.6);">
+            <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+              <div>
+                <div id="skill-config-icon" style="font-size:1.5rem;display:inline;margin-right:8px;"></div>
+                <span id="skill-config-title" style="font-weight:700;font-size:1rem;">Configure Skill</span>
+              </div>
+              <button onclick="closeSkillConfig()" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:20px;line-height:1;">✕</button>
             </div>
-            <p id="skill-config-instructions" style="color:var(--text-muted);font-size:13px;margin-bottom:12px;"></p>
+            <p id="skill-config-instructions" style="color:var(--text-muted);font-size:12.5px;margin-bottom:16px;line-height:1.5;"></p>
             <div id="skill-config-fields"></div>
-            <div style="display:flex;gap:8px;margin-top:12px;">
-              <button class="btn-primary" onclick="saveSkillConfig()" style="flex:1;">Save & Connect</button>
-              <button class="btn-outline" onclick="closeSkillConfig()" style="flex:0;">Cancel</button>
+            <div style="display:flex;gap:8px;margin-top:16px;">
+              <button class="btn btn-primary" onclick="saveSkillConfig()" style="flex:1;" id="skill-save-btn">💾 Save & Connect</button>
+              <button class="btn btn-ghost" onclick="closeSkillConfig()">Cancel</button>
             </div>
-            <div id="skill-config-result" style="margin-top:8px;font-size:13px;"></div>
+            <div id="skill-config-result" style="margin-top:10px;font-size:12.5px;padding:8px 0;"></div>
+          </div>
+        </div>
+
+        <!-- Custom Skill Modal -->
+        <div id="custom-skill-modal" style="position:fixed;inset:0;z-index:1000;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.75);backdrop-filter:blur(4px);">
+          <div class="card" style="max-width:480px;width:92%;border:1px solid var(--border);">
+            <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+              <span style="font-weight:700;">Add Custom Skill / MCP</span>
+              <button onclick="closeCustomSkillModal()" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:20px;">✕</button>
+            </div>
+            <p style="color:var(--text-muted);font-size:12.5px;margin-bottom:16px;">Add any MCP server or custom connector. Provide an ID, display name, and any credential fields needed.</p>
+            <div style="display:grid;gap:10px;">
+              <div><label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:3px;">Skill ID (no spaces)</label>
+                <input type="text" id="cs-id" class="input-field" placeholder="my_custom_skill" style="width:100%;"></div>
+              <div><label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:3px;">Display Name</label>
+                <input type="text" id="cs-name" class="input-field" placeholder="My Custom Skill" style="width:100%;"></div>
+              <div><label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:3px;">Icon (emoji)</label>
+                <input type="text" id="cs-icon" class="input-field" placeholder="🔌" style="width:100%;"></div>
+              <div><label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:3px;">Description</label>
+                <input type="text" id="cs-desc" class="input-field" placeholder="What does this connector do?" style="width:100%;"></div>
+              <div><label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:3px;">Credential fields (comma-separated env var names, e.g. MY_API_KEY,MY_SECRET)</label>
+                <input type="text" id="cs-fields" class="input-field" placeholder="MY_API_KEY,MY_WEBHOOK_URL" style="width:100%;"></div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:16px;">
+              <button class="btn btn-primary" onclick="saveCustomSkill()" style="flex:1;">Add Skill</button>
+              <button class="btn btn-ghost" onclick="closeCustomSkillModal()">Cancel</button>
+            </div>
           </div>
         </div>
       </div>

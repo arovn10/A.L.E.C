@@ -458,13 +458,14 @@ function switchPanel(panelId) {
 
 function onPanelSwitch(panelId) {
   switch (panelId) {
+    case 'chat':     loadChatHistorySidebar(); break;
     case 'metrics':  loadMetrics(); break;
     case 'files':    loadFiles(); break;
     case 'training': loadTrainingStatus(); loadAdapters(); break;
     case 'skills':   loadSkills(); break;
     case 'stoa':     loadStoaStatus(); loadStoaTables(); break;
     case 'tasks':    loadTasks(); break;
-      case 'memory':   loadMemoryStats(); loadAllMemories(); break;
+    case 'memory':   loadMemoryStats(); loadAllMemories(); break;
     case 'finance':  loadLinkedAccounts(); loadPortfolio(); break;
     case 'settings': loadModelInfo(); buildPersonalitySliders(); break;
   }
@@ -897,88 +898,209 @@ document.getElementById('export-training-btn').addEventListener('click', async (
   }
 });
 
-/* ─── SKILLS ─────────────────────────────────────────────────── */
-async function loadSkills() {
-  await Promise.all([loadInstalledSkills(), loadAvailableSkills()]);
-}
+/* ─── CHAT HISTORY SIDEBAR ───────────────────────────────────── */
 
-async function loadInstalledSkills() {
-  const container = document.getElementById('installed-skills-list');
+async function loadChatHistorySidebar() {
+  const list = document.getElementById('chat-history-list');
+  if (!list) return;
   try {
-    const data = await api('GET', '/api/skills/installed');
-    const skills = Array.isArray(data) ? data : (data.skills || []);
-
-    if (!skills.length) {
-      container.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-dim);font-size:0.8rem;">No skills installed.</div>';
+    const data = await api('GET', '/api/history/conversations');
+    const convs = data.conversations || [];
+    if (!convs.length) {
+      list.innerHTML = '<div style="padding:12px 14px;color:var(--text-dim);font-size:11px;">No chats yet. Start a conversation!</div>';
       return;
     }
+    list.innerHTML = convs.map(c => `
+      <div class="chat-history-item ${state.currentConversationId === c.id ? 'active' : ''}"
+           data-conv-id="${escapeHtml(c.id)}"
+           onclick="loadConversation('${escapeHtml(c.id)}')"
+           title="${escapeHtml(c.title || 'New Chat')}"
+           style="position:relative;padding:8px 12px;cursor:pointer;border-radius:6px;margin:1px 4px;transition:background .15s;${state.currentConversationId === c.id ? 'background:var(--accent-dim,rgba(99,102,241,.15));' : ''}">
+        <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:155px;color:var(--text);">${escapeHtml(c.title || 'New Chat')}</div>
+        <div style="font-size:10px;color:var(--text-dim);margin-top:2px;">${timeAgo(c.updated_at)}</div>
+        <button onclick="event.stopPropagation();deleteConversation('${escapeHtml(c.id)}')"
+          style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:14px;padding:2px 4px;border-radius:3px;opacity:0;"
+          class="conv-delete-btn" title="Delete chat">×</button>
+      </div>`).join('');
 
-    container.innerHTML = skills.map(s => {
-      const status = s.actual_status || (s.auto_installed ? 'active' : 'needs_setup');
-      const hasConfig = s.requires_config || (s.config_fields && s.config_fields.length > 0);
-      const colors = { active: '#10b981', connected: '#10b981', needs_setup: '#f59e0b', error: '#ef4444' };
-      const labels = { active: 'ACTIVE', connected: 'CONNECTED', needs_setup: 'NEEDS SETUP', error: 'ERROR' };
-      const c = colors[status] || '#f59e0b';
-      const l = labels[status] || 'NEEDS SETUP';
-      return `
-        <div class="skill-item">
-          <div class="skill-icon">${s.icon || '🔌'}</div>
-          <div class="skill-info">
-            <div class="skill-name">${escapeHtml(s.name || '—')}</div>
-            <div class="skill-desc">${escapeHtml(s.description || '—')}</div>
-            ${s.setup_instructions && status === 'needs_setup' ? `<div style="font-size:11px;color:#f59e0b;margin-top:4px;">⚠️ ${escapeHtml(s.setup_instructions)}</div>` : ''}
-          </div>
-          <div style="display:flex;gap:6px;align-items:center;">
-            ${hasConfig ? `<button class="btn btn-ghost btn-sm" onclick="openSkillConfig('${s.id}')">⚙️ Configure</button>` : ''}
-            <span style="background:${c}20;color:${c};border:1px solid ${c}40;font-size:11px;padding:2px 8px;border-radius:4px;font-weight:600;">${l}</span>
-          </div>
-        </div>
-      `;
-    }).join('');
+    // Show delete on hover
+    list.querySelectorAll('.chat-history-item').forEach(el => {
+      const btn = el.querySelector('.conv-delete-btn');
+      el.addEventListener('mouseenter', () => { if (btn) btn.style.opacity = '1'; });
+      el.addEventListener('mouseleave', () => { if (btn) btn.style.opacity = '0'; });
+    });
   } catch {
-    container.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-dim);font-size:0.8rem;">No skills loaded.</div>';
+    list.innerHTML = '<div style="padding:12px 14px;color:var(--text-dim);font-size:11px;">History unavailable.</div>';
   }
 }
 
-async function loadAvailableSkills() {
-  const container = document.getElementById('available-skills-list');
+window.loadConversation = async function(convId) {
   try {
-    const data = await api('GET', '/api/skills/available');
-    const skills = Array.isArray(data) ? data : (data.skills || []);
-    const notInstalled = skills.filter(s => !s.installed);
+    const data = await api('GET', `/api/history/conversations/${convId}/messages`);
+    const messages = data.messages || [];
+    state.currentConversationId = convId;
+    state.chatHistory = messages.map(m => ({ role: m.role, content: m.content }));
 
-    if (!notInstalled.length) {
-      container.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-dim);font-size:0.8rem;">All skills installed!</div>';
-      return;
-    }
+    // Render messages
+    const chatMsgs = document.getElementById('chat-messages');
+    chatMsgs.innerHTML = '';
+    document.getElementById('chat-welcome')?.remove();
 
-    container.innerHTML = notInstalled.map(s => `
-      <div class="skill-item">
-        <div class="skill-icon">${s.icon || '📦'}</div>
-        <div class="skill-info">
-          <div class="skill-name">${escapeHtml(s.name || '—')}</div>
-          <div class="skill-desc">${escapeHtml(s.description || '—')}</div>
-        </div>
-        <button class="btn btn-accent btn-sm" onclick="installSkill('${escapeHtml(s.id || '')}')">Install</button>
-      </div>
-    `).join('');
-  } catch {
-    container.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-dim);font-size:0.8rem;">No available skills listed.</div>';
-  }
-}
-
-window.installSkill = async function(skillId) {
-  try {
-    toast(`Installing skill ${skillId}…`, 'info');
-    await api('POST', '/api/skills/install', { skill_id: skillId });
-    toast('Skill installed!', 'success');
-    loadSkills();
+    messages.forEach(m => {
+      if (m.role === 'user') {
+        addUserMessage(m.content);
+      } else if (m.role === 'assistant') {
+        addAssistantMessage(m.content);
+      }
+    });
+    scrollToBottom();
+    loadChatHistorySidebar();
   } catch (err) {
-    toast('Install failed: ' + err.message, 'error');
+    toast('Failed to load conversation: ' + err.message, 'error');
   }
 };
 
+window.deleteConversation = async function(convId) {
+  if (!confirm('Delete this chat?')) return;
+  try {
+    await api('DELETE', `/api/history/conversations/${convId}`);
+    if (state.currentConversationId === convId) {
+      startNewChat();
+    }
+    loadChatHistorySidebar();
+  } catch (err) {
+    toast('Delete failed: ' + err.message, 'error');
+  }
+};
+
+function startNewChat() {
+  state.currentConversationId = null;
+  state.chatHistory = [];
+  const chatMsgs = document.getElementById('chat-messages');
+  chatMsgs.innerHTML = '';
+  // Re-inject welcome
+  const welcome = document.createElement('div');
+  welcome.id = 'chat-welcome';
+  welcome.className = 'chat-welcome';
+  welcome.innerHTML = `
+    <div style="font-size:3rem;">🤖</div>
+    <h2>Hey, I'm A.L.E.C. — your autonomous AI</h2>
+    <p>Adaptive Learning Executive Coordinator — your personal AI, trained on your data and continuously improving.</p>
+    <div class="suggestion-chips">
+      <div class="chip" data-prompt="How is the STOA portfolio performing?">STOA portfolio</div>
+      <div class="chip" data-prompt="Check my recent iMessages">Check iMessages</div>
+      <div class="chip" data-prompt="Research Google Ads optimization for apartment rentals">Research Google Ads</div>
+      <div class="chip" data-prompt="How is settlers trace performing over the last 6 months?">Settlers Trace trend</div>
+    </div>`;
+  chatMsgs.appendChild(welcome);
+  // Re-attach chip clicks
+  welcome.querySelectorAll('.chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const p = chip.dataset.prompt;
+      if (p) { document.getElementById('chat-input').value = p; sendMessage(); }
+    });
+  });
+  loadChatHistorySidebar();
+}
+
+// New Chat button
+const newChatBtn = document.getElementById('new-chat-btn');
+if (newChatBtn) newChatBtn.addEventListener('click', startNewChat);
+
+// Load chat sidebar on init
+setTimeout(loadChatHistorySidebar, 500);
+
+/* ─── SKILLS / CONNECTORS ────────────────────────────────────── */
+async function loadSkills() {
+  const catalog = document.getElementById('skills-catalog');
+  if (!catalog) return;
+  catalog.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-dim);font-size:0.8rem;">Loading…</div>';
+
+  try {
+    const data = await api('GET', '/api/connectors/catalog');
+    const byCategory = data.catalog || {};
+
+    if (Object.keys(byCategory).length === 0) {
+      catalog.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-dim);font-size:0.8rem;">No connectors available.</div>';
+      return;
+    }
+
+    const categoryIcons = {
+      Communication: '💬', Development: '⚙️', Property: '🏢', Cloud: '☁️',
+      Research: '🔬', Automation: '🤖', AI: '🧠', Custom: '🔌'
+    };
+
+    let html = '';
+    for (const [category, skills] of Object.entries(byCategory)) {
+      html += `
+        <div style="margin-bottom:28px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border);">
+            <span style="font-size:1.1rem;">${categoryIcons[category] || '🔌'}</span>
+            <span style="font-weight:700;font-size:0.85rem;letter-spacing:.04em;color:var(--text-muted);text-transform:uppercase;">${escapeHtml(category)}</span>
+          </div>
+          <div style="display:grid;gap:10px;">
+            ${skills.map(s => renderSkillCard(s)).join('')}
+          </div>
+        </div>`;
+    }
+    catalog.innerHTML = html;
+  } catch (err) {
+    catalog.innerHTML = `<div style="padding:24px;color:var(--danger-color);font-size:0.8rem;">Failed to load connectors: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderSkillCard(s) {
+  const configured = s.configured;
+  const statusColor = configured ? '#10b981' : '#6b7280';
+  const statusLabel = configured ? 'CONNECTED' : 'NOT SET UP';
+  const statusBg    = configured ? 'rgba(16,185,129,.12)' : 'rgba(107,114,128,.1)';
+  return `
+    <div style="display:flex;align-items:center;gap:12px;padding:12px 14px;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;transition:border-color .2s;" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+      <div style="font-size:1.6rem;flex-shrink:0;">${s.icon || '🔌'}</div>
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:600;font-size:0.9rem;margin-bottom:2px;">${escapeHtml(s.name)}</div>
+        <div style="font-size:0.75rem;color:var(--text-muted);line-height:1.4;">${escapeHtml(s.description || '')}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0;">
+        <span style="background:${statusBg};color:${statusColor};border:1px solid ${statusColor}40;font-size:10px;padding:2px 7px;border-radius:4px;font-weight:700;letter-spacing:.04em;">${statusLabel}</span>
+        <button class="btn btn-ghost btn-sm" onclick="openSkillConfig('${escapeHtml(s.id)}')" style="font-size:11px;padding:3px 10px;">⚙️ Configure</button>
+      </div>
+    </div>`;
+}
+
 document.getElementById('skills-refresh-btn').addEventListener('click', loadSkills);
+
+// Custom skill button
+const addCustomBtn = document.getElementById('add-custom-skill-btn');
+if (addCustomBtn) {
+  addCustomBtn.addEventListener('click', () => {
+    document.getElementById('custom-skill-modal').style.display = 'flex';
+  });
+}
+
+window.closeCustomSkillModal = function() {
+  document.getElementById('custom-skill-modal').style.display = 'none';
+};
+
+window.saveCustomSkill = async function() {
+  const id    = document.getElementById('cs-id')?.value?.trim();
+  const name  = document.getElementById('cs-name')?.value?.trim();
+  const icon  = document.getElementById('cs-icon')?.value?.trim() || '🔌';
+  const desc  = document.getElementById('cs-desc')?.value?.trim();
+  const fields = (document.getElementById('cs-fields')?.value?.trim() || '').split(',').map(f => f.trim()).filter(Boolean);
+  if (!id || !name) { toast('ID and Name are required', 'warning'); return; }
+  try {
+    await api('POST', '/api/connectors/custom', {
+      id, name, icon, description: desc,
+      fields: fields.map(k => ({ key: k, label: k, type: 'text', envVar: k })),
+    });
+    toast('Custom skill added!', 'success');
+    closeCustomSkillModal();
+    loadSkills();
+  } catch (err) {
+    toast('Failed: ' + err.message, 'error');
+  }
+};
 
 const mcpConnectBtn = document.getElementById('mcp-connect-btn');
 if (mcpConnectBtn) {
@@ -1421,6 +1543,7 @@ async function sendMessage() {
     message: userText,
     messages: state.chatHistory,
     session_id: state.sessionId,
+    conversation_id: state.currentConversationId || null,
   };
   if (attachments.length) body.file_ids = attachments.map(a => a.fileId);
 
@@ -1530,7 +1653,7 @@ async function sendMessage() {
 
     const srcBadge = document.createElement('span');
     srcBadge.className = 'alec-src-badge alec-src-llm';
-    srcBadge.textContent = '⚡ Ollama';
+    srcBadge.textContent = '⚡ LLaMA 3.1 (local)';
 
     const fbDiv = document.createElement('div');
     fbDiv.className = 'feedback-btns';
@@ -1558,6 +1681,9 @@ async function sendMessage() {
     // Store in history
     state.chatHistory.push({ role: 'assistant', content: fullText });
     if (state.chatHistory.length > 20) state.chatHistory = state.chatHistory.slice(-20);
+
+    // Refresh chat sidebar (conversation was auto-named by server)
+    setTimeout(loadChatHistorySidebar, 600);
 
     // Streaming TTS: flush final partial sentence then let queue drain
     if (ttsActive) {
@@ -1871,80 +1997,101 @@ let _currentSkillConfig = null;
 
 window.openSkillConfig = async function(skillId) {
   try {
-    const data = await api('GET', '/api/skills/available');
-    const skill = (data.skills || []).find(s => s.id === skillId);
+    // Get full catalog to find skill definition
+    const data = await api('GET', '/api/connectors/catalog');
+    const allSkills = Object.values(data.catalog || {}).flat();
+    const skill = allSkills.find(s => s.id === skillId);
     if (!skill) { toast('Skill not found', 'error'); return; }
 
     _currentSkillConfig = skill;
     const modal = document.getElementById('skill-config-modal');
+    document.getElementById('skill-config-icon').textContent = skill.icon || '🔌';
     document.getElementById('skill-config-title').textContent = `Configure ${skill.name}`;
-    document.getElementById('skill-config-instructions').textContent = skill.setup_instructions || '';
+    document.getElementById('skill-config-instructions').textContent = skill.description || '';
     document.getElementById('skill-config-result').textContent = '';
 
-    const fieldsEl = document.getElementById('skill-config-fields');
-    const fields = skill.config_fields || [];
-    if (fields.length === 0) {
-      fieldsEl.innerHTML = '<p style="color:var(--text-muted);">No configuration needed for this skill.</p>';
-    } else {
-      // Get existing config
-      const installed = await api('GET', '/api/skills/installed');
-      const existing = (installed.skills || []).find(s => s.id === skillId);
-      const existingConfig = existing?.config || {};
+    // Load existing credential status (which fields are filled)
+    let existingStatus = {};
+    try {
+      const statusData = await api('GET', `/api/connectors/${skillId}/credentials`);
+      existingStatus = statusData.fields || {};
+    } catch {}
 
+    const fieldsEl = document.getElementById('skill-config-fields');
+    const fields = skill.fields || [];
+    if (fields.length === 0) {
+      fieldsEl.innerHTML = '<p style="color:var(--text-muted);font-size:13px;">This connector requires no additional credentials.</p>';
+    } else {
       fieldsEl.innerHTML = fields.map(f => {
-        const val = existingConfig[f.key] || '';
-        if (f.type === 'select') {
-          return `<div style="margin-bottom:8px;">
-            <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px;">${f.label}</label>
-            <select class="input-field skill-config-input" data-key="${f.key}" style="width:100%;">
-              ${(f.options || []).map(o => `<option value="${o}" ${val===o?'selected':''}>${o}</option>`).join('')}
-            </select>
-          </div>`;
-        }
-        return `<div style="margin-bottom:8px;">
-          <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px;">${f.label}</label>
-          <input type="${f.type || 'text'}" class="input-field skill-config-input" data-key="${f.key}" 
-                 placeholder="${f.placeholder || ''}" value="${val}" style="width:100%;">
+        const isFilled = existingStatus[f.key] === true;
+        const placeholder = isFilled ? `(already set — leave blank to keep)` : (f.placeholder || '');
+        return `<div style="margin-bottom:12px;">
+          <label style="font-size:11.5px;color:var(--text-muted);display:block;margin-bottom:4px;font-weight:600;">
+            ${escapeHtml(f.label)}${f.required ? ' <span style="color:#ef4444;">*</span>' : ''}
+            ${isFilled ? ' <span style="color:#10b981;font-size:10px;">✓ set</span>' : ''}
+          </label>
+          <input
+            type="${f.type === 'password' ? 'password' : (f.type || 'text')}"
+            class="input-field skill-config-input"
+            data-key="${escapeHtml(f.key)}"
+            data-env="${escapeHtml(f.envVar || f.key)}"
+            placeholder="${escapeHtml(placeholder)}"
+            style="width:100%;box-sizing:border-box;"
+          >
+          ${f.hint ? `<div style="font-size:11px;color:var(--text-dim);margin-top:3px;">${escapeHtml(f.hint)}</div>` : ''}
         </div>`;
       }).join('');
     }
 
     modal.style.display = 'flex';
-    modal.classList.remove('hidden');
   } catch (e) {
     toast('Failed to load skill config: ' + e.message, 'error');
   }
 };
 
 window.closeSkillConfig = function() {
-  const modal = document.getElementById('skill-config-modal');
-  modal.style.display = 'none';
-  modal.classList.add('hidden');
+  document.getElementById('skill-config-modal').style.display = 'none';
   _currentSkillConfig = null;
 };
 
 window.saveSkillConfig = async function() {
   if (!_currentSkillConfig) return;
-  const config = {};
+  const credentials = {};
   document.querySelectorAll('.skill-config-input').forEach(el => {
-    const key = el.dataset.key;
+    const key = el.dataset.env || el.dataset.key;
     const val = el.value.trim();
-    if (key && val) config[key] = val;
+    if (key && val) credentials[key] = val;
   });
 
   const resultEl = document.getElementById('skill-config-result');
+  const saveBtn  = document.getElementById('skill-save-btn');
+  saveBtn.disabled = true;
+  saveBtn.textContent = '⏳ Saving…';
+
   try {
-    // First install if not already
-    await api('POST', '/api/skills/install', { skill_id: _currentSkillConfig.id, config });
-    // Then configure
-    await api('POST', '/api/skills/configure', { skill_id: _currentSkillConfig.id, config });
-    resultEl.style.color = 'var(--success-color)';
-    resultEl.textContent = '✅ Connected and saved! Credentials are encrypted.';
+    await api('POST', `/api/connectors/${_currentSkillConfig.id}/credentials`, credentials);
+    resultEl.style.color = '#10b981';
+    resultEl.innerHTML = '✅ Credentials saved and applied — no restart needed! Testing connection…';
+
+    // Live status check
+    try {
+      const statusData = await api('GET', `/api/connectors/${_currentSkillConfig.id}/status`);
+      if (statusData.connected || statusData.authenticated || statusData.configured) {
+        resultEl.innerHTML = '✅ Connected and verified! Ready to use in chat.';
+      } else {
+        resultEl.innerHTML = '⚠️ Saved, but connection test failed: ' + (statusData.error || 'unknown error');
+        resultEl.style.color = '#f59e0b';
+      }
+    } catch {}
+
     loadSkills();
-    setTimeout(closeSkillConfig, 1500);
+    setTimeout(closeSkillConfig, 2500);
   } catch (e) {
-    resultEl.style.color = 'var(--danger-color)';
+    resultEl.style.color = '#ef4444';
     resultEl.textContent = 'Failed: ' + e.message;
+  } finally {
+    saveBtn.disabled = false;
+    saveBtn.textContent = '💾 Save & Connect';
   }
 };
 

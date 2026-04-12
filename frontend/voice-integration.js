@@ -37,6 +37,16 @@ let lerpTargetBig   = [99, 102, 241];
 window.setState = function(s) {
   if (!STATE_META[s]) s = 'idle';
   currentState = s;
+
+  // Show strip only during active voice states — hide when idle (text mode)
+  const strip = document.getElementById('alec-voice-strip');
+  if (strip) {
+    if (s === 'idle') {
+      strip.classList.remove('voice-active');
+    } else {
+      strip.classList.add('voice-active');
+    }
+  }
   const m = STATE_META[s];
   lerpTargetSmall = lerpTargetBig = hexToRgb(m.color);
 
@@ -70,12 +80,13 @@ function injectStyles() {
   const s = document.createElement('style');
   s.id = 'alec-voice-styles';
   s.textContent = `
-    /* ── Strip (small canvas in chat header) ── */
+    /* ── Strip (small canvas in chat header) — hidden unless voice is active ── */
     #alec-voice-strip {
-      display:flex; align-items:center; gap:10px; padding:8px 16px; flex-shrink:0;
+      display:none; align-items:center; gap:10px; padding:8px 16px; flex-shrink:0;
       background:linear-gradient(90deg,rgba(10,13,20,.98),rgba(17,24,39,.98));
       border-bottom:1px solid rgba(30,42,66,.7);
     }
+    #alec-voice-strip.voice-active { display:flex; }
     #alec-neuron-small { border-radius:50%; display:block; flex-shrink:0; cursor:pointer; }
     #alec-state-label { font-size:10px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; color:#06b6d4; transition:color .4s; }
     #alec-state-desc  { font-size:11px; color:#6b7280; margin-top:1px; }

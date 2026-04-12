@@ -1656,3 +1656,31 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
 .adapter-info { flex: 1; }
 .adapter-name { font-size: 0.8rem; font-weight: 500; color: var(--text); }
 .adapter-meta { font-size: 0.7rem; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; }
+
+/* ── Chat History Sidebar ───────────────────────────────────── */
+#chat-history-sidebar {
+  transition: width .2s ease;
+}
+
+.chat-history-item {
+  display: block;
+  border-radius: 6px;
+  transition: background .12s;
+}
+.chat-history-item:hover {
+  background: rgba(99,102,241,.1) !important;
+}
+.chat-history-item.active {
+  background: rgba(99,102,241,.15) !important;
+  border-left: 2px solid var(--primary);
+}
+
+/* Hide history sidebar on narrow screens */
+@media (max-width: 600px) {
+  #chat-history-sidebar { display: none !important; }
+}
+
+/* ── Skills catalog grid ──────────────────────────────────── */
+#skills-catalog .skill-category-section + .skill-category-section {
+  margin-top: 24px;
+}
