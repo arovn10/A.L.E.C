@@ -1,0 +1,54 @@
+{
+  "name": "alec-desktop",
+  "version": "1.0.0",
+  "description": "A.L.E.C. Desktop Control Center",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --mac",
+    "build:dmg": "electron-builder --mac dmg"
+  },
+  "build": {
+    "appId": "com.rovner.alec",
+    "productName": "A.L.E.C.",
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "assets/alec.icns",
+      "target": ["dmg", "zip"],
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "title": "A.L.E.C. Installer",
+      "icon": "assets/alec.icns"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../",
+        "to": "alec",
+        "filter": [
+          "backend/**/*",
+          "frontend/**/*",
+          "services/**/*",
+          "data/**/*",
+          ".env",
+          "package.json",
+          "package-lock.json",
+          "node_modules/**/*"
+        ]
+      }
+    ]
+  },
+  "devDependencies": {
+    "electron": "^32.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.2"
+  }
+}

@@ -1459,6 +1459,27 @@ async function sendMessage() {
     let buf      = '';
     const t0     = Date.now();
 
+    // ── Streaming TTS: speak each sentence as it completes ──────────
+    // Accumulates tokens and fires browser TTS the moment a sentence
+    // boundary appears — so the first words play in <500ms, not after
+    // the entire response finishes.
+    let ttsSentenceBuffer = '';
+    let ttsActive = state._voiceTriggered;
+
+    function flushTTSSentence(force = false) {
+      if (!ttsActive) return;
+      // Sentence boundary patterns
+      const bound = /(?<=[.!?])\s+(?=[A-Z"'])|(?<=\.)\s*$|\n\n/;
+      const parts = ttsSentenceBuffer.split(bound);
+      // Flush all complete parts; keep last (potentially incomplete) part
+      const toSpeak = force ? parts : parts.slice(0, -1);
+      ttsSentenceBuffer = force ? '' : (parts[parts.length - 1] || '');
+      toSpeak.forEach(s => {
+        const clean = s.trim();
+        if (clean.length > 3) _enqueueTTSChunk(clean);
+      });
+    }
+
     outer: while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -1480,6 +1501,11 @@ async function sendMessage() {
             cur.textContent = '▋';
             bubbleEl.appendChild(cur);
             scrollToBottom();
+            // Streaming TTS: buffer and flush on sentence boundaries
+            if (ttsActive) {
+              ttsSentenceBuffer += parsed.token;
+              flushTTSSentence(false);
+            }
           }
         } catch (e) { if (e.message && !e.message.includes('JSON')) throw e; }
       }
@@ -1527,8 +1553,19 @@ async function sendMessage() {
     state.chatHistory.push({ role: 'assistant', content: fullText });
     if (state.chatHistory.length > 20) state.chatHistory = state.chatHistory.slice(-20);
 
-    // Speak if voice-triggered
-    if (state._voiceTriggered && typeof speakResponse === 'function') {
+    // Streaming TTS: flush final partial sentence then let queue drain
+    if (ttsActive) {
+      flushTTSSentence(true); // force-flush any remaining buffer
+      // Resume wake word loop after TTS queue empties
+      _ttsQueueOnDrain(() => {
+        setTimeout(() => {
+          if (typeof _voiceListening !== 'undefined' && _voiceListening && !_voiceSpeaking && !_voiceCommandMode) {
+            _startWakeWordLoop();
+          }
+        }, 800);
+      });
+    } else if (state._voiceTriggered && typeof speakResponse === 'function') {
+      // Fallback: non-streaming TTS for edge cases
       speakResponse(fullText).catch(() => {}).finally(() => {
         setTimeout(() => {
           if (typeof _voiceListening !== 'undefined' && _voiceListening && !_voiceSpeaking && !_voiceCommandMode) {
@@ -1934,6 +1971,58 @@ function _loadVoiceState() {
 // ── TTS: speak A.L.E.C.'s response out loud ──
 // Active audio element for stopping playback
 let _ttsAudio = null;
+
+// ── Streaming TTS chunk queue ──────────────────────────────────────
+// Sentences arrive one by one as the LLM streams. We queue them and
+// play them back-to-back using SpeechSynthesisUtterance so there's
+// no gap between sentences.
+const _ttsChunkQueue   = [];
+let   _ttsDrainCbs     = [];
+let   _ttsChunkPlaying = false;
+
+function _enqueueTTSChunk(text) {
+  if (!text || !text.trim()) return;
+  _ttsChunkQueue.push(text.trim());
+  if (!_ttsChunkPlaying) _playNextTTSChunk();
+}
+
+function _playNextTTSChunk() {
+  if (!_ttsChunkQueue.length) {
+    _ttsChunkPlaying = false;
+    _ttsDrainCbs.forEach(cb => cb());
+    _ttsDrainCbs = [];
+    return;
+  }
+  _ttsChunkPlaying = true;
+  _voiceSpeaking   = true;
+  const text = _ttsChunkQueue.shift();
+
+  // Prefer browser speechSynthesis for low latency (no server round-trip)
+  if (window.speechSynthesis) {
+    const utt = new SpeechSynthesisUtterance(text);
+    utt.lang = 'en-AU';
+    utt.rate = 1.05;
+    const voices = window.speechSynthesis.getVoices();
+    const preferred = voices.find(v => v.lang === 'en-AU')
+      || voices.find(v => v.lang === 'en-GB')
+      || voices.find(v => v.lang.startsWith('en'));
+    if (preferred) utt.voice = preferred;
+    utt.onend   = () => _playNextTTSChunk();
+    utt.onerror = () => _playNextTTSChunk();
+    window.speechSynthesis.speak(utt);
+  } else {
+    _ttsChunkPlaying = false;
+    _playNextTTSChunk();
+  }
+}
+
+function _ttsQueueOnDrain(cb) {
+  if (!_ttsChunkPlaying && !_ttsChunkQueue.length) {
+    cb(); // already drained
+  } else {
+    _ttsDrainCbs.push(cb);
+  }
+}
 
 async function speakResponse(text) {
   // Server-side TTS via edge-tts (works in iframes, HA panels, everywhere)

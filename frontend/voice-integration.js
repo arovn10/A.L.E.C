@@ -82,35 +82,55 @@ function injectStyles() {
     #alec-vol-track   { width:56px; height:3px; background:rgba(255,255,255,.06); border-radius:2px; overflow:hidden; flex-shrink:0; }
     #alec-vol-fill    { height:100%; width:0%; background:linear-gradient(90deg,#06b6d4,#6366f1); transition:width .05s linear; }
 
-    /* ── Full-screen overlay ── */
+    /* ── Full-screen overlay (Jarvis HUD) ── */
     #alec-overlay {
       position:fixed; inset:0; z-index:9999;
-      background:rgba(5,8,15,.92);
-      backdrop-filter:blur(8px);
-      display:flex; flex-direction:column; align-items:center; justify-content:center; gap:24px;
+      background:rgba(2,4,12,.96);
+      display:flex; flex-direction:column; align-items:center; justify-content:center;
       opacity:0; pointer-events:none;
-      transition:opacity .3s ease;
+      transition:opacity .4s ease;
+      overflow:hidden;
     }
     #alec-overlay.active { opacity:1; pointer-events:all; }
-    #alec-ov-canvas { border-radius:50%; display:block; }
+
+    /* Full-screen canvas behind everything */
+    #alec-ov-canvas {
+      position:absolute; inset:0; width:100%; height:100%;
+      display:block;
+    }
+
+    /* HUD overlay content floats above canvas */
+    #alec-ov-content {
+      position:relative; z-index:2;
+      display:flex; flex-direction:column; align-items:center; gap:20px;
+      pointer-events:none;
+    }
+
     #alec-ov-glow {
-      position:absolute; width:380px; height:380px; border-radius:50%;
-      background:radial-gradient(circle,rgba(6,182,212,.12) 0%,transparent 70%);
+      position:absolute; inset:0;
       pointer-events:none; transition:background .5s;
     }
     #alec-ov-label {
-      font-size:13px; font-weight:700; letter-spacing:.15em; text-transform:uppercase;
+      font-size:11px; font-weight:800; letter-spacing:.3em; text-transform:uppercase;
       color:#06b6d4; transition:color .4s;
+      text-shadow:0 0 20px currentColor;
+      font-family:"SF Mono","Fira Code",monospace;
     }
-    #alec-ov-desc { font-size:15px; color:#9ca3af; margin-top:-12px; }
+    #alec-ov-desc {
+      font-size:13px; color:#4b6080; margin-top:-14px;
+      font-family:"SF Mono","Fira Code",monospace;
+      letter-spacing:.08em;
+    }
     #alec-ov-transcript {
-      font-size:18px; color:#e2e8f0; max-width:560px; text-align:center;
-      min-height:28px; font-style:italic; opacity:.7;
+      font-size:20px; color:#e2e8f0; max-width:600px; text-align:center;
+      min-height:32px; font-style:italic; opacity:.85;
+      text-shadow:0 0 30px rgba(6,182,212,.4);
     }
     #alec-ov-dismiss {
-      padding:8px 24px; border-radius:999px; border:1px solid rgba(255,255,255,.12);
-      background:rgba(255,255,255,.05); color:#6b7280; font-size:13px;
-      cursor:pointer; transition:all .2s; margin-top:8px;
+      padding:8px 24px; border-radius:999px; border:1px solid rgba(6,182,212,.2);
+      background:rgba(6,182,212,.05); color:#4b6080; font-size:12px;
+      cursor:pointer; transition:all .2s; margin-top:4px;
+      pointer-events:all; font-family:"SF Mono",monospace; letter-spacing:.05em;
     }
     #alec-ov-dismiss:hover { border-color:#ef4444; color:#ef4444; }
 
@@ -178,9 +198,13 @@ function injectOverlay() {
   const glow = document.createElement('div');
   glow.id = 'alec-ov-glow';
 
+  // Full-screen canvas — sized to window, not fixed 280x280
   const canvas = document.createElement('canvas');
   canvas.id = 'alec-ov-canvas';
-  canvas.width = 280; canvas.height = 280;
+
+  // Content floats above the canvas
+  const content = document.createElement('div');
+  content.id = 'alec-ov-content';
 
   const label = document.createElement('div');
   label.id = 'alec-ov-label';
@@ -196,31 +220,31 @@ function injectOverlay() {
   const dismiss = document.createElement('button');
   dismiss.id = 'alec-ov-dismiss';
   dismiss.type = 'button';
-  dismiss.textContent = '✕  Cancel';
+  dismiss.textContent = '✕  Dismiss';
   dismiss.addEventListener('click', () => {
-    _endConversation();                     // kill auto-resume session
+    _endConversation();
     overlay.classList.remove('active');
     window.setState('idle');
-    // Stop any active recognition / TTS
     if (window.speechSynthesis) window.speechSynthesis.cancel();
     if (window._ttsAudio) { try { window._ttsAudio.pause(); } catch(_){} }
     if (recognition) { try { recognition.abort(); } catch(_){} recognition = null; }
     stopAmpMeter();
     isRecording = false;
     updateMicBtn();
-    // Resume wake word loop if it was active before
     if (_wakeWasActive && typeof startVoiceListening === 'function') {
       _wakeWasActive = false;
       setTimeout(startVoiceListening, 600);
     }
   });
 
+  content.appendChild(label);
+  content.appendChild(desc);
+  content.appendChild(transcript);
+  content.appendChild(dismiss);
+
   overlay.appendChild(glow);
   overlay.appendChild(canvas);
-  overlay.appendChild(label);
-  overlay.appendChild(desc);
-  overlay.appendChild(transcript);
-  overlay.appendChild(dismiss);
+  overlay.appendChild(content);
   document.body.appendChild(overlay);
 }
 
@@ -551,79 +575,327 @@ function hexToRgb(h){ const n=parseInt(h.replace('#',''),16); return[(n>>16)&255
 function lerpC(a,b,t){ return[a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t]; }
 function rgb(c,a){ return`rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a})`; }
 
-// Node positions as fractions of canvas size (works for both 48px and 280px)
-const NODE_FRAC = [
+// ══════════════════════════════════════════════════════════════
+//  SMALL CANVAS (48×48 in header strip) — lightweight neural orb
+// ══════════════════════════════════════════════════════════════
+const SMALL_FRAC = [
   [.50,.50],[.27,.33],[.73,.33],[.20,.58],[.80,.58],
   [.50,.15],[.50,.85],[.08,.25],[.92,.25],
   [.05,.55],[.95,.55],[.27,.78],[.73,.78],
 ];
-const EDGES=[
-  [0,1],[0,2],[0,3],[0,4],[0,5],[0,6],
-  [1,3],[1,7],[1,5],[2,4],[2,8],[2,5],
-  [3,9],[3,6],[4,10],[4,6],
-  [5,7],[5,8],[6,11],[6,12],[7,9],[8,10],[9,11],[10,12],
-];
+const SMALL_EDGES=[[0,1],[0,2],[0,3],[0,4],[0,5],[0,6],[1,3],[1,7],[2,4],[2,8],[3,9],[4,10],[5,7],[5,8],[6,11],[6,12]];
 
-function buildNodes(W, H) {
-  return NODE_FRAC.map(([fx, fy]) => ({ x: fx*W, y: fy*H, r: Math.max(W/28, 2) + Math.random()*.5 }));
-}
+function buildSmallNodes(W,H){ return SMALL_FRAC.map(([fx,fy])=>({x:fx*W,y:fy*H,r:Math.max(W/28,2)})); }
 
 let animT = 0;
 const sparksSmall = [];
-const sparksBig   = [];
 
-function drawNeuron(ctx, W, H, nodes, sparks, lerpCur, lerpTarget, m) {
+function drawSmallNeuron(ctx, W, H, nodes, lerpCur, lerpTarget, m) {
   lerpCur = lerpC(lerpCur, lerpTarget, 0.06);
   const c = lerpCur;
+  const amp   = Math.max(micAmp, ttsAmp);
+  const pulse = m.intensity + amp*.3 + Math.sin(animT*3.1)*.05;
+
+  ctx.clearRect(0,0,W,H);
+  const bg=ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,W/2);
+  bg.addColorStop(0,rgb(c,pulse*.18)); bg.addColorStop(1,'transparent');
+  ctx.fillStyle=bg; ctx.fillRect(0,0,W,H);
+
+  SMALL_EDGES.forEach(([ai,bi])=>{
+    const a=nodes[ai],b=nodes[bi];
+    ctx.beginPath(); ctx.strokeStyle=rgb(c,.1+pulse*.25);
+    ctx.lineWidth=Math.max(.4,W/80); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+  });
+
+  if((currentState==='thinking'||currentState==='speaking')&&Math.random()<.12){
+    const ei=(Math.random()*SMALL_EDGES.length)|0;
+    sparksSmall.push({ai:SMALL_EDGES[ei][0],bi:SMALL_EDGES[ei][1],t:0,spd:.022+Math.random()*.02});
+  }
+  for(let i=sparksSmall.length-1;i>=0;i--){
+    const sp=sparksSmall[i]; sp.t+=sp.spd;
+    if(sp.t>=1){sparksSmall.splice(i,1);continue;}
+    const a=nodes[sp.ai],b=nodes[sp.bi];
+    const sx=a.x+(b.x-a.x)*sp.t, sy=a.y+(b.y-a.y)*sp.t;
+    ctx.beginPath(); ctx.arc(sx,sy,Math.max(1.2,W/22),0,Math.PI*2);
+    ctx.fillStyle=rgb(c,.9); ctx.fill();
+  }
+
+  nodes.forEach((n,i)=>{
+    const np=pulse+Math.sin(animT+i*.7)*.1;
+    const nr=n.r*(1+np*.3);
+    const gl=ctx.createRadialGradient(n.x,n.y,0,n.x,n.y,nr*3);
+    gl.addColorStop(0,rgb(c,np*.5)); gl.addColorStop(1,'transparent');
+    ctx.beginPath(); ctx.arc(n.x,n.y,nr*3,0,Math.PI*2); ctx.fillStyle=gl; ctx.fill();
+    ctx.beginPath(); ctx.arc(n.x,n.y,nr,0,Math.PI*2); ctx.fillStyle=rgb(c,.8+np*.2); ctx.fill();
+  });
+
+  return lerpCur;
+}
+
+// ══════════════════════════════════════════════════════════════
+//  BIG CANVAS — JARVIS-LEVEL FULL-SCREEN HUD
+//  Inspired by Iron Man's JARVIS interface.
+//  Layers: hex grid · concentric rings · 80-node neural web ·
+//          energy sparks · scan line · data streams · particle field
+// ══════════════════════════════════════════════════════════════
+
+// Build a rich neural network across the full canvas
+function buildJarvisNodes(W, H) {
+  const nodes = [];
+  // Centre hero node
+  nodes.push({ x: W*.5, y: H*.5, r: 6, role: 'hub' });
+  // Orbital ring 1 (8 nodes)
+  for (let i=0;i<8;i++){
+    const a=i/8*Math.PI*2, r=Math.min(W,H)*.16;
+    nodes.push({ x: W*.5+Math.cos(a)*r, y: H*.5+Math.sin(a)*r, r:4, role:'mid' });
+  }
+  // Orbital ring 2 (14 nodes)
+  for (let i=0;i<14;i++){
+    const a=i/14*Math.PI*2+.2, r=Math.min(W,H)*.29;
+    nodes.push({ x: W*.5+Math.cos(a)*r, y: H*.5+Math.sin(a)*r, r:3, role:'outer' });
+  }
+  // Scatter (20 nodes across the full canvas)
+  for (let i=0;i<20;i++){
+    nodes.push({ x: Math.random()*W, y: Math.random()*H, r:2+Math.random()*2, role:'scatter' });
+  }
+  // Corner anchors
+  [[.05,.08],[.95,.08],[.05,.92],[.95,.92],[.5,.04],[.5,.96],[.04,.5],[.96,.5]].forEach(([fx,fy])=>{
+    nodes.push({ x:fx*W, y:fy*H, r:2.5, role:'anchor' });
+  });
+  return nodes;
+}
+
+function buildJarvisEdges(nodes) {
+  const edges = [];
+  // Hub to ring 1
+  for(let i=1;i<=8;i++) edges.push([0,i]);
+  // Ring 1 to ring 2 (each ring-1 connects to 2 ring-2)
+  for(let i=0;i<8;i++){
+    const base = 9 + Math.floor(i/8*14);
+    edges.push([i+1, base % 14 + 9]);
+    edges.push([i+1, (base+1) % 14 + 9]);
+  }
+  // Ring 1 neighbours
+  for(let i=0;i<8;i++) edges.push([i+1, ((i+1)%8)+1]);
+  // Ring 2 neighbours
+  for(let i=0;i<14;i++) edges.push([9+i, 9+((i+1)%14)]);
+  // Scatter to nearest ring-2 nodes (approximate)
+  for(let s=23;s<43;s++){
+    const n = nodes[s];
+    let closest = 9;
+    let cd = Infinity;
+    for(let r=9;r<23;r++){
+      const d=(nodes[r].x-n.x)**2+(nodes[r].y-n.y)**2;
+      if(d<cd){cd=d;closest=r;}
+    }
+    edges.push([s, closest]);
+    if(Math.random()>.5) edges.push([s, ((closest-9+1)%14)+9]);
+  }
+  // Corner anchors to nearest scatter
+  for(let a=43;a<51;a++){
+    const n=nodes[a];
+    let closest=23, cd=Infinity;
+    for(let s=23;s<43;s++){
+      const d=(nodes[s].x-n.x)**2+(nodes[s].y-n.y)**2;
+      if(d<cd){cd=d;closest=s;}
+    }
+    edges.push([a,closest]);
+  }
+  return edges;
+}
+
+let jarvisNodes = null;
+let jarvisEdges = null;
+const jarvisSparks = [];
+
+// Hexagonal grid (for the background HUD pattern)
+function drawHexGrid(ctx, W, H, c, alpha) {
+  const size = 38;
+  const h3   = Math.sqrt(3);
+  ctx.save();
+  ctx.strokeStyle = rgb(c, alpha);
+  ctx.lineWidth   = 0.4;
+  const cols = Math.ceil(W / (size * 1.5)) + 2;
+  const rows = Math.ceil(H / (size * h3))  + 2;
+  for(let col=-1; col<cols; col++){
+    for(let row=-1; row<rows; row++){
+      const cx = col * size * 1.5;
+      const cy = row * size * h3 + (col % 2 ? size * h3 / 2 : 0);
+      ctx.beginPath();
+      for(let k=0;k<6;k++){
+        const ang = k * Math.PI/3 + Math.PI/6;
+        const px = cx + size*.85 * Math.cos(ang);
+        const py = cy + size*.85 * Math.sin(ang);
+        k === 0 ? ctx.moveTo(px,py) : ctx.lineTo(px,py);
+      }
+      ctx.closePath(); ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+// Concentric energy rings that pulse with the state
+function drawRings(ctx, W, H, c, amp, pulse) {
+  const cx = W/2, cy = H/2;
+  const maxR = Math.min(W, H) * 0.45;
+  [.22,.34,.44].forEach((frac, ri) => {
+    const r   = maxR * frac;
+    const osc = Math.sin(animT * (1.8 + ri*.6) + ri*1.1) * 0.08 * (1+amp);
+    const al  = (0.08 + pulse*.15 + osc) * (1 - ri*.18);
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * (1 + osc*.4), 0, Math.PI*2);
+    ctx.strokeStyle = rgb(c, al);
+    ctx.lineWidth   = 1 + pulse * 2 + amp * 3;
+    ctx.stroke();
+
+    // Tick marks on the outermost ring
+    if(ri === 2) {
+      for(let t=0;t<36;t++){
+        const a = t/36 * Math.PI*2 + animT*.3;
+        const ir = r * .94, or_ = r * (t%3===0 ? 1.06 : 1.02);
+        ctx.beginPath();
+        ctx.moveTo(cx+Math.cos(a)*ir, cy+Math.sin(a)*ir);
+        ctx.lineTo(cx+Math.cos(a)*or_, cy+Math.sin(a)*or_);
+        ctx.strokeStyle = rgb(c, t%3===0 ? al*2 : al*.6);
+        ctx.lineWidth = t%3===0 ? 1.5 : 0.6;
+        ctx.stroke();
+      }
+    }
+  });
+}
+
+// Rotating scan line (like radar)
+function drawScanLine(ctx, W, H, c, amp) {
+  const cx=W/2, cy=H/2;
+  const scanA = animT * 1.4;
+  const len   = Math.min(W,H) * 0.46;
+  const grad  = ctx.createLinearGradient(cx,cy, cx+Math.cos(scanA)*len, cy+Math.sin(scanA)*len);
+  grad.addColorStop(0, rgb(c, 0.3 + amp*.3));
+  grad.addColorStop(1, 'transparent');
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.arc(cx, cy, len, scanA - .18, scanA, false);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+}
+
+// Data stream lines along edges (fast-moving dashes)
+function drawDataStreams(ctx, nodes, edges, c, pulse) {
+  const active = Math.random() < .35;
+  if(!active) return;
+  const ei = (Math.random()*edges.length)|0;
+  const [ai,bi] = edges[ei];
+  const a=nodes[ai], b=nodes[bi];
+  const t = (animT * 2.5) % 1;
+  const sx = a.x+(b.x-a.x)*t, sy=a.y+(b.y-a.y)*t;
+  ctx.beginPath(); ctx.arc(sx,sy,2.5,0,Math.PI*2);
+  ctx.fillStyle=rgb(c,0.9); ctx.fill();
+  // Trail
+  const t2=Math.max(0,t-.06);
+  const tx=a.x+(b.x-a.x)*t2, ty=a.y+(b.y-a.y)*t2;
+  ctx.beginPath(); ctx.arc(tx,ty,1.2,0,Math.PI*2);
+  ctx.fillStyle=rgb(c,0.35); ctx.fill();
+}
+
+// Floating particle field
+const hudParticles = Array.from({length:60},()=>({
+  x:Math.random(), y:Math.random(), vx:(Math.random()-.5)*.0003, vy:(Math.random()-.5)*.0003,
+  r: .6+Math.random()*.8, a:Math.random()
+}));
+
+function drawParticles(ctx, W, H, c, amp) {
+  hudParticles.forEach(p => {
+    p.x+=p.vx*(1+amp*4); p.y+=p.vy*(1+amp*4);
+    if(p.x<0) p.x=1; if(p.x>1) p.x=0;
+    if(p.y<0) p.y=1; if(p.y>1) p.y=0;
+    ctx.beginPath(); ctx.arc(p.x*W,p.y*H,p.r,0,Math.PI*2);
+    ctx.fillStyle=rgb(c,0.1+p.a*.15+amp*.15); ctx.fill();
+  });
+}
+
+function drawJarvisHUD(ctx, W, H, lerpCur, lerpTarget, m) {
+  // Resize canvas to match window
+  if(ctx.canvas.width !== W) ctx.canvas.width = W;
+  if(ctx.canvas.height !== H) ctx.canvas.height = H;
+
+  lerpCur = lerpC(lerpCur, lerpTarget, 0.05);
+  const c   = lerpCur;
   const amp = Math.max(micAmp, ttsAmp);
-  const pulse = m.intensity + amp*.3 + Math.sin(animT*3.1)*.05*m.jitter*(1+amp);
+  const pulse = m.intensity + amp*.35 + Math.sin(animT*2.8)*.06;
 
   ctx.clearRect(0,0,W,H);
 
-  // bg glow
-  const bg = ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,W/2);
-  bg.addColorStop(0, rgb(c, pulse*.18)); bg.addColorStop(1,'transparent');
+  // 1. Hex grid background
+  drawHexGrid(ctx, W, H, c, .025 + pulse*.025);
+
+  // 2. Radial glow from centre
+  const bg=ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,Math.max(W,H)*.6);
+  bg.addColorStop(0, rgb(c, pulse*.12));
+  bg.addColorStop(.5, rgb(c, pulse*.04));
+  bg.addColorStop(1, 'transparent');
   ctx.fillStyle=bg; ctx.fillRect(0,0,W,H);
 
-  // edges
-  EDGES.forEach(([ai,bi])=>{
-    const a=nodes[ai], b=nodes[bi];
-    const jx=(Math.random()-.5)*m.jitter*amp*W*.06;
-    const jy=(Math.random()-.5)*m.jitter*amp*H*.06;
-    ctx.beginPath();
-    ctx.strokeStyle=rgb(c,.08+pulse*.22);
-    ctx.lineWidth=Math.max(.3, W/80+pulse*W/40);
-    ctx.moveTo(a.x,a.y); ctx.lineTo(b.x+jx,b.y+jy);
-    ctx.stroke();
-  });
+  // 3. Particles
+  drawParticles(ctx, W, H, c, amp);
 
-  // sparks
-  if((currentState==='thinking'||currentState==='speaking')&&Math.random()<.14){
-    const ei=(Math.random()*EDGES.length)|0;
-    sparks.push({ai:EDGES[ei][0],bi:EDGES[ei][1],t:0,spd:.016+Math.random()*.02});
-  }
-  for(let i=sparks.length-1;i>=0;i--){
-    const sp=sparks[i]; sp.t+=sp.spd;
-    if(sp.t>=1){sparks.splice(i,1);continue;}
-    const a=nodes[sp.ai],b=nodes[sp.bi];
-    const sx=a.x+(b.x-a.x)*sp.t, sy=a.y+(b.y-a.y)*sp.t;
-    const sr=Math.max(1.2,W/22);
-    ctx.beginPath(); ctx.arc(sx,sy,sr,0,Math.PI*2);
-    ctx.fillStyle=rgb(c,.9); ctx.fill();
-    ctx.beginPath(); ctx.arc(sx-(b.x-a.x)*.06,sy-(b.y-a.y)*.06,sr*.6,0,Math.PI*2);
-    ctx.fillStyle=rgb(c,.4); ctx.fill();
+  // 4. Neural network edges
+  if(jarvisNodes && jarvisEdges) {
+    jarvisEdges.forEach(([ai,bi])=>{
+      const a=jarvisNodes[ai], b=jarvisNodes[bi];
+      const flicker = .05 + pulse*.18 + Math.sin(animT*(1+ai*.3)+bi)*.06;
+      ctx.beginPath();
+      ctx.strokeStyle=rgb(c, flicker);
+      ctx.lineWidth=.5+pulse*.8;
+      ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y);
+      ctx.stroke();
+    });
+
+    // 5. Data streams (animated dots along edges)
+    for(let d=0;d<3;d++) drawDataStreams(ctx, jarvisNodes, jarvisEdges, c, pulse);
+
+    // 6. Sparks
+    if((currentState==='thinking'||currentState==='speaking'||currentState==='listening')
+       && Math.random()<.25+amp*.3){
+      const ei=(Math.random()*jarvisEdges.length)|0;
+      jarvisSparks.push({ai:jarvisEdges[ei][0],bi:jarvisEdges[ei][1],t:0,spd:.012+Math.random()*.018});
+    }
+    for(let i=jarvisSparks.length-1;i>=0;i--){
+      const sp=jarvisSparks[i]; sp.t+=sp.spd*(1+amp*2);
+      if(sp.t>=1){jarvisSparks.splice(i,1);continue;}
+      const a=jarvisNodes[sp.ai],b=jarvisNodes[sp.bi];
+      const sx=a.x+(b.x-a.x)*sp.t, sy=a.y+(b.y-a.y)*sp.t;
+      ctx.beginPath(); ctx.arc(sx,sy,3.5,0,Math.PI*2);
+      ctx.fillStyle=rgb(c,.95); ctx.fill();
+      const trail=Math.max(0,sp.t-.05);
+      const tx=a.x+(b.x-a.x)*trail, ty=a.y+(b.y-a.y)*trail;
+      ctx.beginPath(); ctx.arc(tx,ty,1.8,0,Math.PI*2);
+      ctx.fillStyle=rgb(c,.4); ctx.fill();
+    }
+
+    // 7. Nodes
+    jarvisNodes.forEach((n,i)=>{
+      const np=pulse+Math.sin(animT+i*.55)*.12;
+      const nr=n.r*(1+np*.5);
+      const gl=ctx.createRadialGradient(n.x,n.y,0,n.x,n.y,nr*4);
+      gl.addColorStop(0,rgb(c,np*.7)); gl.addColorStop(1,'transparent');
+      ctx.beginPath(); ctx.arc(n.x,n.y,nr*4,0,Math.PI*2); ctx.fillStyle=gl; ctx.fill();
+      ctx.beginPath(); ctx.arc(n.x,n.y,nr,0,Math.PI*2);
+      ctx.fillStyle=rgb(c,.8+np*.2); ctx.fill();
+    });
   }
 
-  // nodes
-  nodes.forEach((n,i)=>{
-    const np=pulse+Math.sin(animT+i*.7)*.12;
-    const nr=n.r*(1+np*.3);
-    const gl=ctx.createRadialGradient(n.x,n.y,0,n.x,n.y,nr*3);
-    gl.addColorStop(0,rgb(c,np*.55)); gl.addColorStop(1,'transparent');
-    ctx.beginPath(); ctx.arc(n.x,n.y,nr*3,0,Math.PI*2); ctx.fillStyle=gl; ctx.fill();
-    ctx.beginPath(); ctx.arc(n.x,n.y,nr,0,Math.PI*2);
-    ctx.fillStyle=rgb(c,.78+np*.22); ctx.fill();
-  });
+  // 8. Concentric rings (over nodes so they look layered)
+  drawRings(ctx, W, H, c, amp, pulse);
+
+  // 9. Scan line
+  if(currentState !== 'idle') drawScanLine(ctx, W, H, c, amp);
+
+  // 10. Centre hub glow (brightest element)
+  const hub = ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,Math.min(W,H)*.07);
+  hub.addColorStop(0, rgb(c, pulse*.8+amp*.4));
+  hub.addColorStop(1, 'transparent');
+  ctx.fillStyle=hub; ctx.fillRect(0,0,W,H);
 
   return lerpCur;
 }
@@ -633,13 +905,30 @@ function startNeuronLoop() {
   const bigCanvas   = document.getElementById('alec-ov-canvas');
   if (!smallCanvas || !bigCanvas) { setTimeout(startNeuronLoop, 100); return; }
 
-  const ctxS = smallCanvas.getContext('2d');
-  const ctxB = bigCanvas.getContext('2d');
-  const nodesS = buildNodes(48, 48);
-  const nodesB = buildNodes(280, 280);
+  const ctxS    = smallCanvas.getContext('2d');
+  const ctxB    = bigCanvas.getContext('2d');
+  const nodesS  = buildSmallNodes(48, 48);
   let lerpS = [99,102,241];
   let lerpB = [99,102,241];
   let tick = 0;
+
+  // Build Jarvis nodes when overlay is first shown (full-screen size)
+  function ensureJarvisNodes() {
+    const W = window.innerWidth, H = window.innerHeight;
+    if (!jarvisNodes || jarvisNodes[0].x !== W*.5) {
+      jarvisNodes = buildJarvisNodes(W, H);
+      jarvisEdges = buildJarvisEdges(jarvisNodes);
+    }
+  }
+
+  // Resize big canvas to full window
+  function resizeBigCanvas() {
+    bigCanvas.width  = window.innerWidth;
+    bigCanvas.height = window.innerHeight;
+    ensureJarvisNodes();
+  }
+  resizeBigCanvas();
+  window.addEventListener('resize', resizeBigCanvas);
 
   function frame() {
     requestAnimationFrame(frame);
@@ -662,12 +951,19 @@ function startNeuronLoop() {
     const m = STATE_META[currentState] || STATE_META.idle;
     lerpTargetSmall = lerpTargetBig = hexToRgb(m.color);
 
-    // Update overlay glow colour
+    // Update overlay glow colour div
     const glow = document.getElementById('alec-ov-glow');
-    if (glow) glow.style.background = `radial-gradient(circle,${m.color}20 0%,transparent 70%)`;
+    if (glow) glow.style.background = `radial-gradient(circle at 50% 50%,${m.color}18 0%,transparent 65%)`;
 
-    lerpS = drawNeuron(ctxS, 48,  48,  nodesS, sparksSmall, lerpS, lerpTargetSmall, m);
-    lerpB = drawNeuron(ctxB, 280, 280, nodesB, sparksBig,   lerpB, lerpTargetBig,   m);
+    // Small orb (header strip)
+    lerpS = drawSmallNeuron(ctxS, 48, 48, nodesS, lerpS, lerpTargetSmall, m);
+
+    // Full-screen Jarvis HUD (only when overlay is visible)
+    const overlay = document.getElementById('alec-overlay');
+    if (overlay && overlay.classList.contains('active')) {
+      ensureJarvisNodes();
+      lerpB = drawJarvisHUD(ctxB, window.innerWidth, window.innerHeight, lerpB, lerpTargetBig, m);
+    }
   }
   frame();
 }

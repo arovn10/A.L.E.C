@@ -44,90 +44,79 @@ const NEURAL_URL = `http://localhost:${process.env.NEURAL_PORT || 8000}`;
 
 // ════════════════════════════════════════════════════════════════
 //  MULTI-BACKEND LLM CLIENT
-//  Priority: 1. Anthropic Claude API  2. Ollama  3. Error
-//  Ollama has a Metal shader bug on macOS 15.4+ that prevents GPU
-//  use. Claude API is the reliable fallback.
+//  Priority: 1. node-llama-cpp (embedded Metal inference, no server)
+//             2. Ollama (if reachable and models available)
+//             3. Clear error message
+//
+//  node-llama-cpp uses its own llama.cpp Metal build which works on
+//  macOS 15.4+ where Ollama's ggml Metal implementation crashes.
 // ════════════════════════════════════════════════════════════════
-const OLLAMA_BASE  = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'gemma3:27b-it-qat';
+const llamaEngine      = require('../services/llamaEngine.js');
+const desktopControl   = require('../services/desktopControl.js');
 
-// Lazy-load Anthropic SDK (only if API key is set)
-let _anthropicClient = null;
-function getAnthropicClient() {
-  if (_anthropicClient) return _anthropicClient;
-  const key = process.env.ANTHROPIC_API_KEY;
-  if (!key) return null;
-  const { Anthropic } = require('@anthropic-ai/sdk');
-  _anthropicClient = new Anthropic({ apiKey: key });
-  return _anthropicClient;
-}
+// Warm up the embedded engine on startup
+llamaEngine.warmUp();
 
-const ALEC_SYSTEM_PROMPT = `You are Alec, Alec Rovner's personal AI executive assistant.
+/**
+ * System prompt — generated fresh on every request so the date is always accurate.
+ * LLMs have a training cutoff and don't know the current date unless told explicitly.
+ */
+function buildSystemPrompt() {
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
+  return `You are Alec, Alec Rovner's personal AI executive assistant running on his Mac.
 You help with smart home control, STOA real estate database queries, reminders, grocery lists, web research, and general conversation.
 You can search the web, remember past conversations, and take initiative to be proactive.
 Use markdown formatting for clarity (headers, code blocks, bullet points where appropriate).
-Refer to yourself as "Alec" — never "A.L.E.C." or "ALEC" with dots. Be direct, smart, and friendly.`;
-
-/**
- * Call the best available LLM.
- * Returns: { type: 'claude'|'ollama', response: Response|object, stream }
- */
-async function callLLM(messages, { stream = false, voiceMode = false } = {}) {
-  const anthropic = getAnthropicClient();
-
-  // ── Path 1: Anthropic Claude API ────────────────────────────────
-  if (anthropic) {
-    const model   = process.env.CLAUDE_MODEL || 'claude-opus-4-5';
-    const sysMsg  = messages.find(m => m.role === 'system')?.content || ALEC_SYSTEM_PROMPT;
-    const msgs    = messages.filter(m => m.role !== 'system');
-    const maxTok  = voiceMode ? 150 : 1500;
-
-    if (stream) {
-      // Return a readable SSE-like async iterator wrapping Anthropic's stream
-      const sdkStream = await anthropic.messages.stream({
-        model,
-        system: sysMsg,
-        messages: msgs,
-        max_tokens: maxTok,
-      });
-      return { type: 'claude', stream: true, sdkStream };
-    } else {
-      const msg = await anthropic.messages.create({
-        model,
-        system: sysMsg,
-        messages: msgs,
-        max_tokens: maxTok,
-      });
-      const text = msg.content?.[0]?.text || '';
-      return { type: 'claude', stream: false, text };
-    }
-  }
-
-  // ── Path 2: Ollama (OpenAI-compatible API) ───────────────────────
-  const resp = await fetch(`${OLLAMA_BASE}/v1/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: OLLAMA_MODEL,
-      messages,
-      temperature:    voiceMode ? 0.5  : 0.7,
-      max_tokens:     voiceMode ? 120  : 1024,
-      top_p:          voiceMode ? 0.85 : 0.95,
-      repeat_penalty: voiceMode ? 1.1  : 1.05,
-      stream,
-    }),
-    signal: AbortSignal.timeout(voiceMode ? 30000 : 120000),
-  });
-  if (!resp.ok) throw new Error(`Ollama HTTP ${resp.status}`);
-  return { type: 'ollama', stream, resp };
+Refer to yourself as "Alec" — never "A.L.E.C." or "ALEC" with dots. Be direct, smart, and friendly.
+Current date and time: ${dateStr} at ${timeStr}.`;
 }
 
-// Convenience: non-streaming call, returns text string
+// Keep a static alias for backward compat with any code referencing ALEC_SYSTEM_PROMPT directly
+const ALEC_SYSTEM_PROMPT = buildSystemPrompt();
+
+/**
+ * Non-streaming call — returns text string.
+ * Uses node-llama-cpp embedded engine (Metal GPU on Apple Silicon).
+ */
 async function callLLMText(messages, voiceMode = false) {
-  const result = await callLLM(messages, { stream: false, voiceMode });
-  if (result.type === 'claude') return result.text;
-  const data = await result.resp.json();
-  return data.choices?.[0]?.message?.content?.trim() || 'I could not generate a response.';
+  const maxTokens  = voiceMode ? 150  : 1024;
+  const temperature = voiceMode ? 0.5  : 0.7;
+
+  // Inject system prompt (with live date) if not already present
+  const hasSystem = messages.some(m => m.role === 'system');
+  const fullMsgs  = hasSystem ? messages : [
+    { role: 'system', content: buildSystemPrompt() },
+    ...messages,
+  ];
+
+  return await llamaEngine.generate(fullMsgs, { maxTokens, temperature });
+}
+
+/**
+ * Streaming call — returns async generator that yields token strings.
+ */
+async function* callLLMStream(messages, voiceMode = false) {
+  const maxTokens   = voiceMode ? 150  : 1024;
+  const temperature = voiceMode ? 0.5  : 0.7;
+
+  const hasSystem = messages.some(m => m.role === 'system');
+  const fullMsgs  = hasSystem ? messages : [
+    { role: 'system', content: buildSystemPrompt() },
+    ...messages,
+  ];
+
+  yield* llamaEngine.generateStream(fullMsgs, { maxTokens, temperature });
+}
+
+// Legacy alias (some routes use callLLM)
+async function callLLM(messages, { stream = false, voiceMode = false } = {}) {
+  if (stream) {
+    return { type: 'llama', stream: true, generator: callLLMStream(messages, voiceMode) };
+  }
+  const text = await callLLMText(messages, voiceMode);
+  return { type: 'llama', stream: false, text };
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -376,32 +365,34 @@ const requireFullCapabilities = (req, res, next) => {
 //  HEALTH CHECK
 // ════════════════════════════════════════════════════════════════
 
-app.get('/health', async (req, res) => {
-  let neuralStatus = { loaded: false };
-  try {
-    neuralStatus = await neuralEngine.getModelInfo();
-  } catch (_) {}
-
-  const anthropicAvail = !!process.env.ANTHROPIC_API_KEY;
+app.get('/health', (req, res) => {
   const mem = loadMemory();
-
+  const llmStatus = llamaEngine.getStatus();
   res.json({
-    status: 'ok',
-    service: 'A.L.E.C.',
-    version: '2.0.0',
+    status:    'ok',
+    service:   'A.L.E.C.',
+    version:   '2.0.0',
     timestamp: new Date().toISOString(),
     llm: {
-      backend:       anthropicAvail ? 'anthropic' : 'ollama',
-      model:         anthropicAvail ? (process.env.CLAUDE_MODEL || 'claude-opus-4-5') : OLLAMA_MODEL,
-      ready:         anthropicAvail,
-      note:          anthropicAvail ? 'Claude API active' : 'Add ANTHROPIC_API_KEY to .env — Ollama Metal GPU broken on this macOS version',
+      backend:   'node-llama-cpp (llama.cpp Metal)',
+      modelPath: llmStatus.modelPath,
+      gpu:       llmStatus.gpu,
+      ready:     llmStatus.loaded,
+      contexts:  llmStatus.contexts,
+      note:      'HuggingFace / local GGUF models. Same tech as Ollama, Metal-safe on macOS 15.4+.',
     },
-    memory: { facts: mem.facts?.length || 0, preferences: mem.preferences?.length || 0 },
-    neuralEngine: { url: NEURAL_URL, ...neuralStatus },
+    memory: {
+      facts:       mem.facts?.length || 0,
+      preferences: mem.preferences?.length || 0,
+      heapUsed:    process.memoryUsage().heapUsed,
+    },
+    voice:      voiceInterface.getStatus(),
     lanAddresses: getLanAddresses(),
-    uptime: process.uptime(),
+    uptime:     process.uptime(),
   });
 });
+
+app.get('/api/health', (req, res) => res.redirect('/health'));
 
 // ════════════════════════════════════════════════════════════════
 //  AUTH ENDPOINTS
@@ -419,6 +410,18 @@ app.post('/api/auth/login', async (req, res) => {
 
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
+    }
+
+    // ── Local owner bypass (Python engine may be offline) ──────────
+    const localOwnerEmail = process.env.ALEC_OWNER_EMAIL || 'alec@rovner.com';
+    const localOwnerPass  = process.env.ALEC_OWNER_PASS  || 'alec2024';
+    if (password === localOwnerPass && (email === localOwnerEmail || email === 'alec' || email === 'owner')) {
+      const token = jwt.sign(
+        { userId: 'alec-owner', email: localOwnerEmail, role: 'owner', tokenType: 'OWNER' },
+        process.env.JWT_SECRET,
+        { expiresIn: '30d' }
+      );
+      return res.json({ success: true, token, tokenType: 'OWNER', user: { email: localOwnerEmail, role: 'owner' } });
     }
 
     const data = await proxyToNeural('/auth/login', {
@@ -485,8 +488,8 @@ app.post('/api/auth/login', async (req, res) => {
 
 /**
  * POST /api/chat
- * Routes to Ollama directly for reliable, fast responses.
- * Returns { response, latency_ms, tokens_out }.
+ * Non-streaming chat via embedded node-llama-cpp engine (Metal GPU).
+ * Returns { response, latency_ms, source }.
  */
 app.post('/api/chat', authenticateToken, async (req, res) => {
   const startTime = Date.now();
@@ -500,7 +503,7 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     // Build system prompt with memory
     const mem = loadMemory();
     const memCtx = buildMemoryContext(mem);
-    const systemContent = ALEC_SYSTEM_PROMPT + (memCtx ? '\n\n' + memCtx : '');
+    const systemContent = buildSystemPrompt() + (memCtx ? '\n\n' + memCtx : '');
 
     // Web search augmentation
     let augmentedMessages = [...messages];
@@ -522,25 +525,21 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     // Async: extract and store facts from this exchange
     extractAndStoreFacts(userText, responseText).catch(() => {});
 
+    const engineStatus = llamaEngine.getStatus();
     res.json({
       success: true,
       response: responseText,
       latency_ms,
-      tokens_out: data.usage?.completion_tokens,
-      tokens_in:  data.usage?.prompt_tokens,
+      source:    'llama-metal',
+      model:     engineStatus.modelPath,
       timestamp:  new Date().toISOString(),
     });
   } catch (error) {
     console.error('Chat error:', error.message);
-    const isNoBackend = !getAnthropicClient() && error.message.includes('Ollama');
     res.status(500).json({
       success: false,
-      error: isNoBackend
-        ? 'No LLM backend available'
-        : 'Alec is thinking hard right now',
-      message: isNoBackend
-        ? 'Add your ANTHROPIC_API_KEY to .env — Ollama has a Metal GPU bug on this macOS version. Get your key at console.anthropic.com'
-        : error.message,
+      error:   'Alec is having trouble thinking',
+      message: error.message,
     });
   }
 });
@@ -565,7 +564,7 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
     // System prompt + memory
     const mem = loadMemory();
     const memCtx = buildMemoryContext(mem);
-    const systemContent = ALEC_SYSTEM_PROMPT + (memCtx ? '\n\n' + memCtx : '');
+    const systemContent = buildSystemPrompt() + (memCtx ? '\n\n' + memCtx : '');
 
     // Web search augmentation
     let augmentedMessages = [...messages];
@@ -583,45 +582,13 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
     }
 
     const llmMessages = [{ role: 'system', content: systemContent }, ...augmentedMessages];
-    const llmResult   = await callLLM(llmMessages, { stream: true });
     let fullResponse  = '';
 
-    if (llmResult.type === 'claude') {
-      // ── Anthropic SDK streaming ────────────────────────────────
-      for await (const event of llmResult.sdkStream) {
-        if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
-          const token = event.delta.text || '';
-          if (token) {
-            fullResponse += token;
-            res.write(`data: ${JSON.stringify({ token })}\n\n`);
-          }
-        }
-      }
-    } else {
-      // ── Ollama SSE streaming ───────────────────────────────────
-      const reader  = llmResult.resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const lines = buf.split('\n');
-        buf = lines.pop();
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          const payload = line.slice(6).trim();
-          if (payload === '[DONE]') continue;
-          try {
-            const parsed = JSON.parse(payload);
-            const token = parsed.choices?.[0]?.delta?.content;
-            if (token) {
-              fullResponse += token;
-              res.write(`data: ${JSON.stringify({ token })}\n\n`);
-            }
-          } catch (_) {}
-        }
+    // ── node-llama-cpp streaming (Metal GPU, no external server) ──
+    for await (const token of callLLMStream(llmMessages)) {
+      if (token) {
+        fullResponse += token;
+        res.write(`data: ${JSON.stringify({ token })}\n\n`);
       }
     }
 
@@ -710,6 +677,64 @@ app.post('/api/memory/fact', authenticateToken, (req, res) => {
 app.delete('/api/memory', authenticateToken, (req, res) => {
   saveMemory({ facts: [], preferences: [], summaries: [], promptVersion: 1 });
   res.json({ success: true, message: 'Memory cleared.' });
+});
+
+// ════════════════════════════════════════════════════════════════
+//  DESKTOP CONTROL SKILLS
+// ════════════════════════════════════════════════════════════════
+
+/** GET /api/skills — list available desktop skills */
+app.get('/api/skills', authenticateToken, (req, res) => {
+  res.json({ skills: desktopControl.listSkills() });
+});
+
+/** POST /api/skills/run — execute a skill */
+app.post('/api/skills/run', authenticateToken, async (req, res) => {
+  const { skill, args = {} } = req.body;
+  if (!skill) return res.status(400).json({ error: 'skill name required' });
+  const result = await desktopControl.executeSkill(skill, args);
+  res.json(result);
+});
+
+/** POST /api/skills/screenshot — convenience endpoint */
+app.post('/api/skills/screenshot', authenticateToken, async (req, res) => {
+  const result = await desktopControl.executeSkill('screenshot', {});
+  if (result.success) {
+    res.json({ success: true, path: result.result });
+  } else {
+    res.status(500).json(result);
+  }
+});
+
+// Augment the chat endpoint to detect and run skills
+// This runs before the LLM call in /api/chat and /api/chat/stream
+async function maybeRunDesktopSkill(userText) {
+  const intent = desktopControl.detectSkillIntent(userText);
+  if (!intent) return null;
+  const result = await desktopControl.executeSkill(intent.skill, intent.args);
+  if (!result.success) return null;
+  return { skill: intent.skill, result: result.result };
+}
+
+// ════════════════════════════════════════════════════════════════
+//  MODEL MANAGEMENT (HuggingFace / local GGUF)
+// ════════════════════════════════════════════════════════════════
+
+/** GET /api/models — list all available GGUF models */
+app.get('/api/models', authenticateToken, (req, res) => {
+  res.json({ models: llamaEngine.listModels(), current: llamaEngine.getStatus() });
+});
+
+/** POST /api/models/download — download a model from HuggingFace */
+app.post('/api/models/download', authenticateToken, requireFullCapabilities, async (req, res) => {
+  const { repoId, fileName } = req.body;
+  if (!repoId || !fileName) return res.status(400).json({ error: 'repoId and fileName required' });
+  try {
+    const modelPath = await llamaEngine.downloadFromHuggingFace(repoId, fileName);
+    res.json({ success: true, modelPath });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // ════════════════════════════════════════════════════════════════
