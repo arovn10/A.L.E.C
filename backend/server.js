@@ -55,6 +55,7 @@ const llamaEngine      = require('../services/llamaEngine.js');
 const desktopControl   = require('../services/desktopControl.js');
 const stoaQuery        = require('../services/stoaQueryService.js');
 const excelExport      = require('../services/excelExport.js');
+const selfImprovement  = require('../services/selfImprovement.js');
 
 // Warm up the embedded engine on startup
 llamaEngine.warmUp();
@@ -506,6 +507,23 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     const mem = loadMemory();
     const memCtx = buildMemoryContext(mem);
     let systemContent = buildSystemPrompt() + (memCtx ? '\n\n' + memCtx : '');
+
+    // ── Self-improvement trigger — owner can ask ALEC to improve itself ──
+    const isOwner = req.user?.tokenType === 'OWNER' || req.user?.role === 'owner';
+    const selfImproveIntent = isOwner && /\b(improve yourself|self.?improv|run tests?|update yourself|upgrade yourself|fix yourself)\b/i.test(userText);
+    if (selfImproveIntent) {
+      try {
+        const feedback = selfImprovement.getRecentNegativeFeedback();
+        const result = await selfImprovement.runTests();
+        const summary = `🧬 **Self-Test Results**: ${result.passed}/${result.total} passed | ${result.criticalFailed} critical failures\n\n` +
+          result.results.map(r => `${r.passed ? '✅' : '❌'} ${r.name}${r.error ? `: ${r.error}` : ''}`).join('\n');
+        return res.json({
+          success: true, response: summary, latency_ms: Date.now() - startTime, source: 'self-improve',
+        });
+      } catch (siErr) {
+        console.warn('[SelfImprove chat]', siErr.message);
+      }
+    }
 
     // ── Excel export detection — short-circuit before LLM if user wants a file ──
     const exportIntent = excelExport.detectExportIntent(userText);
@@ -1465,6 +1483,61 @@ app.get('/api/self-evolution/ownership', authenticateToken, async (req, res) => 
 app.get('/api/self-evolution/stats', authenticateToken, (req, res) => {
   const stats = selfEvolution.getEvolutionStats();
   res.json({ success: true, ...stats });
+});
+
+// ════════════════════════════════════════════════════════════════
+//  SELF-IMPROVEMENT  (/api/self-improve/*)
+//  Owner-only — runs tests, proposes LLM changes, only commits if tests pass.
+//  Directive: always improve accuracy, UX, and data correctness for Alec.
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * POST /api/self-improve/run
+ * Run one improvement cycle (propose → apply → test → commit or revert).
+ * Body: { directive_id? } — omit to auto-pick highest priority
+ */
+app.post('/api/self-improve/run', authenticateToken, requireFullCapabilities, async (req, res) => {
+  try {
+    const { directive_id } = req.body || {};
+    const feedback = selfImprovement.getRecentNegativeFeedback();
+    console.log('[SelfImprove] Starting cycle, directive:', directive_id || 'auto');
+    const result = await selfImprovement.runImprovementCycle(directive_id || null, feedback);
+    res.json({ success: result.success, ...result });
+  } catch (err) {
+    console.error('[SelfImprove] Error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/self-improve/test
+ * Run only the test suite, no code changes.
+ * Returns { passed, failed, total, criticalFailed, results }
+ */
+app.post('/api/self-improve/test', authenticateToken, requireFullCapabilities, async (req, res) => {
+  try {
+    const results = await selfImprovement.runTests();
+    res.json({ success: true, ...results });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/self-improve/history
+ * Returns the last 20 improvement log entries.
+ */
+app.get('/api/self-improve/history', authenticateToken, requireFullCapabilities, async (req, res) => {
+  const history = selfImprovement.getImprovementHistory(Number(req.query.limit) || 20);
+  res.json({ success: true, history });
+});
+
+/**
+ * GET /api/self-improve/directives
+ * Returns the improvement directives list.
+ */
+app.get('/api/self-improve/directives', authenticateToken, (req, res) => {
+  res.json({ success: true, directives: selfImprovement.IMPROVEMENT_DIRECTIVES });
 });
 
 // ════════════════════════════════════════════════════════════════
