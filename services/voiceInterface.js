@@ -1,282 +1,273 @@
 /**
- * Voice Interface - Real-time Speech-to-Text and Text-to-Speech
+ * A.L.E.C. Voice Interface — WebSocket server
  *
- * Features:
- * - WebSocket-based real-time voice communication
- * - Speech recognition using WebSpeech API or Vosk
- * - Text-to-speech with personality-aware synthesis
- * - Background noise suppression
+ * Starts a standalone WS server on VOICE_PORT (default 3002).
+ * Handles voice_command messages from the browser UI, routes them
+ * through LM Studio, and returns responses with source attribution.
+ *
+ * Exports STATES + VoiceInterface for both server use and unit tests.
  */
 
 const WebSocket = require('ws');
-const { createServer } = require('http');
-const fs = require('fs');
-const path = require('path');
 
+// ── Voice state constants ────────────────────────────────────────
+const STATES = {
+  IDLE:         'idle',
+  LISTENING:    'listening',
+  TRANSCRIBING: 'transcribing',
+  THINKING:     'thinking',
+  SPEAKING:     'speaking',
+  INTERRUPTED:  'interrupted',
+  MUTED:        'muted',
+  ERROR:        'error',
+  OFFLINE:      'offline-fallback',
+};
+
+// ── System prompt for LM Studio ─────────────────────────────────
+const SYSTEM_PROMPT = `You are A.L.E.C. (Adaptive Learning Executive Companion), a personal AI assistant for Alec Rovner.
+You help with smart home control, STOA real estate database queries, reminders, grocery lists, and general conversation.
+Be concise, helpful, and natural. Do not claim capabilities you do not have. Answer in 1-3 sentences unless the user asks for detail.`;
+
+// ── LM Studio client ─────────────────────────────────────────────
+const LM_BASE = process.env.LM_STUDIO_URL || 'http://127.0.0.1:1234';
+
+async function detectModel() {
+  try {
+    const resp = await fetch(`${LM_BASE}/v1/models`, { signal: AbortSignal.timeout(4000) });
+    const data = await resp.json();
+    return data?.data?.[0]?.id || 'local-model';
+  } catch {
+    return null; // offline
+  }
+}
+
+async function callLMStudio(messages) {
+  const resp = await fetch(`${LM_BASE}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'local-model',
+      messages,
+      temperature: 0.7,
+      max_tokens: 512,
+      stream: false,
+    }),
+    signal: AbortSignal.timeout(60000),
+  });
+  if (!resp.ok) throw new Error(`LM Studio HTTP ${resp.status}`);
+  const data = await resp.json();
+  return data.choices?.[0]?.message?.content?.trim() || 'I could not generate a response.';
+}
+
+// ── Session ──────────────────────────────────────────────────────
+class VoiceSession {
+  constructor(ws) {
+    this.ws    = ws;
+    this.state = STATES.IDLE;
+    this.history = []; // [{role, content}]
+  }
+
+  transition(state) {
+    this.state = state;
+    this.send({ type: 'state_change', state });
+  }
+
+  send(obj) {
+    if (this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(obj));
+    }
+  }
+}
+
+// ── Main class ───────────────────────────────────────────────────
 class VoiceInterface {
   constructor() {
-    this.wss = null;
-    this.activeConnections = new Map(); // ws -> user data
-    this.audioBuffers = new Map(); // userId -> audio buffer queue
-    this.personalityVoiceProfiles = {
-      companion: { pitch: 1.0, rate: 1.0, voice: 'default' },
-      professional: { pitch: 0.9, rate: 1.2, voice: 'professional' },
-      creative: { pitch: 1.1, rate: 0.9, voice: 'creative' }
-    };
+    this.wss          = null;
+    this.sessions     = new Map();   // ws → VoiceSession
     this.isInitialized = false;
+    this.ttsAvailable  = false;      // server-side TTS not used (browser handles it)
+    this.neuralEngine  = null;
+    this.modelName     = 'LM Studio';
+    this.haConnected   = false;
   }
 
   /**
-   * Initialize WebSocket server for real-time voice communication
+   * Start WS server on VOICE_PORT (default 3002).
+   * Called once from server.js after boot.
    */
-  initialize() {
-    if (this.wss) return;
+  initialize(httpServer) {
+    const port = parseInt(process.env.VOICE_PORT || '3002', 10);
 
-    const httpServer = createServer();
-    this.wss = new WebSocket.Server({ server: httpServer, path: '/voice' });
+    // If an existing HTTP server is passed, attach to it; otherwise standalone.
+    const wssOpts = httpServer
+      ? { server: httpServer }
+      : { port };
 
-    this.wss.on('connection', (ws, req) => {
-      console.log('🎤 Voice connection established');
+    this.wss = new WebSocket.Server(wssOpts);
 
-      const userId = req.headers['x-user-id'] || `user_${Date.now()}`;
-      this.activeConnections.set(ws, { userId, connectedAt: Date.now() });
+    this.wss.on('connection', (ws) => this._onConnection(ws));
 
-      ws.on('message', (data) => this.handleVoiceMessage(ws, data));
-      ws.on('close', () => {
-        console.log(`👋 Voice connection closed for ${userId}`);
-        this.activeConnections.delete(ws);
-      });
-      ws.on('error', (err) => {
-        console.error('WebSocket error:', err);
-        this.activeConnections.delete(ws);
-      });
+    if (!httpServer) {
+      this.wss.on('listening', () =>
+        console.log(`🎤 Voice WebSocket server listening on port ${port}`)
+      );
+    }
 
-      // Send welcome message
-      ws.send(JSON.stringify({
-        type: 'welcome',
-        message: 'A.L.E.C. voice interface ready. Please speak.',
-        timestamp: Date.now()
-      }));
+    this.wss.on('error', (err) => console.error('Voice WS error:', err.message));
+
+    // Probe LM Studio model name in background
+    detectModel().then(model => {
+      if (model) this.modelName = model;
     });
 
-    console.log('🎙️ Voice WebSocket server started');
     this.isInitialized = true;
+    return this;
   }
 
-  /**
-   * Get WebSocket handler for Express app
-   */
-  getWebSocketHandler() {
-    if (!this.wss) {
-      this.initialize();
-    }
-    return this.wss;
+  setNeuralEngine(engine) {
+    this.neuralEngine = engine;
   }
 
-  /**
-   * Handle incoming voice messages (audio chunks or commands)
-   */
-  async handleVoiceMessage(ws, data) {
+  setHAStatus(connected) {
+    this.haConnected = connected;
+  }
+
+  // ── Connection lifecycle ──────────────────────────────────────
+  _onConnection(ws) {
+    const session = new VoiceSession(ws);
+    this.sessions.set(ws, session);
+    console.log(`🔌 Voice client connected (${this.sessions.size} active)`);
+
+    // Welcome frame
+    session.send({
+      type:         'welcome',
+      identity:     'A.L.E.C.',
+      message:      'Voice interface ready. Speak or type to begin.',
+      model:        this.modelName,
+      ha_connected: this.haConnected,
+    });
+
+    ws.on('message', (data) => this._onMessage(session, data));
+    ws.on('close',   ()     => {
+      this.sessions.delete(ws);
+      console.log(`👋 Voice client disconnected (${this.sessions.size} active)`);
+    });
+    ws.on('error',   (err) => {
+      console.error('Voice session error:', err.message);
+      this.sessions.delete(ws);
+    });
+  }
+
+  // ── Message dispatch ─────────────────────────────────────────
+  async _onMessage(session, data) {
+    let msg;
     try {
-      const message = JSON.parse(data);
+      msg = JSON.parse(data.toString());
+    } catch {
+      session.send({ type: 'error', message: 'Invalid JSON' });
+      return;
+    }
 
-      switch (message.type) {
-        case 'audio_chunk':
-          await this.processAudioChunk(ws, message.data);
-          break;
+    switch (msg.type) {
+      case 'ping':
+        session.send({ type: 'pong', timestamp: Date.now(), model: this.modelName, ha_connected: this.haConnected });
+        break;
 
-        case 'command':
-          await this.processCommand(ws, message.command);
-          break;
-
-        case 'ping':
-          ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
-          break;
-
-        default:
-          console.log('Unknown voice message type:', message.type);
+      case 'voice_command':
+      case 'text_input': {
+        const command = (msg.command || msg.text || '').trim();
+        if (!command) break;
+        await this._handleCommand(session, command);
+        break;
       }
-    } catch (error) {
-      console.error('Voice message processing error:', error);
-      ws.send(JSON.stringify({
-        type: 'error',
-        message: 'Voice processing failed'
-      }));
+
+      default:
+        // Unknown message types are silently ignored
+        break;
     }
   }
 
-  /**
-   * Process audio chunks for speech recognition
-   */
-  async processAudioChunk(ws, audioData) {
-    const userId = this.activeConnections.get(ws)?.userId;
+  // ── Command handler ──────────────────────────────────────────
+  async _handleCommand(session, text) {
+    session.transition(STATES.THINKING);
 
-    // In production, use Vosk or WebSpeech API here
-    // For demo, we'll simulate speech-to-text conversion
-
-    console.log(`🎤 Received audio chunk from ${userId}`);
-
-    // Simulate STT result (in real implementation, use actual STT engine)
-    const simulatedText = this.simulateSpeechToText(audioData);
-
-    if (simulatedText) {
-      ws.send(JSON.stringify({
-        type: 'transcript',
-        text: simulatedText,
-        confidence: 0.95,
-        timestamp: Date.now()
-      }));
-
-      // Forward to neural engine for processing
-      this.forwardToNeuralEngine(ws, simulatedText);
+    // Check for trivial deterministic responses first
+    const deterministic = this._checkDeterministic(text);
+    if (deterministic) {
+      session.send({
+        type:     'response',
+        response: deterministic.text,
+        source:   'deterministic',
+      });
+      session.transition(STATES.SPEAKING);
+      setTimeout(() => session.transition(STATES.IDLE), 500);
+      return;
     }
-  }
 
-  /**
-   * Simulate speech-to-text (replace with real STT in production)
-   */
-  simulateSpeechToText(audioData) {
-    // This would use Vosk, WebSpeech API, or Whisper in production
-    const transcripts = [
-      'Who are you?',
-      'What can you do for me?',
-      'Help me with my projects',
-      'Check my calendar for today',
-      'Turn on the living room lights'
-    ];
-
-    // Return random transcript for demo
-    return transcripts[Math.floor(Math.random() * transcripts.length)];
-  }
-
-  /**
-   * Forward text to neural engine and send response
-   */
-  async forwardToNeuralEngine(ws, text) {
-    const userId = this.activeConnections.get(ws)?.userId;
+    // Add to history
+    session.history.push({ role: 'user', content: text });
+    if (session.history.length > 20) session.history.splice(0, 2); // rolling window
 
     try {
-      // In production, this would call the neural engine API
-      // For demo, we'll simulate a response
+      const messages = [
+        { role: 'system', content: SYSTEM_PROMPT },
+        ...session.history,
+      ];
 
-      const simulatedResponse = `I heard you say: "${text}". How can I help you with that?`;
+      const reply = await callLMStudio(messages);
+      session.history.push({ role: 'assistant', content: reply });
 
-      await this.speakText(ws, simulatedResponse);
+      session.send({
+        type:     'response',
+        response: reply,
+        source:   'llm',
+      });
+      session.transition(STATES.SPEAKING);
+      setTimeout(() => session.transition(STATES.IDLE), 500);
 
-    } catch (error) {
-      ws.send(JSON.stringify({
-        type: 'error',
-        message: 'Neural processing failed'
-      }));
+    } catch (err) {
+      console.error('LM Studio error:', err.message);
+      const fallback = 'I\'m having trouble reaching my language model right now. Please check that LM Studio is running on port 1234.';
+      session.send({
+        type:     'response',
+        response: fallback,
+        source:   'deterministic',
+      });
+      session.transition(STATES.OFFLINE);
     }
   }
 
-  /**
-   * Convert text to speech and send audio stream
-   */
-  async speakText(ws, text, personality = 'companion') {
-    const userId = this.activeConnections.get(ws)?.userId;
-
-    if (!userId) return;
-
-    console.log(`🔊 Speaking to ${userId}: "${text}"`);
-
-    // In production, use AWS Polly, Google Cloud TTS, or local TTS engine
-    // For demo, we'll create a simple simulated audio response
-
-    const audioBuffer = await this.generateAudioResponse(text, personality);
-
-    // Send as binary WebSocket message
-    ws.send(audioBuffer, { binary: true });
-
-    // Queue for playback on client side
-    if (!this.audioBuffers.has(userId)) {
-      this.audioBuffers.set(userId, []);
+  // ── Deterministic fact lookup ────────────────────────────────
+  _checkDeterministic(text) {
+    const t = text.toLowerCase().trim();
+    if (/^who are you\??$/.test(t) || /^what is your name\??$/.test(t)) {
+      return { text: "I'm A.L.E.C. — Adaptive Learning Executive Companion. I'm your personal AI assistant, designed to help with smart home control, STOA data, reminders, and general knowledge." };
     }
-    this.audioBuffers.get(userId).push({ text, timestamp: Date.now() });
-  }
-
-  /**
-   * Generate audio response (placeholder - use real TTS in production)
-   */
-  async generateAudioResponse(text, personality = 'companion') {
-    // In production, use a proper TTS engine like:
-    // - AWS Polly for cloud-based synthesis
-    // - Coqui TTS for local offline synthesis
-    // - Google Cloud Text-to-Speech
-
-    // For demo, create a simple WAV header with dummy data
-    const encoder = new TextEncoder();
-    const textData = encoder.encode(text);
-
-    // Create minimal WAV file structure (8kHz, mono)
-    const audioLength = textData.length * 2; // 16-bit samples
-    const wavHeader = Buffer.alloc(44);
-
-    // RIFF header
-    wavHeader.write('RIFF', 0);
-    wavHeader.writeUInt32LE(36 + audioLength, 4);
-    wavHeader.write('WAVE', 8);
-
-    // fmt chunk
-    wavHeader.write('fmt ', 12);
-    wavHeader.writeUInt32LE(16, 16);
-    wavHeader.writeUInt16LE(1, 20); // Audio format (PCM)
-    wavHeader.writeUInt16LE(1, 22); // Number of channels
-    wavHeader.writeUInt32LE(8000, 24); // Sample rate
-    wavHeader.writeUInt32LE(16000, 28); // Byte rate
-    wavHeader.writeUInt16LE(2, 32); // Block align
-    wavHeader.writeUInt16LE(16, 34); // Bits per sample
-
-    // data chunk
-    wavHeader.write('data', 36);
-    wavHeader.writeUInt32LE(audioLength, 40);
-
-    return Buffer.concat([wavHeader, textData]);
-  }
-
-  /**
-   * Process voice commands (smart home control, etc.)
-   */
-  async processCommand(ws, command) {
-    const userId = this.activeConnections.get(ws)?.userId;
-
-    console.log(`🎯 Voice command: ${command}`);
-
-    // Parse and execute command
-    if (command.startsWith('light')) {
-      ws.send(JSON.stringify({
-        type: 'smart_home_response',
-        action: 'light_control',
-        status: 'executed',
-        message: 'I\'ve adjusted the lighting for you'
-      }));
-    } else if (command.startsWith('calendar')) {
-      ws.send(JSON.stringify({
-        type: 'calendar_update',
-        events: [
-          { time: '10:00 AM', title: 'Team Meeting', duration: '1h' },
-          { time: '2:00 PM', title: 'Project Review', duration: '45min' }
-        ]
-      }));
-    } else {
-      ws.send(JSON.stringify({
-        type: 'unknown_command',
-        message: `I'm not sure how to handle "${command}" yet`
-      }));
+    if (/^what time is it\??$/.test(t)) {
+      return { text: `The current time is ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.` };
     }
+    if (/^(what('s| is) (today|the date|today's date))\??$/.test(t)) {
+      return { text: `Today is ${new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}.` };
+    }
+    return null;
   }
 
-  /**
-   * Get voice interface status
-   */
+  // ── Broadcast to all sessions ────────────────────────────────
+  broadcast(payload) {
+    this.sessions.forEach(session => session.send(payload));
+  }
+
+  // ── Status ───────────────────────────────────────────────────
   getStatus() {
     return {
-      initialized: this.isInitialized,
-      activeConnections: this.activeConnections.size,
-      audioBuffersQueued: Array.from(this.audioBuffers.values()).reduce((sum, arr) => sum + arr.length, 0)
+      initialized:    this.isInitialized,
+      activeSessions: this.sessions.size,
+      sessions:       Array.from(this.sessions.values()).map(s => ({ state: s.state })),
+      ttsAvailable:   this.ttsAvailable,
+      model:          this.modelName,
+      haConnected:    this.haConnected,
     };
   }
 }
 
-module.exports = { VoiceInterface };
+module.exports = { STATES, VoiceInterface };
