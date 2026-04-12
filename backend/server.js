@@ -94,7 +94,7 @@ function buildSystemPrompt() {
   const hasTwilio = !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER);
   const ownerPhone = process.env.OWNER_PHONE;
   if (hasTwilio && ownerPhone) {
-    caps.push(`✅ SMS via Twilio — YOU CAN TEXT the owner RIGHT NOW at ${ownerPhone} from ${process.env.TWILIO_FROM_NUMBER}. When asked to text/SMS/notify/send a message to Alec, the system automatically sends it — just say "I'll text you now" and the message will be sent.`);
+    caps.push(`✅ SMS via Twilio — YOU CAN TEXT the owner RIGHT NOW at ${ownerPhone} from "Alec Rovner" (${process.env.TWILIO_FROM_NUMBER}). When asked to text/SMS/notify/send a message to Alec, the system automatically sends it — just say "I'll text you now" and the message will be sent.`);
   } else if (hasTwilio) {
     caps.push('✅ Twilio SMS configured but OWNER_PHONE not set — cannot text yet');
   } else if (ownerPhone) {
