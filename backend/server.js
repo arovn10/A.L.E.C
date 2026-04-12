@@ -53,6 +53,7 @@ const NEURAL_URL = `http://localhost:${process.env.NEURAL_PORT || 8000}`;
 // ════════════════════════════════════════════════════════════════
 const llamaEngine      = require('../services/llamaEngine.js');
 const desktopControl   = require('../services/desktopControl.js');
+const stoaQuery        = require('../services/stoaQueryService.js');
 
 // Warm up the embedded engine on startup
 llamaEngine.warmUp();
@@ -503,7 +504,20 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     // Build system prompt with memory
     const mem = loadMemory();
     const memCtx = buildMemoryContext(mem);
-    const systemContent = buildSystemPrompt() + (memCtx ? '\n\n' + memCtx : '');
+    let systemContent = buildSystemPrompt() + (memCtx ? '\n\n' + memCtx : '');
+
+    // ── STOA RAG: inject live database context before LLM call ──
+    // Detects property/leasing/deal questions and pulls real numbers from
+    // Azure SQL — this prevents hallucination by grounding the LLM in facts.
+    try {
+      const stoaCtx = await stoaQuery.buildStoaContext(userText);
+      if (stoaCtx) {
+        systemContent += '\n\n' + stoaCtx;
+        console.log('[STOA RAG] Injected live data for:', userText.slice(0, 60));
+      }
+    } catch (stoaErr) {
+      console.warn('[STOA RAG] Failed (non-critical):', stoaErr.message?.slice(0, 80));
+    }
 
     // Web search augmentation
     let augmentedMessages = [...messages];
@@ -564,7 +578,19 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
     // System prompt + memory
     const mem = loadMemory();
     const memCtx = buildMemoryContext(mem);
-    const systemContent = buildSystemPrompt() + (memCtx ? '\n\n' + memCtx : '');
+    let systemContent = buildSystemPrompt() + (memCtx ? '\n\n' + memCtx : '');
+
+    // ── STOA RAG: inject live database context ────────────────
+    try {
+      const stoaCtx = await stoaQuery.buildStoaContext(userText);
+      if (stoaCtx) {
+        systemContent += '\n\n' + stoaCtx;
+        res.write('data: {"token":"📊 "}\n\n'); // subtle indicator that real data was loaded
+        console.log('[STOA RAG stream] Injected live data for:', userText.slice(0, 60));
+      }
+    } catch (stoaErr) {
+      console.warn('[STOA RAG stream] Failed (non-critical):', stoaErr.message?.slice(0, 80));
+    }
 
     // Web search augmentation
     let augmentedMessages = [...messages];
@@ -1037,6 +1063,57 @@ app.post('/api/tasks/:id/cancel', authenticateToken, async (req, res) => {
 // ════════════════════════════════════════════════════════════════
 //  STOA GROUP DB ENDPOINTS
 // ════════════════════════════════════════════════════════════════
+
+/**
+ * GET /api/stoa/ping
+ * Quick connectivity test for the live Azure SQL STOA database.
+ */
+app.get('/api/stoa/ping', authenticateToken, async (req, res) => {
+  const result = await stoaQuery.ping();
+  res.json(result);
+});
+
+/**
+ * GET /api/stoa/occupancy?property=...
+ * Returns live occupancy/leasing data for one or all properties.
+ */
+app.get('/api/stoa/occupancy', authenticateToken, async (req, res) => {
+  try {
+    const property = req.query.property || null;
+    const rows = await stoaQuery.getMMRData(property);
+    res.json({ success: true, count: rows.length, data: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/stoa/portfolio
+ * Returns portfolio-level KPIs across all active properties.
+ */
+app.get('/api/stoa/portfolio', authenticateToken, async (req, res) => {
+  try {
+    const [summary] = await stoaQuery.getPortfolioSummary();
+    const properties = await stoaQuery.getMMRData();
+    res.json({ success: true, summary, properties });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/stoa/projects?search=...
+ * Search projects by name or city.
+ */
+app.get('/api/stoa/projects', authenticateToken, async (req, res) => {
+  try {
+    const search = req.query.search || '';
+    const projects = await stoaQuery.findProjects(search);
+    res.json({ success: true, count: projects.length, data: projects });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 /**
  * GET /api/stoa/status
