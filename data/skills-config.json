@@ -1,5 +1,11 @@
 {
   "users": {
+    "1": {
+      "tenantcloud": {
+        "TENANTCLOUD_EMAIL": "4a9efd88d0d5444ebbd0bcd200b1a076:87dc49d8e49cc19873e73ac466f8fa9153f588246dfd1e3bd1cad2c87ca2beb2",
+        "TENANTCLOUD_PASSWORD": "38eb3bb6721b8616fafa1fb4caa4222e:1516bbf01cb099e976df55fa073f6613"
+      }
+    },
     "_legacy": {
       "github": {
         "GITHUB_TOKEN": "469849d42604a93936cfa10da41dbcc5:ca9c6d2db8d1af812f1a721a920a79bf9943e10710145e4b81599e1f0544bf90"

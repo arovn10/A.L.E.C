@@ -2297,16 +2297,35 @@ window.openSkillConfig = async function(skillId) {
       }
     }
 
-    // ── TenantCloud: add manual browser login button ─────────
+    // ── TenantCloud: bookmarklet + sync UI ───────────────────
     if (skillId === 'tenantcloud') {
+      // Bookmarklet injects a <script> tag — browser executes natively without eval
+      const bmHref = "javascript:void(function(){var s=document.createElement('script');s.src='http://localhost:3001/api/tenantcloud/bookmarklet.js?_='+Date.now();document.head.appendChild(s)})()";
       fieldsEl.innerHTML += `
-        <div style="margin-top:18px;padding:14px;background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:8px;">
-          <div style="font-weight:600;font-size:0.85rem;margin-bottom:6px;">🌐 reCAPTCHA blocks automated login</div>
-          <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:10px;">Click below to open a Chrome window on the server Mac. Log into TenantCloud normally — ALEC will capture your session automatically.</div>
-          <button class="btn btn-accent" id="tc-manual-login-btn" onclick="startTenantCloudLogin()" style="width:100%;font-size:0.85rem;">
+        <div style="margin-top:18px;padding:14px;background:rgba(34,197,94,.07);border:1px solid rgba(34,197,94,.25);border-radius:8px;">
+          <div style="font-weight:600;font-size:0.85rem;margin-bottom:4px;">🏠 TenantCloud Browser Sync</div>
+          <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:12px;">
+            TenantCloud blocks automated login (reCAPTCHA), so ALEC reads data from your authenticated browser.
+            <strong>One-time:</strong> drag the button below to your bookmarks bar.
+            Click it on any TenantCloud page to instantly push data to ALEC.
+          </div>
+          <a id="tc-bookmarklet-link" href="${bmHref}"
+             style="display:block;padding:10px 14px;background:rgba(34,197,94,.12);border:2px dashed rgba(34,197,94,.4);border-radius:6px;color:var(--text-primary);font-weight:600;font-size:0.85rem;text-align:center;text-decoration:none;cursor:grab;margin-bottom:10px;"
+             title="Drag to bookmarks bar — click it whenever you're on TenantCloud">
+            🔖 Drag to Bookmarks → "Sync ALEC"
+          </a>
+          <button class="btn btn-accent" onclick="syncTenantCloudNow()" style="width:100%;font-size:0.85rem;">
+            ⚡ Sync Now (TenantCloud must be open in Chrome)
+          </button>
+          <div id="tc-sync-status" style="margin-top:8px;font-size:0.78rem;color:var(--text-muted);text-align:center;"></div>
+        </div>
+
+        <div style="margin-top:10px;padding:12px 14px;background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.15);border-radius:8px;">
+          <div style="font-weight:600;font-size:0.82rem;margin-bottom:4px;">Open a new window to log in</div>
+          <button class="btn" id="tc-manual-login-btn" onclick="startTenantCloudLogin()" style="width:100%;font-size:0.82rem;margin-top:4px;">
             🔓 Open Browser & Log In
           </button>
-          <div id="tc-login-status" style="margin-top:8px;font-size:0.78rem;color:var(--text-muted);text-align:center;"></div>
+          <div id="tc-login-status" style="margin-top:6px;font-size:0.78rem;color:var(--text-muted);text-align:center;"></div>
         </div>`;
     }
 
@@ -2352,6 +2371,36 @@ window.startTenantCloudLogin = async function() {
   } catch (err) {
     if (status) status.textContent = '❌ ' + err.message;
     if (btn) { btn.disabled = false; btn.textContent = '🔓 Open Browser & Log In'; }
+  }
+};
+
+/**
+ * "Sync Now" — asks the server to inject the bookmarklet script into the
+ * TenantCloud Chrome tab via the DevTools MCP (server-side Chrome control).
+ * Falls back gracefully if the tab isn't open.
+ */
+window.syncTenantCloudNow = async function() {
+  const status = document.getElementById('tc-sync-status');
+  if (status) status.textContent = '⏳ Triggering sync…';
+  try {
+    const result = await api('POST', '/api/tenantcloud/inject-sync', {});
+    if (result.ok) {
+      if (status) status.textContent = '✅ Sync triggered! ALEC is pulling your TenantCloud data now.';
+      // Check cache in 3s
+      setTimeout(async () => {
+        try {
+          const cache = await api('GET', '/api/tenantcloud/cache');
+          const count = cache.keys?.length || 0;
+          if (count > 0 && status) {
+            status.textContent = `✅ Synced ${count} data sets from TenantCloud.`;
+          }
+        } catch (_) {}
+      }, 3000);
+    } else {
+      if (status) status.textContent = result.message || '⚠️ Could not reach TenantCloud tab. Make sure TenantCloud is open in Chrome, then click the bookmarklet instead.';
+    }
+  } catch (err) {
+    if (status) status.textContent = '⚠️ ' + err.message + ' — use the bookmarklet instead while on TenantCloud.';
   }
 };
 

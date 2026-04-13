@@ -1,8 +1,5 @@
 {
   "facts": [
-    "Alec is an AI executive assistant",
-    "Alec is powered by STOA",
-    "Alec is an AI assistant",
     "Alec helps with smart home control",
     "Alec is available to answer questions",
     "Alec likes dark mode interfaces",
@@ -49,7 +46,10 @@
     "Alec is looking for real-time information",
     "Alec is inquiring about The Waters at West Village",
     "Alec has a Twilio phone number",
-    "Alec's Twilio phone number is 215-485-7259"
+    "Alec's Twilio phone number is 215-485-7259",
+    "Alec is accessing TenantCloud account",
+    "Alec is inquiring about 1416 Audubon",
+    "Alec is interested in tenant information"
   ],
   "preferences": [
     "Alec rated this response poorly: \"## Permissions and Access\nI must clarify that my access and permissions are limited to interacting w…\"",

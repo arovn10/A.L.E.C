@@ -880,21 +880,42 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
 
     // ── TenantCloud RAG: inject property management data ──────────
     const tcIntent = /tenantcloud|\b(tenant|rent|payment|overdue|maintenance|lease|property|properties|unit|units|inquiry|inquiries|renter|move.?out|move.?in|vacancy|vacant|occupan|evict)\b/i.test(userText);
-    if (tcIntent && tenantCloud) {
+    if (tcIntent) {
       try {
-        const summary = await tenantCloud.getPortfolioSummary();
-        const overdueRent = await tenantCloud.getOverdueRent().catch(() => []);
-        const openMaint   = await tenantCloud.getOpenMaintenance().catch(() => []);
-        let tcCtx = `[TenantCloud DATA — live property management data]\n`;
-        tcCtx += `Portfolio: ${summary.properties?.total || 0} properties, ${summary.tenants?.total || 0} tenants (${summary.tenants?.active || 0} active)\n`;
-        if (summary.overdue?.count > 0) tcCtx += `⚠️ Overdue rent: ${summary.overdue.count} payments, $${summary.overdue.totalAmount?.toLocaleString()}\n`;
-        if (summary.maintenance?.open > 0) tcCtx += `🔧 Open maintenance: ${summary.maintenance.open} requests (${summary.maintenance.highPriority} high priority)\n`;
-        if (summary.messages?.unread > 0) tcCtx += `💬 Unread messages: ${summary.messages.unread}\n`;
-        if (summary.inquiries?.new > 0) tcCtx += `🔔 New inquiries: ${summary.inquiries.new}\n`;
-        if (overdueRent.length > 0) tcCtx += `Overdue tenants: ${overdueRent.slice(0, 5).map(p => `${p.tenant} ($${p.amount})`).join(', ')}\n`;
-        if (openMaint.length > 0) tcCtx += `Maintenance: ${openMaint.slice(0, 3).map(m => `${m.property}/${m.unit} — ${m.title} [${m.priority}]`).join(' | ')}`;
-        systemContent += '\n\n' + tcCtx;
-        console.log('[TenantCloud RAG] Injected portfolio summary');
+        let tcCtx = '';
+
+        // Try browser-relay cache first (most reliable — real data from authenticated browser)
+        const cacheKeys = Object.keys(tcCache).filter(k => !k.startsWith('_'));
+        if (cacheKeys.length > 0) {
+          const age = tcCache._lastPush ? Math.round((Date.now() - new Date(tcCache._lastPush)) / 60000) : '?';
+          tcCtx = `[TenantCloud DATA — captured from authenticated browser ${age} min ago]\n`;
+          for (const key of cacheKeys) {
+            const entry = tcCache[key];
+            const d = entry.data;
+            const items = Array.isArray(d) ? d : (Array.isArray(d?.data) ? d.data : (d ? [d] : []));
+            if (items.length > 0) {
+              tcCtx += `\n## ${key.replace(/_/g, '/')} (${items.length} records)\n`;
+              tcCtx += JSON.stringify(items.slice(0, 20), null, 1).slice(0, 1500) + '\n';
+            }
+          }
+          console.log('[TenantCloud RAG] Served from browser-relay cache');
+        } else if (tenantCloud) {
+          // Fall back to Puppeteer scraper
+          const summary = await tenantCloud.getPortfolioSummary();
+          const overdueRent = await tenantCloud.getOverdueRent().catch(() => []);
+          const openMaint   = await tenantCloud.getOpenMaintenance().catch(() => []);
+          tcCtx = `[TenantCloud DATA — live property management data]\n`;
+          tcCtx += `Portfolio: ${summary.properties?.total || 0} properties, ${summary.tenants?.total || 0} tenants (${summary.tenants?.active || 0} active)\n`;
+          if (summary.overdue?.count > 0) tcCtx += `⚠️ Overdue rent: ${summary.overdue.count} payments, $${summary.overdue.totalAmount?.toLocaleString()}\n`;
+          if (summary.maintenance?.open > 0) tcCtx += `🔧 Open maintenance: ${summary.maintenance.open} requests (${summary.maintenance.highPriority} high priority)\n`;
+          if (summary.messages?.unread > 0) tcCtx += `💬 Unread messages: ${summary.messages.unread}\n`;
+          if (summary.inquiries?.new > 0) tcCtx += `🔔 New inquiries: ${summary.inquiries.new}\n`;
+          if (overdueRent.length > 0) tcCtx += `Overdue tenants: ${overdueRent.slice(0, 5).map(p => `${p.tenant} ($${p.amount})`).join(', ')}\n`;
+          if (openMaint.length > 0) tcCtx += `Maintenance: ${openMaint.slice(0, 3).map(m => `${m.property}/${m.unit} — ${m.title} [${m.priority}]`).join(' | ')}`;
+          console.log('[TenantCloud RAG] Injected via Puppeteer scraper');
+        }
+
+        if (tcCtx) systemContent += '\n\n' + tcCtx;
       } catch (tcErr) {
         console.warn('[TenantCloud RAG] Failed (non-critical):', tcErr.message?.slice(0, 80));
       }
@@ -1271,22 +1292,43 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
 
     // ── TenantCloud RAG (stream) ────────────────────────────────
     const tcIntentStream = /tenantcloud|\b(tenant|rent|payment|overdue|maintenance|lease|property|properties|unit|units|inquiry|inquiries|renter|move.?out|move.?in|vacancy|vacant|occupan|evict)\b/i.test(userText);
-    if (tcIntentStream && tenantCloud) {
+    if (tcIntentStream) {
       try {
         res.write('data: {"token":"🏠 "}\n\n');
-        const summary = await tenantCloud.getPortfolioSummary();
-        const overdueRent = await tenantCloud.getOverdueRent().catch(() => []);
-        const openMaint   = await tenantCloud.getOpenMaintenance().catch(() => []);
-        let tcCtx = `[TenantCloud DATA — live property management data]\n`;
-        tcCtx += `Portfolio: ${summary.properties?.total || 0} properties, ${summary.tenants?.total || 0} tenants (${summary.tenants?.active || 0} active)\n`;
-        if (summary.overdue?.count > 0) tcCtx += `⚠️ Overdue rent: ${summary.overdue.count} payments, $${summary.overdue.totalAmount?.toLocaleString()}\n`;
-        if (summary.maintenance?.open > 0) tcCtx += `🔧 Open maintenance: ${summary.maintenance.open} requests (${summary.maintenance.highPriority} high priority)\n`;
-        if (summary.messages?.unread > 0) tcCtx += `💬 Unread messages: ${summary.messages.unread}\n`;
-        if (summary.inquiries?.new > 0) tcCtx += `🔔 New inquiries: ${summary.inquiries.new}\n`;
-        if (overdueRent.length > 0) tcCtx += `Overdue tenants: ${overdueRent.slice(0, 5).map(p => `${p.tenant} ($${p.amount})`).join(', ')}\n`;
-        if (openMaint.length > 0) tcCtx += `Maintenance: ${openMaint.slice(0, 3).map(m => `${m.property}/${m.unit} — ${m.title} [${m.priority}]`).join(' | ')}`;
-        systemContent += '\n\n' + tcCtx;
-        console.log('[TenantCloud RAG stream] Injected portfolio summary');
+        let tcCtx = '';
+
+        // Try browser-relay cache first (most reliable — real data from authenticated browser)
+        const cacheKeys = Object.keys(tcCache).filter(k => !k.startsWith('_'));
+        if (cacheKeys.length > 0) {
+          const age = tcCache._lastPush ? Math.round((Date.now() - new Date(tcCache._lastPush)) / 60000) : '?';
+          tcCtx = `[TenantCloud DATA — captured from authenticated browser ${age} min ago]\n`;
+          for (const key of cacheKeys) {
+            const entry = tcCache[key];
+            const d = entry.data;
+            const items = Array.isArray(d) ? d : (Array.isArray(d?.data) ? d.data : (d ? [d] : []));
+            if (items.length > 0) {
+              tcCtx += `\n## ${key.replace(/_/g, '/')} (${items.length} records)\n`;
+              tcCtx += JSON.stringify(items.slice(0, 20), null, 1).slice(0, 1500) + '\n';
+            }
+          }
+          console.log('[TenantCloud RAG stream] Served from browser-relay cache');
+        } else if (tenantCloud) {
+          // Fall back to Puppeteer scraper
+          const summary = await tenantCloud.getPortfolioSummary();
+          const overdueRent = await tenantCloud.getOverdueRent().catch(() => []);
+          const openMaint   = await tenantCloud.getOpenMaintenance().catch(() => []);
+          tcCtx = `[TenantCloud DATA — live property management data]\n`;
+          tcCtx += `Portfolio: ${summary.properties?.total || 0} properties, ${summary.tenants?.total || 0} tenants (${summary.tenants?.active || 0} active)\n`;
+          if (summary.overdue?.count > 0) tcCtx += `⚠️ Overdue rent: ${summary.overdue.count} payments, $${summary.overdue.totalAmount?.toLocaleString()}\n`;
+          if (summary.maintenance?.open > 0) tcCtx += `🔧 Open maintenance: ${summary.maintenance.open} requests (${summary.maintenance.highPriority} high priority)\n`;
+          if (summary.messages?.unread > 0) tcCtx += `💬 Unread messages: ${summary.messages.unread}\n`;
+          if (summary.inquiries?.new > 0) tcCtx += `🔔 New inquiries: ${summary.inquiries.new}\n`;
+          if (overdueRent.length > 0) tcCtx += `Overdue tenants: ${overdueRent.slice(0, 5).map(p => `${p.tenant} ($${p.amount})`).join(', ')}\n`;
+          if (openMaint.length > 0) tcCtx += `Maintenance: ${openMaint.slice(0, 3).map(m => `${m.property}/${m.unit} — ${m.title} [${m.priority}]`).join(' | ')}`;
+          console.log('[TenantCloud RAG stream] Injected via Puppeteer scraper');
+        }
+
+        if (tcCtx) systemContent += '\n\n' + tcCtx;
       } catch (tcErr) {
         console.warn('[TenantCloud RAG stream] Failed (non-critical):', tcErr.message?.slice(0, 80));
       }
@@ -4104,6 +4146,181 @@ app.post('/api/twilio/sms', express.urlencoded({ extended: false }), async (req,
 </Response>`;
   res.set('Content-Type', 'text/xml');
   res.send(twiml);
+});
+
+// ════════════════════════════════════════════════════════════════
+//  TENANTCLOUD BROWSER RELAY  (/api/tenantcloud/data-push)
+//
+//  The browser interceptor script (injected via Chrome DevTools) calls
+//  this endpoint whenever api.tenantcloud.com returns JSON data.
+//  No JWT needed — protected by TC_RELAY_SECRET (shared secret).
+//  Data is cached to data/tc-cache.json and served by the RAG system.
+// ════════════════════════════════════════════════════════════════
+
+const TC_CACHE_FILE = path.join(__dirname, '../data/tc-cache.json');
+const TC_RELAY_SECRET = process.env.TC_RELAY_SECRET || 'alec-tc-relay-2025';
+
+// In-memory cache — survives restarts via TC_CACHE_FILE
+let tcCache = (() => {
+  try { if (fs.existsSync(TC_CACHE_FILE)) return JSON.parse(fs.readFileSync(TC_CACHE_FILE, 'utf8')); }
+  catch (_) {}
+  return {};
+})();
+
+function saveTcCache() {
+  try { fs.writeFileSync(TC_CACHE_FILE, JSON.stringify(tcCache, null, 2)); } catch (_) {}
+}
+
+/**
+ * POST /api/tenantcloud/data-push?secret=xxx
+ * Body: { endpoint, data, capturedAt }
+ * Called by the browser interceptor — no JWT, protected by shared secret.
+ */
+app.post('/api/tenantcloud/data-push', express.json({ limit: '2mb' }), (req, res) => {
+  const { secret } = req.query;
+  if (secret !== TC_RELAY_SECRET) return res.status(403).json({ error: 'invalid secret' });
+
+  const { endpoint, data, capturedAt } = req.body;
+  if (!endpoint || !data) return res.status(400).json({ error: 'endpoint and data required' });
+
+  // Normalize endpoint to a simple key
+  const key = endpoint
+    .replace(/https?:\/\/[^/]+/, '')  // strip domain
+    .replace(/\?.*/, '')               // strip query string
+    .replace(/\/+/g, '_')
+    .replace(/^_/, '');
+
+  tcCache[key] = { data, capturedAt: capturedAt || new Date().toISOString(), endpoint };
+  tcCache._lastPush = new Date().toISOString();
+  saveTcCache();
+
+  console.log(`[TC Browser Relay] Cached ${key} (${JSON.stringify(data).length} bytes)`);
+  res.json({ ok: true, key });
+});
+
+/** GET /api/tenantcloud/cache — inspect cached data (owner only) */
+app.get('/api/tenantcloud/cache', authenticateToken, (req, res) => {
+  const summary = {};
+  for (const [k, v] of Object.entries(tcCache)) {
+    if (k.startsWith('_')) { summary[k] = v; continue; }
+    const d = v.data;
+    summary[k] = {
+      capturedAt: v.capturedAt,
+      items: Array.isArray(d) ? d.length : (d?.data ? (Array.isArray(d.data) ? d.data.length : 1) : 1),
+    };
+  }
+  res.json({ ok: true, keys: Object.keys(tcCache).filter(k => !k.startsWith('_')), summary });
+});
+
+/**
+ * POST /api/tenantcloud/inject-sync
+ * Server-side: opens the TenantCloud bookmarklet script in the user's
+ * Chrome via AppleScript (injects a <script> tag into the active tab).
+ * Requires Chrome to have TenantCloud open. Owner only.
+ */
+app.post('/api/tenantcloud/inject-sync', authenticateToken, requireOwner, async (req, res) => {
+  const { exec } = require('child_process');
+  const scriptUrl = `http://localhost:${PORT}/api/tenantcloud/bookmarklet.js?_=${Date.now()}`;
+  // AppleScript: run JS in the frontmost Chrome tab
+  const appleScript = `
+    tell application "Google Chrome"
+      set theTab to active tab of front window
+      set theUrl to URL of theTab
+      if theUrl contains "tenantcloud.com" then
+        execute theTab javascript "var s=document.createElement('script');s.src='${scriptUrl}';document.head.appendChild(s);"
+        return "injected"
+      else
+        return "not-tenantcloud:" & theUrl
+      end if
+    end tell
+  `.trim();
+
+  exec(`osascript -e '${appleScript.replace(/'/g, "'\\''")}'`, (err, stdout, stderr) => {
+    const output = (stdout || '').trim();
+    if (err) {
+      return res.json({ ok: false, message: 'AppleScript error — make sure TenantCloud is open in Chrome: ' + (err.message || '').slice(0, 100) });
+    }
+    if (output.startsWith('not-tenantcloud:')) {
+      return res.json({ ok: false, message: 'Chrome frontmost tab is not TenantCloud. Navigate to app.tenantcloud.com first, then click Sync Now again.' });
+    }
+    res.json({ ok: true, message: 'Sync script injected into Chrome TenantCloud tab.' });
+  });
+});
+
+/**
+ * GET /api/tenantcloud/bookmarklet.js
+ * Returns the interceptor script. The bookmarklet calls this endpoint,
+ * evals the result, which then immediately pushes all TC data to ALEC.
+ * No auth — this script is the auth mechanism itself.
+ */
+app.get('/api/tenantcloud/bookmarklet.js', (req, res) => {
+  const port = PORT;
+  const secret = TC_RELAY_SECRET;
+  const knownEndpoints = [
+    { url: 'https://api.tenantcloud.com/landlord/tenants',  params: '?limit=100&include=lease,unit,building' },
+    { url: 'https://api.tenantcloud.com/landlord/property', params: '?limit=50' },
+    { url: 'https://api.tenantcloud.com/leases',            params: '?limit=100&include=building,unit,tenant' },
+    { url: 'https://api.tenantcloud.com/transactions',      params: '?limit=100&order=-created_at' },
+    { url: 'https://api.tenantcloud.com/units',             params: '?limit=100' },
+    { url: 'https://api.tenantcloud.com/landlord/profile',  params: '' },
+    { url: 'https://api.tenantcloud.com/properties',        params: '?limit=50' },
+  ];
+
+  const script = `
+(async function alecTcSync() {
+  const ALEC = 'http://localhost:${port}/api/tenantcloud/data-push?secret=${secret}';
+  const HDR = { 'x-requested-with': 'XMLHttpRequest', accept: 'application/json', credentials: 'include' };
+
+  // Install persistent interceptors so future navigation also captures data
+  if (!window.__alecRelayInstalled) {
+    window.__alecRelayInstalled = true;
+    const origFetch = window.fetch;
+    window.fetch = async function(input, init) {
+      const url = typeof input === 'string' ? input : (input && input.url) || '';
+      const resp = await origFetch.apply(this, arguments);
+      if (url.includes('api.tenantcloud.com') && url !== ALEC) {
+        resp.clone().json().then(j => {
+          fetch(ALEC, { method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ endpoint: url, data: j, capturedAt: new Date().toISOString() }) });
+        }).catch(()=>{});
+      }
+      return resp;
+    };
+    console.log('[ALEC] Interceptor installed for future calls');
+  }
+
+  // Immediately pull all known endpoints
+  const endpoints = ${JSON.stringify(knownEndpoints)};
+  let pushed = 0, failed = 0;
+  for (const { url, params } of endpoints) {
+    try {
+      const r = await fetch(url + params, { headers: HDR, credentials: 'include' });
+      if (r.ok) {
+        const j = await r.json();
+        await fetch(ALEC, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ endpoint: url, data: j, capturedAt: new Date().toISOString() }) });
+        pushed++;
+      } else {
+        failed++;
+        console.warn('[ALEC] TC endpoint returned', r.status, url);
+      }
+    } catch(e) { failed++; console.warn('[ALEC]', e.message, url); }
+  }
+
+  const msg = '✅ ALEC synced ' + pushed + ' TenantCloud endpoints' + (failed ? ' (' + failed + ' failed — are you logged in?)' : '');
+  console.log(msg);
+  // Brief visual confirmation
+  const toast = document.createElement('div');
+  toast.textContent = msg;
+  toast.style.cssText = 'position:fixed;top:20px;right:20px;background:#1a6b2b;color:#fff;padding:14px 20px;border-radius:8px;font-size:14px;z-index:999999;box-shadow:0 4px 12px rgba(0,0,0,0.3)';
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 5000);
+  return msg;
+})();
+`.trim();
+
+  res.set('Content-Type', 'application/javascript');
+  res.send(script);
 });
 
 app.listen(PORT, HOST, () => {

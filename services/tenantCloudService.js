@@ -105,19 +105,23 @@ async function getPage() {
 
 // ── Session persistence ───────────────────────────────────────────
 
-function loadSavedCookies() {
+function loadSavedSession() {
   try {
     if (fs.existsSync(SESSION_FILE)) return JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8'));
   } catch (_) {}
   return null;
 }
 
-function saveCookies(cookies) {
+function saveSession(data) {
   try {
     fs.mkdirSync(path.dirname(SESSION_FILE), { recursive: true });
-    fs.writeFileSync(SESSION_FILE, JSON.stringify(cookies));
+    fs.writeFileSync(SESSION_FILE, JSON.stringify(data));
   } catch (_) {}
 }
+
+// Legacy alias
+const loadSavedCookies = loadSavedSession;
+const saveCookies = saveSession;
 
 // ── 2FA code injection (called from API endpoint) ─────────────────
 
@@ -162,16 +166,32 @@ async function ensureLoggedIn() {
   // Try restoring saved session first
   const saved = loadSavedCookies();
   if (saved) {
-    await page.setCookie(...saved);
+    // Navigate to domain first so we can set storage
+    await page.goto(`${TC_BASE}/login`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+
+    if (saved.type === 'localStorage' && saved.data) {
+      // Restore localStorage-based session (SPA token auth)
+      await page.evaluate((data) => {
+        for (const [k, v] of Object.entries(data)) {
+          localStorage.setItem(k, v);
+        }
+      }, saved.data);
+      console.log('[TenantCloud] Restored localStorage session');
+    } else if (Array.isArray(saved)) {
+      // Legacy: cookie-based session
+      await page.setCookie(...saved);
+    }
+
+    // Navigate to dashboard and see if we're logged in
     await page.goto(`${TC_BASE}/landlord/dashboard`, { waitUntil: 'domcontentloaded', timeout: 20000 });
-    await new Promise(r => setTimeout(r, 2000)); // let SPA redirect settle
+    await new Promise(r => setTimeout(r, 2000));
     const url = page.url();
     if (!url.includes('/login') && !url.includes('/sign-in') && !isMfaPage(url)) {
       _loggedIn = true;
-      console.log('[TenantCloud] Restored session from cookies');
+      console.log('[TenantCloud] Session restored successfully');
       return;
     }
-    // Saved session expired — clear and re-login
+    // Session expired — clear and re-login
     fs.rmSync(SESSION_FILE, { force: true });
   }
 
