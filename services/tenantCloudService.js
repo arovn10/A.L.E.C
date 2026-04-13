@@ -118,7 +118,8 @@ async function ensureLoggedIn() {
   const saved = loadSavedCookies();
   if (saved) {
     await page.setCookie(...saved);
-    await page.goto(`${TC_BASE}/landlord/dashboard`, { waitUntil: 'networkidle2', timeout: 20000 });
+    await page.goto(`${TC_BASE}/landlord/dashboard`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await new Promise(r => setTimeout(r, 2000)); // let SPA redirect settle
     const url = page.url();
     if (!url.includes('/login') && !url.includes('/sign-in') && !isMfaPage(url)) {
       _loggedIn = true;
@@ -131,21 +132,43 @@ async function ensureLoggedIn() {
 
   // Full login flow
   console.log('[TenantCloud] Logging in with email/password...');
-  await page.goto(`${TC_BASE}/login`, { waitUntil: 'networkidle2', timeout: 20000 });
+  await page.goto(`${TC_BASE}/login`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+  await new Promise(r => setTimeout(r, 1500)); // let React render the form
 
   // Fill email
   await page.waitForSelector('input[type="email"], input[name="email"], #email', { timeout: 10000 });
-  await page.type('input[type="email"], input[name="email"], #email', email, { delay: 40 });
+  const emailInput = await page.$('input[type="email"], input[name="email"], #email');
+  await emailInput.click({ clickCount: 3 });
+  await emailInput.type(email, { delay: 40 });
 
   // Fill password
   await page.waitForSelector('input[type="password"]', { timeout: 5000 });
-  await page.type('input[type="password"]', pass, { delay: 40 });
+  const passInput = await page.$('input[type="password"]');
+  await passInput.click({ clickCount: 3 });
+  await passInput.type(pass, { delay: 40 });
 
-  // Submit and wait for navigation
-  await Promise.all([
-    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }),
-    page.keyboard.press('Enter'),
-  ]);
+  // Click submit button (more reliable than Enter on SPAs)
+  const submitBtn = await page.$('button[type="submit"], input[type="submit"], button.login, button.sign-in, button.btn-primary');
+  if (submitBtn) {
+    await submitBtn.click();
+  } else {
+    await page.keyboard.press('Enter');
+  }
+
+  // SPA login — wait for URL to change away from /login (up to 20s)
+  try {
+    await page.waitForFunction(
+      () => !window.location.href.includes('/login') && !window.location.href.includes('/sign-in'),
+      { timeout: 20000 }
+    );
+  } catch (_) {
+    // If URL didn't change, check if a dashboard element appeared (SPA may stay on same URL)
+    const dashEl = await page.$('[class*="dashboard"], [class*="landlord"], nav, .sidebar, #app-content').catch(() => null);
+    if (!dashEl) {
+      // Last resort: wait a bit and check URL
+      await new Promise(r => setTimeout(r, 3000));
+    }
+  }
 
   const postLoginUrl = page.url();
 
@@ -180,10 +203,14 @@ async function ensureLoggedIn() {
       if (codeInput) {
         await codeInput.click({ clickCount: 3 });
         await codeInput.type(code, { delay: 50 });
-        await Promise.all([
-          page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }),
-          page.keyboard.press('Enter'),
-        ]);
+        const mfaSubmit = await page.$('button[type="submit"], input[type="submit"]');
+        if (mfaSubmit) await mfaSubmit.click();
+        else await page.keyboard.press('Enter');
+        // Wait for URL to leave verification page
+        await page.waitForFunction(
+          () => !window.location.href.match(/verif|2fa|otp|code|two.?factor|confirm|authenticate/i),
+          { timeout: 15000 }
+        ).catch(() => {});
       }
 
       _mfaPending = false;
@@ -210,12 +237,14 @@ async function scrapePage(url, scrapeFunc, retries = 1) {
   const page = await getPage();
   for (let i = 0; i <= retries; i++) {
     try {
-      await page.goto(url, { waitUntil: 'networkidle2', timeout: 25000 });
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 });
+      await new Promise(r => setTimeout(r, 2000)); // let SPA render
       // If redirected to login, re-authenticate
       if (page.url().includes('/login')) {
         _loggedIn = false;
         await ensureLoggedIn();
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 25000 });
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 });
+        await new Promise(r => setTimeout(r, 2000));
       }
       return await scrapeFunc(page);
     } catch (err) {
