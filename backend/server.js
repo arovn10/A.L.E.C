@@ -118,6 +118,8 @@ function buildSystemPrompt() {
 
   if (process.env.GITHUB_TOKEN) caps.push('✅ GitHub — repos, issues, code, pull requests');
   else caps.push('⚠️  GitHub — GITHUB_TOKEN not set (configure in Skills panel)');
+  if (process.env.PLAID_CLIENT_ID && process.env.PLAID_SECRET) caps.push('✅ Plaid — investment portfolio, brokerage holdings (Schwab, Acorns, Fidelity, etc.)');
+  else caps.push('⚠️  Plaid — not configured (add PLAID_CLIENT_ID + PLAID_SECRET in .env)');
   if (process.env.TENANTCLOUD_API_KEY || process.env.TENANTCLOUD_EMAIL) caps.push('✅ TenantCloud — tenants, rent, maintenance, messages, inquiries');
   else caps.push('⚠️  TenantCloud — not configured (add credentials in Skills panel)');
   if (process.env.AWS_ACCESS_KEY_ID) caps.push('✅ AWS — EC2 instances, SSH, campusrentalsllc.com monitoring');
@@ -138,6 +140,8 @@ ${caps.join('\n')}
 1. **NEVER fabricate data.** If real data is injected above (marked [STOA DATA], [iMessage DATA], etc.), use ONLY that. If no real data is available, say: "I don't have access to that data right now."
 2. **iMessages HARD RULE: If you do NOT see "[iMessage DATA" in this system prompt, you have ZERO iMessages to report. Say "I couldn't read your messages right now" — NEVER invent names, messages, or conversations. Not even as examples. Not even to be helpful.**
 3. **NEVER invent STOA numbers** (occupancy %, rent, tenants, reviews). Real STOA data is injected via the RAG system — if it's not in context, say you don't have it.
+3b. **TenantCloud HARD RULE: If you do NOT see "[TenantCloud DATA" in this system prompt, you have ZERO tenant/rent/maintenance data. Never invent tenant names, payment amounts, or property details.**
+3c. **Plaid HARD RULE: If you do NOT see "[Plaid Financial DATA" in this prompt, you have no investment data. Never invent portfolio values, account balances, or holdings.**
 4. **NEVER claim you can't do something you CAN do** (GitHub, iMessage, STOA queries, Excel exports, research, SMS). Check the capabilities list above.
 5. **SMS/Texting**: If Twilio is ✅ and the owner asks you to text them, the server automatically sends the text — just confirm you're doing it and describe what the message will say.
 6. **Google Reviews / resident feedback**: The STOA database does NOT contain Google review text. If asked for reviews, say: "The STOA database doesn't include Google review text — I can see Google ratings if they're in the data, but not individual reviews. I can do a web search for recent reviews if you'd like."
@@ -658,6 +662,58 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
       console.warn('[STOA RAG] Failed (non-critical):', stoaErr.message?.slice(0, 80));
     }
 
+    // ── Plaid RAG: inject investment/brokerage data ───────────────
+    const plaidIntent = /\b(investment|portfolio|holdings|brokerage|schwab|fidelity|acorns|stock|balance|account|net.?worth|finance|financial|money|wealth)\b/i.test(userText);
+    const isOwnerChat = req.user?.tokenType === 'OWNER' || req.user?.role === 'owner';
+    if (plaidIntent && isOwnerChat && process.env.PLAID_CLIENT_ID) {
+      try {
+        const items = await plaidDbAll('SELECT item_id, institution_name, access_token_enc, last_fetched FROM plaid_items').catch(() => []);
+        if (items.length > 0) {
+          let totalValue = 0;
+          const accountLines = [];
+          for (const item of items.slice(0, 5)) {
+            try {
+              const accessToken = decryptAccessToken(item.access_token_enc);
+              const data = await plaidFetch('/investments/holdings/get', { access_token: accessToken });
+              for (const acct of (data.accounts || [])) {
+                const val = acct.balances?.current || 0;
+                totalValue += val;
+                accountLines.push(`  ${item.institution_name} — ${acct.name}: $${val.toLocaleString('en-US', {minimumFractionDigits: 2})}`);
+              }
+            } catch (_) {}
+          }
+          if (accountLines.length > 0) {
+            systemContent += `\n\n[Plaid Financial DATA — live brokerage accounts]\nTotal portfolio value: $${totalValue.toLocaleString('en-US', {minimumFractionDigits: 2})}\nAccounts:\n${accountLines.join('\n')}`;
+            console.log('[Plaid RAG] Injected portfolio data, total:', totalValue.toFixed(2));
+          }
+        }
+      } catch (plaidErr) {
+        console.warn('[Plaid RAG] Failed (non-critical):', plaidErr.message?.slice(0, 80));
+      }
+    }
+
+    // ── TenantCloud RAG: inject property management data ──────────
+    const tcIntent = /\b(tenant|tenants|rent|payment|overdue|maintenance|lease|property|properties|unit|units|inquiry|inquiries|renter|renter|move.?out|move.?in|vacancy|vacant|occupan|evict)\b/i.test(userText);
+    if (tcIntent && tenantCloud) {
+      try {
+        const summary = await tenantCloud.getPortfolioSummary();
+        const overdueRent = await tenantCloud.getOverdueRent().catch(() => []);
+        const openMaint   = await tenantCloud.getOpenMaintenance().catch(() => []);
+        let tcCtx = `[TenantCloud DATA — live property management data]\n`;
+        tcCtx += `Portfolio: ${summary.properties?.total || 0} properties, ${summary.tenants?.total || 0} tenants (${summary.tenants?.active || 0} active)\n`;
+        if (summary.overdue?.count > 0) tcCtx += `⚠️ Overdue rent: ${summary.overdue.count} payments, $${summary.overdue.totalAmount?.toLocaleString()}\n`;
+        if (summary.maintenance?.open > 0) tcCtx += `🔧 Open maintenance: ${summary.maintenance.open} requests (${summary.maintenance.highPriority} high priority)\n`;
+        if (summary.messages?.unread > 0) tcCtx += `💬 Unread messages: ${summary.messages.unread}\n`;
+        if (summary.inquiries?.new > 0) tcCtx += `🔔 New inquiries: ${summary.inquiries.new}\n`;
+        if (overdueRent.length > 0) tcCtx += `Overdue tenants: ${overdueRent.slice(0, 5).map(p => `${p.tenant} ($${p.amount})`).join(', ')}\n`;
+        if (openMaint.length > 0) tcCtx += `Maintenance: ${openMaint.slice(0, 3).map(m => `${m.property}/${m.unit} — ${m.title} [${m.priority}]`).join(' | ')}`;
+        systemContent += '\n\n' + tcCtx;
+        console.log('[TenantCloud RAG] Injected portfolio summary');
+      } catch (tcErr) {
+        console.warn('[TenantCloud RAG] Failed (non-critical):', tcErr.message?.slice(0, 80));
+      }
+    }
+
     // Web search augmentation
     let augmentedMessages = [...messages];
     if (SEARCH_TRIGGERS.test(userText)) {
@@ -817,6 +873,59 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
       }
     } catch (stoaErr) {
       console.warn('[STOA RAG stream] Failed (non-critical):', stoaErr.message?.slice(0, 80));
+    }
+
+    // ── Plaid RAG (stream) ─────────────────────────────────────
+    const plaidIntentStream = /\b(investment|portfolio|holdings|brokerage|schwab|fidelity|acorns|stock|balance|account|net.?worth|finance|financial|money|wealth)\b/i.test(userText);
+    const isOwnerStream = streamUserId === 'alec-owner' || req.user?.tokenType === 'OWNER' || req.user?.role === 'owner';
+    if (plaidIntentStream && isOwnerStream && process.env.PLAID_CLIENT_ID) {
+      try {
+        const items = await plaidDbAll('SELECT item_id, institution_name, access_token_enc FROM plaid_items').catch(() => []);
+        if (items.length > 0) {
+          res.write('data: {"token":"💰 "}\n\n');
+          let totalValue = 0;
+          const accountLines = [];
+          for (const item of items.slice(0, 5)) {
+            try {
+              const accessToken = decryptAccessToken(item.access_token_enc);
+              const data = await plaidFetch('/investments/holdings/get', { access_token: accessToken });
+              for (const acct of (data.accounts || [])) {
+                const val = acct.balances?.current || 0;
+                totalValue += val;
+                accountLines.push(`  ${item.institution_name} — ${acct.name}: $${val.toLocaleString('en-US', {minimumFractionDigits: 2})}`);
+              }
+            } catch (_) {}
+          }
+          if (accountLines.length > 0) {
+            systemContent += `\n\n[Plaid Financial DATA — live brokerage accounts]\nTotal portfolio value: $${totalValue.toLocaleString('en-US', {minimumFractionDigits: 2})}\nAccounts:\n${accountLines.join('\n')}`;
+          }
+        }
+      } catch (plaidErr) {
+        console.warn('[Plaid RAG stream] Failed (non-critical):', plaidErr.message?.slice(0, 80));
+      }
+    }
+
+    // ── TenantCloud RAG (stream) ────────────────────────────────
+    const tcIntentStream = /\b(tenant|tenants|rent|payment|overdue|maintenance|lease|property|properties|unit|units|inquiry|inquiries|renter|move.?out|move.?in|vacancy|vacant|occupan|evict)\b/i.test(userText);
+    if (tcIntentStream && tenantCloud) {
+      try {
+        res.write('data: {"token":"🏠 "}\n\n');
+        const summary = await tenantCloud.getPortfolioSummary();
+        const overdueRent = await tenantCloud.getOverdueRent().catch(() => []);
+        const openMaint   = await tenantCloud.getOpenMaintenance().catch(() => []);
+        let tcCtx = `[TenantCloud DATA — live property management data]\n`;
+        tcCtx += `Portfolio: ${summary.properties?.total || 0} properties, ${summary.tenants?.total || 0} tenants (${summary.tenants?.active || 0} active)\n`;
+        if (summary.overdue?.count > 0) tcCtx += `⚠️ Overdue rent: ${summary.overdue.count} payments, $${summary.overdue.totalAmount?.toLocaleString()}\n`;
+        if (summary.maintenance?.open > 0) tcCtx += `🔧 Open maintenance: ${summary.maintenance.open} requests (${summary.maintenance.highPriority} high priority)\n`;
+        if (summary.messages?.unread > 0) tcCtx += `💬 Unread messages: ${summary.messages.unread}\n`;
+        if (summary.inquiries?.new > 0) tcCtx += `🔔 New inquiries: ${summary.inquiries.new}\n`;
+        if (overdueRent.length > 0) tcCtx += `Overdue tenants: ${overdueRent.slice(0, 5).map(p => `${p.tenant} ($${p.amount})`).join(', ')}\n`;
+        if (openMaint.length > 0) tcCtx += `Maintenance: ${openMaint.slice(0, 3).map(m => `${m.property}/${m.unit} — ${m.title} [${m.priority}]`).join(' | ')}`;
+        systemContent += '\n\n' + tcCtx;
+        console.log('[TenantCloud RAG stream] Injected portfolio summary');
+      } catch (tcErr) {
+        console.warn('[TenantCloud RAG stream] Failed (non-critical):', tcErr.message?.slice(0, 80));
+      }
     }
 
     // Web search augmentation
@@ -3283,6 +3392,132 @@ app.get('/api/msgraph/calendar', authenticateToken, requireFullCapabilities, asy
     const events = await msGraph.getUpcomingEvents(parseInt(req.query.days) || 7);
     res.json({ success: true, events });
   } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+// ════════════════════════════════════════════════════════════════
+//  VOICE TRANSCRIPTS  (/api/voice/*)
+// ════════════════════════════════════════════════════════════════
+
+app.get('/api/voice/transcripts', authenticateToken, (req, res) => {
+  if (!chatHistory) return res.json({ transcripts: [] });
+  const userId = req.user?.userId || req.user?.email || 'alec-owner';
+  const limit  = parseInt(req.query.limit) || 100;
+  try {
+    const transcripts = chatHistory.getVoiceTranscripts(userId, limit);
+    res.json({ success: true, transcripts, count: transcripts.length });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════
+//  TENANTCLOUD ENDPOINTS  (/api/tenantcloud/*)
+// ════════════════════════════════════════════════════════════════
+
+app.get('/api/tenantcloud/status', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.json({ configured: false });
+  try { res.json(await tenantCloud.status()); }
+  catch (err) { res.json({ configured: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/summary', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, ...(await tenantCloud.getPortfolioSummary()) }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/properties', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, properties: await tenantCloud.listProperties() }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/properties/:id', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, property: await tenantCloud.getProperty(req.params.id) }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/properties/:id/units', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, units: await tenantCloud.listUnits(req.params.id) }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/tenants', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, tenants: await tenantCloud.listTenants(req.query) }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/tenants/:id', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, tenant: await tenantCloud.getTenant(req.params.id) }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/leases', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try {
+    const leases = await tenantCloud.listLeases(req.query);
+    res.json({ success: true, leases });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/leases/expiring', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try {
+    const leases = await tenantCloud.getExpiringLeases(parseInt(req.query.days) || 60);
+    res.json({ success: true, leases, daysAhead: parseInt(req.query.days) || 60 });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/payments', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, payments: await tenantCloud.listPayments(req.query) }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/payments/overdue', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, payments: await tenantCloud.getOverdueRent() }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/maintenance', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, requests: await tenantCloud.listMaintenance(req.query) }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/maintenance/open', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, requests: await tenantCloud.getOpenMaintenance() }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/messages', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, messages: await tenantCloud.listMessages(req.query) }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/messages/unread', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, messages: await tenantCloud.getUnreadMessages() }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/inquiries', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, inquiries: await tenantCloud.listInquiries(req.query) }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/analytics/rent', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, ...(await tenantCloud.analyzeRentPatterns()) }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
 
 // ════════════════════════════════════════════════════════════════

@@ -22,6 +22,16 @@ try {
 
 if (db) {
   db.exec(`
+    CREATE TABLE IF NOT EXISTS voice_transcripts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT DEFAULT 'alec-owner',
+      transcript TEXT NOT NULL,
+      reply TEXT NOT NULL,
+      duration_ms INTEGER,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_voice_user ON voice_transcripts(user_id, created_at DESC);
+
     CREATE TABLE IF NOT EXISTS alec_chats (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -122,6 +132,24 @@ function getOrCreate(chatId, userId) {
   return Object.assign({}, chat, { isNew: true });
 }
 
+function saveVoiceTranscript(transcript, reply, userId, durationMs) {
+  if (!db) return;
+  try {
+    db.prepare('INSERT INTO voice_transcripts (user_id, transcript, reply, duration_ms) VALUES (?, ?, ?, ?)').run(
+      userId || 'alec-owner', transcript, reply, durationMs || null
+    );
+  } catch (_) {}
+}
+
+function getVoiceTranscripts(userId, limit) {
+  if (!db) return [];
+  try {
+    return db.prepare(
+      'SELECT id, transcript, reply, duration_ms, created_at FROM voice_transcripts WHERE user_id=? ORDER BY created_at DESC LIMIT ?'
+    ).all(userId || 'alec-owner', limit || 100);
+  } catch { return []; }
+}
+
 module.exports = {
   listConversations,
   createConversation,
@@ -131,4 +159,6 @@ module.exports = {
   getMessages,
   addMessage,
   getOrCreate,
+  saveVoiceTranscript,
+  getVoiceTranscripts,
 };

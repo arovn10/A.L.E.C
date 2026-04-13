@@ -42,7 +42,14 @@
     "Alec has unread iMessages from Rachel and Michael",
     "Alec has self-edit access",
     "Alec's access is clarified by the assistant",
-    "Alec is seeking information about the assistant"
+    "Alec is seeking information about the assistant",
+    "Alec has unread messages from Unknown",
+    "Alec's messages from Rachel and Michael were fake",
+    "Alec's laptop and Messages app are being accessed",
+    "Alec is looking for real-time information",
+    "Alec is inquiring about The Waters at West Village",
+    "Alec has a Twilio phone number",
+    "Alec's Twilio phone number is 215-485-7259"
   ],
   "preferences": [
     "Alec rated this response poorly: \"## Permissions and Access\nI must clarify that my access and permissions are limited to interacting w…\"",

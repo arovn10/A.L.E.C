@@ -10,6 +10,9 @@
 
 const WebSocket = require('ws');
 
+// Lazy-load chatHistory so voice server doesn't crash if DB is unavailable
+const chatHistory = (() => { try { return require('./chatHistory.js'); } catch { return null; } })();
+
 // ── Voice state constants ────────────────────────────────────────
 const STATES = {
   IDLE:         'idle',
@@ -192,7 +195,7 @@ class VoiceInterface {
       case 'text_input': {
         const command = (msg.command || msg.text || '').trim();
         if (!command) break;
-        await this._handleCommand(session, command);
+        await this._handleCommand(session, command, msg.user_id || session.userId);
         break;
       }
 
@@ -203,7 +206,8 @@ class VoiceInterface {
   }
 
   // ── Command handler ──────────────────────────────────────────
-  async _handleCommand(session, text) {
+  async _handleCommand(session, text, userId) {
+    const t0 = Date.now();
     session.transition(STATES.THINKING);
 
     // Check for trivial deterministic responses first
@@ -216,6 +220,8 @@ class VoiceInterface {
       });
       session.transition(STATES.SPEAKING);
       setTimeout(() => session.transition(STATES.IDLE), 500);
+      // Save deterministic responses too — useful for learning common phrases
+      if (chatHistory) chatHistory.saveVoiceTranscript(text, deterministic.text, userId || 'alec-owner', Date.now() - t0);
       return;
     }
 
@@ -231,6 +237,11 @@ class VoiceInterface {
 
       const reply = await callLMStudio(messages, true /* voiceMode */);
       session.history.push({ role: 'assistant', content: reply });
+
+      // ── Save transcript for speech learning ───────────────────
+      if (chatHistory) {
+        try { chatHistory.saveVoiceTranscript(text, reply, userId || 'alec-owner', Date.now() - t0); } catch (_) {}
+      }
 
       session.send({
         type:     'response',

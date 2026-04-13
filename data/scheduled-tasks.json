@@ -1,0 +1,29 @@
+{
+  "daily-portfolio-snapshot": {
+    "id": "daily-portfolio-snapshot",
+    "expression": "0 9 * * *",
+    "description": "Daily portfolio occupancy snapshot",
+    "notifyWhenDone": true,
+    "createdAt": "2026-04-13T13:38:33.751Z",
+    "lastRun": null,
+    "lastStatus": null
+  },
+  "weekly-lease-alert": {
+    "id": "weekly-lease-alert",
+    "expression": "0 8 * * 1",
+    "description": "Weekly expiring contracts alert",
+    "notifyWhenDone": true,
+    "createdAt": "2026-04-13T13:38:33.754Z",
+    "lastRun": null,
+    "lastStatus": null
+  },
+  "daily-export-cleanup": {
+    "id": "daily-export-cleanup",
+    "expression": "0 3 * * *",
+    "description": "Clean up old Excel exports",
+    "notifyWhenDone": false,
+    "createdAt": "2026-04-13T13:38:33.755Z",
+    "lastRun": null,
+    "lastStatus": null
+  }
+}
