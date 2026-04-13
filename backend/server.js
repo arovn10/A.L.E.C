@@ -17,7 +17,7 @@
  * - Stoa Group DB connector
  */
 
-require('dotenv').config();
+require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
 
 const express = require('express');
 const cors = require('cors');
@@ -915,6 +915,18 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
         }
       } catch (smsErr) {
         systemContent += `\n\n[SMS FAILED] ${smsErr.message}`;
+      }
+    }
+
+    // ── Memory recall trigger (stream) ─────────────────────────
+    const memRecallIntent = /\b(what do you know about me|what have you learned|tell me what you know|my preferences|my profile|what you remember|memories|forget everything)\b/i.test(userText);
+    if (memRecallIntent) {
+      const mem = loadMemory();
+      const memCtxExtra = buildMemoryContext(mem);
+      if (memCtxExtra) {
+        systemContent += `\n\n[ALEC MEMORY — facts learned about Alec in past conversations]\n${memCtxExtra}\nTell the user what you know about them from memory. If they ask to forget, tell them you can clear your memory if they confirm.`;
+      } else {
+        systemContent += '\n\n[ALEC MEMORY] No personal facts stored yet. You are just getting started learning about Alec.';
       }
     }
 
@@ -2875,7 +2887,7 @@ app.delete('/api/history/conversations/:id', authenticateToken, (req, res) => {
 app.get('/api/connectors/catalog', authenticateToken, (req, res) => {
   if (!skillsReg) return res.json({ success: true, catalog: { skills: [], byCategory: {} } });
   try {
-    const userId  = req.user?.id || req.user?.email || '_legacy';
+    const userId  = req.user?.userId || req.user?.email || '_legacy';
     const catalog = skillsReg.getCatalog();
 
     const enrich = (skill) => {
@@ -2912,7 +2924,7 @@ app.get('/api/connectors/catalog', authenticateToken, (req, res) => {
 app.post('/api/connectors/:skillId/credentials', authenticateToken, requireFullCapabilities, async (req, res) => {
   if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
   try {
-    const userId = req.user?.id || req.user?.email || '_legacy';
+    const userId = req.user?.userId || req.user?.email || '_legacy';
     const result = await skillsReg.saveCredentials(userId, req.params.skillId, req.body);
     res.json({ success: true, ...result });
   } catch (err) {
@@ -2941,7 +2953,7 @@ app.get('/api/connectors/:skillId/status', authenticateToken, async (req, res) =
 app.get('/api/connectors/:skillId/credentials', authenticateToken, requireFullCapabilities, (req, res) => {
   if (!skillsReg) return res.json({ fields: {} });
   try {
-    const userId = req.user?.id || req.user?.email || '_legacy';
+    const userId = req.user?.userId || req.user?.email || '_legacy';
     const statusArr = skillsReg.getCredentialStatus(userId, req.params.skillId);
     const fields = {};
     if (Array.isArray(statusArr)) {
@@ -2957,7 +2969,7 @@ app.get('/api/connectors/:skillId/credentials', authenticateToken, requireFullCa
 app.post('/api/connectors/:skillId/reveal', authenticateToken, requireFullCapabilities, (req, res) => {
   if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
   try {
-    const userId = req.user?.id || req.user?.email || '_legacy';
+    const userId = req.user?.userId || req.user?.email || '_legacy';
     const values = skillsReg.revealCredentials(userId, req.params.skillId);
     res.json({ success: true, values });
   } catch (err) {
@@ -2969,7 +2981,7 @@ app.post('/api/connectors/:skillId/reveal', authenticateToken, requireFullCapabi
 app.get('/api/connectors/:skillId/instances', authenticateToken, requireFullCapabilities, (req, res) => {
   if (!skillsReg) return res.json({ success: true, instances: [] });
   try {
-    const userId    = req.user?.id || req.user?.email || '_legacy';
+    const userId    = req.user?.userId || req.user?.email || '_legacy';
     const instances = skillsReg.getInstances(userId, req.params.skillId);
     res.json({ success: true, instances });
   } catch (err) {
@@ -2980,7 +2992,7 @@ app.get('/api/connectors/:skillId/instances', authenticateToken, requireFullCapa
 app.post('/api/connectors/:skillId/instances', authenticateToken, requireFullCapabilities, (req, res) => {
   if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
   try {
-    const userId = req.user?.id || req.user?.email || '_legacy';
+    const userId = req.user?.userId || req.user?.email || '_legacy';
     const { name, instId, ...creds } = req.body;
     if (!name) return res.status(400).json({ error: 'name is required' });
     const result = skillsReg.addInstance(userId, req.params.skillId, name, creds, instId || null);
@@ -2993,7 +3005,7 @@ app.post('/api/connectors/:skillId/instances', authenticateToken, requireFullCap
 app.delete('/api/connectors/:skillId/instances/:instanceId', authenticateToken, requireFullCapabilities, (req, res) => {
   if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
   try {
-    const userId = req.user?.id || req.user?.email || '_legacy';
+    const userId = req.user?.userId || req.user?.email || '_legacy';
     skillsReg.deleteInstance(userId, req.params.skillId, req.params.instanceId);
     res.json({ success: true });
   } catch (err) {
@@ -3004,7 +3016,7 @@ app.delete('/api/connectors/:skillId/instances/:instanceId', authenticateToken, 
 app.post('/api/connectors/:skillId/instances/:instanceId/reveal', authenticateToken, requireFullCapabilities, (req, res) => {
   if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
   try {
-    const userId = req.user?.id || req.user?.email || '_legacy';
+    const userId = req.user?.userId || req.user?.email || '_legacy';
     const values = skillsReg.revealInstance(userId, req.params.skillId, req.params.instanceId);
     res.json({ success: true, values });
   } catch (err) {
@@ -3601,6 +3613,35 @@ app.get('/api/msgraph/calendar', authenticateToken, requireFullCapabilities, asy
     const events = await msGraph.getUpcomingEvents(parseInt(req.query.days) || 7);
     res.json({ success: true, events });
   } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+// ════════════════════════════════════════════════════════════════
+//  MEMORY & FACTS  (/api/memory/*)
+// ════════════════════════════════════════════════════════════════
+
+app.get('/api/memory', authenticateToken, (req, res) => {
+  try {
+    const mem = loadMemory();
+    res.json({ success: true, facts: mem.facts || [], preferences: mem.preferences || [], summaries: mem.summaries || [], promptVersion: mem.promptVersion || 1 });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/memory/fact', authenticateToken, requireFullCapabilities, (req, res) => {
+  try {
+    const { fact } = req.body;
+    if (!fact || typeof fact !== 'string') return res.status(400).json({ error: 'fact string required' });
+    const mem = loadMemory();
+    mem.facts = [...(mem.facts || []), fact.slice(0, 200)].slice(-50);
+    saveMemory(mem);
+    res.json({ success: true, totalFacts: mem.facts.length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/memory', authenticateToken, requireFullCapabilities, (req, res) => {
+  try {
+    saveMemory({ facts: [], preferences: [], summaries: [], promptVersion: 1 });
+    res.json({ success: true, message: 'Memory cleared' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ════════════════════════════════════════════════════════════════
