@@ -1009,6 +1009,38 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
       }
     }
 
+    // ── HA direct control from chat ────────────────────────────
+    // Detects imperative commands like "turn on lights", "lock the door", etc.
+    const haCtrlRe = /\b(turn\s*(on|off)|switch\s*(on|off)|lock|unlock|set\s+the\s+thermostat|set\s+temperature|open\s+the\s+garage|close\s+the\s+garage)\b/i;
+    const haUrlC   = process.env.HOME_ASSISTANT_URL || process.env.HA_URL;
+    const haTokenC = process.env.HOME_ASSISTANT_ACCESS_TOKEN || process.env.HA_TOKEN;
+    if (haCtrlRe.test(userText) && haUrlC && haTokenC) {
+      try {
+        const onMatch  = /turn\s+on\s+(.+)/i.exec(userText);
+        const offMatch = /turn\s+off\s+(.+)/i.exec(userText);
+        const keyword  = (onMatch?.[1] || offMatch?.[1] || '').trim().toLowerCase().slice(0, 60);
+        const svc      = onMatch ? 'turn_on' : offMatch ? 'turn_off' : null;
+        if (svc && keyword) {
+          const stR = await fetch(`${haUrlC}/api/states`, { headers: { Authorization: `Bearer ${haTokenC}` }, signal: AbortSignal.timeout(4000) });
+          let entityId = null;
+          if (stR.ok) {
+            const sts = await stR.json();
+            const m = sts.find(s => (s.attributes?.friendly_name || s.entity_id).toLowerCase().includes(keyword));
+            entityId = m?.entity_id;
+          }
+          const body = entityId ? JSON.stringify({ entity_id: entityId }) : '{}';
+          const r2 = await fetch(`${haUrlC}/api/services/homeassistant/${svc}`, {
+            method: 'POST', headers: { Authorization: `Bearer ${haTokenC}`, 'Content-Type': 'application/json' },
+            body, signal: AbortSignal.timeout(8000),
+          });
+          if (r2.ok) {
+            systemContent += `\n\n[HA COMMAND EXECUTED] ${svc.replace('_',' ')} ${entityId || keyword}. Confirm this to the user.`;
+            res.write('data: {"token":"🏡 "}\n\n');
+          }
+        }
+      } catch (_haCtrlErr) { /* non-critical */ }
+    }
+
     // ── Memory recall trigger (stream) ─────────────────────────
     const memRecallIntent = /\b(what do you know about me|what have you learned|tell me what you know|my preferences|my profile|what you remember|memories|forget everything)\b/i.test(userText);
     if (memRecallIntent) {
