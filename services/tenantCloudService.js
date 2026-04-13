@@ -12,7 +12,9 @@
  * Cookies are saved to data/tc-session.json so login survives restarts.
  */
 
-const puppeteer = require('puppeteer-core');
+const puppeteerExtra = require('puppeteer-extra');
+const StealthPlugin  = require('puppeteer-extra-plugin-stealth');
+puppeteerExtra.use(StealthPlugin());
 const path      = require('path');
 const fs        = require('fs');
 
@@ -34,10 +36,11 @@ function getIMessage() { try { return require('./iMessageService.js'); } catch {
 
 async function getBrowser() {
   if (_browser && _browser.isConnected()) return _browser;
-  _browser = await puppeteer.launch({
+  _browser = await puppeteerExtra.launch({
     executablePath: CHROME_PATH,
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+           '--disable-blink-features=AutomationControlled'],
   });
   _page    = null;
   _loggedIn = false;
@@ -147,13 +150,14 @@ async function ensureLoggedIn() {
   await passInput.click({ clickCount: 3 });
   await passInput.type(pass, { delay: 40 });
 
-  // Click submit button (more reliable than Enter on SPAs)
-  const submitBtn = await page.$('button[type="submit"], input[type="submit"], button.login, button.sign-in, button.btn-primary');
-  if (submitBtn) {
-    await submitBtn.click();
-  } else {
-    await page.keyboard.press('Enter');
-  }
+  // Click the "Sign in" button — must skip Google/Apple/Facebook submit buttons
+  const clicked = await page.evaluate(() => {
+    const btn = [...document.querySelectorAll('button[type="submit"]')]
+      .find(b => /^sign\s*in$/i.test(b.innerText.trim()));
+    if (btn) { btn.click(); return true; }
+    return false;
+  });
+  if (!clicked) await page.keyboard.press('Enter');
 
   // SPA login — wait for URL to change away from /login (up to 20s)
   try {
