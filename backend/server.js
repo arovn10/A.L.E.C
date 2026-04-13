@@ -1002,6 +1002,18 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
       }
     }
 
+    // ── TenantCloud 2FA code from chat ────────────────────────────
+    // Detects: "the code is 481923", "verification code 123456", "481923" (if MFA pending)
+    if (tenantCloud?.isMfaPending()) {
+      const codeMatch = /\b(\d{4,8})\b/.exec(userText);
+      if (codeMatch) {
+        try {
+          tenantCloud.submitVerificationCode(codeMatch[1]);
+          systemContent += `\n\n[TenantCloud 2FA] Verification code ${codeMatch[1]} submitted. Tell the user the code was applied and TenantCloud is logging in.`;
+        } catch (_) {}
+      }
+    }
+
     // ── SMS send intent: "text me", "send me a message", "notify me" ──
     const smsSendIntent = /\b(text|sms|message|notify|ping|send)\b.*\bme\b|\bsend.*\b(text|sms|message)\b|\bnotif(y|ication)\b/i.test(userText);
     const ownerPhoneNum = process.env.OWNER_PHONE;
@@ -3877,8 +3889,21 @@ app.get('/api/voice/transcripts', authenticateToken, (req, res) => {
 
 app.get('/api/tenantcloud/status', authenticateToken, async (req, res) => {
   if (!tenantCloud) return res.json({ configured: false });
-  try { res.json(await tenantCloud.status()); }
+  try { res.json({ ...(await tenantCloud.status()), mfaPending: tenantCloud.isMfaPending() }); }
   catch (err) { res.json({ configured: false, error: err.message }); }
+});
+
+/** POST /api/tenantcloud/verify-code  { code: "123456" } */
+app.post('/api/tenantcloud/verify-code', authenticateToken, (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not available' });
+  const { code } = req.body;
+  if (!code) return res.status(400).json({ error: 'code is required' });
+  try {
+    tenantCloud.submitVerificationCode(code);
+    res.json({ success: true, message: 'Code submitted — logging in...' });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 app.get('/api/tenantcloud/summary', authenticateToken, async (req, res) => {

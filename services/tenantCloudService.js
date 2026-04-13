@@ -21,9 +21,14 @@ const SESSION_FILE = path.join(__dirname, '../data/tc-session.json');
 const CHROME_PATH  = process.env.CHROME_PATH ||
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
-let _browser = null;
-let _page    = null;
-let _loggedIn = false;
+let _browser   = null;
+let _page      = null;
+let _loggedIn  = false;
+let _mfaResolver = null;    // set when waiting for a 2FA code from the user
+let _mfaPending  = false;   // true while blocked on 2FA input
+
+// Lazy-load iMessage so we can notify the user about 2FA
+function getIMessage() { try { return require('./iMessageService.js'); } catch { return null; } }
 
 // ── Browser lifecycle ─────────────────────────────────────────────
 
@@ -69,10 +74,39 @@ function saveCookies(cookies) {
   } catch (_) {}
 }
 
+// ── 2FA code injection (called from API endpoint) ─────────────────
+
+/**
+ * Called by POST /api/tenantcloud/verify-code when the user submits
+ * the verification code that TenantCloud texted/emailed them.
+ */
+function submitVerificationCode(code) {
+  if (_mfaResolver) {
+    _mfaResolver(String(code).trim());
+    _mfaResolver = null;
+  } else {
+    throw new Error('No verification code is currently pending');
+  }
+}
+
+function isMfaPending() { return _mfaPending; }
+
 // ── Login ─────────────────────────────────────────────────────────
+
+function isMfaPage(url) {
+  return /verif|2fa|otp|code|two.?factor|confirm|authenticate/i.test(url);
+}
 
 async function ensureLoggedIn() {
   if (_loggedIn) return;
+
+  // If another call is already blocked on 2FA, wait for it to resolve
+  if (_mfaPending) {
+    await new Promise(resolve => {
+      const check = setInterval(() => { if (!_mfaPending) { clearInterval(check); resolve(); } }, 500);
+    });
+    if (_loggedIn) return;
+  }
 
   const email = process.env.TENANTCLOUD_EMAIL;
   const pass  = process.env.TENANTCLOUD_PASSWORD;
@@ -86,11 +120,13 @@ async function ensureLoggedIn() {
     await page.setCookie(...saved);
     await page.goto(`${TC_BASE}/landlord/dashboard`, { waitUntil: 'networkidle2', timeout: 20000 });
     const url = page.url();
-    if (!url.includes('/login') && !url.includes('/sign-in')) {
+    if (!url.includes('/login') && !url.includes('/sign-in') && !isMfaPage(url)) {
       _loggedIn = true;
       console.log('[TenantCloud] Restored session from cookies');
       return;
     }
+    // Saved session expired — clear and re-login
+    fs.rmSync(SESSION_FILE, { force: true });
   }
 
   // Full login flow
@@ -105,15 +141,59 @@ async function ensureLoggedIn() {
   await page.waitForSelector('input[type="password"]', { timeout: 5000 });
   await page.type('input[type="password"]', pass, { delay: 40 });
 
-  // Submit
+  // Submit and wait for navigation
   await Promise.all([
     page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }),
     page.keyboard.press('Enter'),
   ]);
 
-  const url = page.url();
-  if (url.includes('/login') || url.includes('/sign-in')) {
-    throw new Error('TenantCloud login failed — check TENANTCLOUD_EMAIL and TENANTCLOUD_PASSWORD');
+  const postLoginUrl = page.url();
+
+  // ── 2FA / verification code required ────────────────────────────
+  if (isMfaPage(postLoginUrl) || postLoginUrl.includes('/login')) {
+    // Check if there's a code input field on the page
+    const hasCodeField = await page.$('input[type="text"], input[type="number"], input[name*="code"], input[name*="otp"], input[id*="code"], input[placeholder*="code"]')
+      .then(el => !!el).catch(() => false);
+
+    if (hasCodeField || isMfaPage(postLoginUrl)) {
+      console.log('[TenantCloud] 2FA/verification code required');
+      _mfaPending = true;
+
+      // Notify the user via iMessage
+      const im = getIMessage();
+      const notifyMsg = '🏠 TenantCloud needs a verification code to log in. Go to Settings → Skills → TenantCloud → Enter Code, or reply with the code in ALEC chat.';
+      if (im) im.notifyOwner(notifyMsg, 'TenantCloud 2FA').catch(() => {});
+      console.log('[TenantCloud] Waiting for user to submit verification code (up to 10 min)...');
+
+      // Wait for user to call submitVerificationCode()
+      const code = await new Promise((resolve, reject) => {
+        _mfaResolver = resolve;
+        setTimeout(() => {
+          _mfaResolver = null;
+          _mfaPending  = false;
+          reject(new Error('Timed out waiting for TenantCloud verification code (10 min)'));
+        }, 10 * 60 * 1000);
+      });
+
+      // Enter the code into the page
+      const codeInput = await page.$('input[type="text"], input[type="number"], input[name*="code"], input[name*="otp"], input[id*="code"]');
+      if (codeInput) {
+        await codeInput.click({ clickCount: 3 });
+        await codeInput.type(code, { delay: 50 });
+        await Promise.all([
+          page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }),
+          page.keyboard.press('Enter'),
+        ]);
+      }
+
+      _mfaPending = false;
+
+      if (isMfaPage(page.url()) || page.url().includes('/login')) {
+        throw new Error('TenantCloud verification code was incorrect or expired');
+      }
+    } else {
+      throw new Error('TenantCloud login failed — check TENANTCLOUD_EMAIL and TENANTCLOUD_PASSWORD');
+    }
   }
 
   // Save cookies for next restart
@@ -360,5 +440,6 @@ module.exports = {
   listMessages, getUnreadMessages,
   listInquiries,
   getPortfolioSummary, analyzeRentPatterns,
+  submitVerificationCode, isMfaPending,
   status,
 };
