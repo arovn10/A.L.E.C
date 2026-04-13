@@ -64,7 +64,7 @@ const scheduler    = (() => { try { return require('../services/taskScheduler.js
 const github       = (() => { try { return require('../services/githubService.js');   } catch { return null; } })();
 const vsCode       = (() => { try { return require('../services/vsCodeController.js');} catch { return null; } })();
 const msGraph      = (() => { try { return require('../services/microsoftGraphService.js'); } catch { return null; } })();
-const renderSvc    = (() => { try { return require('../services/renderService.js');   } catch { return null; } })();
+const vercelSvc    = (() => { try { return require('../services/vercelService.js');   } catch { return null; } })();
 const tenantCloud  = (() => { try { return require('../services/tenantCloudService.js'); } catch { return null; } })();
 const awsSvc       = (() => { try { return require('../services/awsService.js');      } catch { return null; } })();
 const research     = (() => { try { return require('../services/researchAgent.js');   } catch { return null; } })();
@@ -811,28 +811,24 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
       }
     }
 
-    // ── Render.com RAG + control ──────────────────────────────────
-    const renderIntent = /\b(render|render\.com|deployment|deploy|service|api.*service)\b/i.test(userText);
-    if (renderIntent && renderSvc && process.env.RENDER_API_KEY) {
+    // ── Vercel RAG + redeploy ─────────────────────────────────────
+    const vercelIntent = /\bvercel\b|\b(deployment|deploy|production|preview|build|frontend|hosting)\b/i.test(userText);
+    if (vercelIntent && vercelSvc && process.env.VERCEL_TOKEN) {
       try {
-        const services = await renderSvc.listServices();
-        if (services.length > 0) {
-          const lines = services.slice(0, 5).map(s => `- ${s.name} (${s.type}): ${s.status} | ${s.url || 'no url'} | branch: ${s.branch || 'main'}`);
-          systemContent += `\n\n[Render.com DATA — deployed services]\n${lines.join('\n')}`;
-          console.log('[Render RAG] Injected', services.length, 'services');
+        const deployments = await vercelSvc.listDeployments(3);
+        if (deployments.length > 0) {
+          const lines = deployments.map(d =>
+            `- ${d.target || 'preview'}: ${d.state} | ${d.url || 'building'} | branch: ${d.branch} | "${d.commit?.slice(0, 60) || ''}"`
+          );
+          systemContent += `\n\n[Vercel DATA — recent deployments for ${process.env.VERCEL_PROJECT || 'alec-ai'}]\n${lines.join('\n')}`;
         }
-        // Deploy/restart action
-        if (/\b(deploy|redeploy|restart|re-?deploy)\b/i.test(userText)) {
-          const nameLower = userText.toLowerCase();
-          const match = services.find(s => nameLower.includes(s.name.toLowerCase())) || services[0];
-          if (match) {
-            await renderSvc.deploy(match.id);
-            systemContent += `\n\n[Render.com ACTION EXECUTED] Triggered a new deploy for "${match.name}". Confirm this to the user.`;
-            console.log('[Render control] Triggered deploy for:', match.name);
-          }
+        // Redeploy action
+        if (/\b(deploy|redeploy|re-?deploy|push\s+to\s+vercel)\b/i.test(userText)) {
+          const result = await vercelSvc.redeploy();
+          systemContent += `\n\n[Vercel ACTION EXECUTED] Triggered a new production deployment. URL: ${result.url || 'building'}. Confirm this to the user.`;
         }
-      } catch (renderErr) {
-        console.warn('[Render RAG] Failed (non-critical):', renderErr.message?.slice(0, 80));
+      } catch (vercelErr) {
+        console.warn('[Vercel RAG] Failed (non-critical):', vercelErr.message?.slice(0, 80));
       }
     }
 
@@ -1078,22 +1074,15 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
       } catch (_haCtrlErr) { /* non-critical */ }
     }
 
-    // ── Render.com direct control (stream) ────────────────────
-    // Detect deploy/restart commands: "deploy ALEC on Render", "restart the API service"
-    const renderCtrlRe = /\b(deploy|redeploy|restart|re-?deploy|push\s+to\s+render)\b/i;
-    if (renderCtrlRe.test(userText) && renderSvc && process.env.RENDER_API_KEY) {
+    // ── Vercel redeploy from chat (stream) ────────────────────
+    const vercelCtrlRe = /\b(deploy|redeploy|re-?deploy|push\s+to\s+vercel)\b/i;
+    if (vercelCtrlRe.test(userText) && vercelSvc && process.env.VERCEL_TOKEN) {
       try {
-        const services = await renderSvc.listServices();
-        // Find the best matching service by name keyword in user text
-        const nameLower = userText.toLowerCase();
-        const match = services.find(s => nameLower.includes(s.name.toLowerCase())) || services[0];
-        if (match) {
-          res.write('data: {"token":"🚀 "}\n\n');
-          await renderSvc.deploy(match.id);
-          systemContent += `\n\n[Render.com ACTION EXECUTED] Triggered a new deploy for service "${match.name}" (${match.id}). Tell the user the deploy was triggered and it usually takes 1-3 minutes.`;
-        }
-      } catch (renderCtrlErr) {
-        console.warn('[Render control] Failed:', renderCtrlErr.message?.slice(0, 80));
+        res.write('data: {"token":"▲ "}\n\n');
+        const result = await vercelSvc.redeploy();
+        systemContent += `\n\n[Vercel ACTION EXECUTED] Triggered a new production deployment. URL: ${result.url || 'building…'}. Tell the user the deploy was triggered — it usually takes 1-2 minutes.`;
+      } catch (vercelCtrlErr) {
+        console.warn('[Vercel control] Failed:', vercelCtrlErr.message?.slice(0, 80));
       }
     }
 
@@ -1303,20 +1292,20 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
       }
     }
 
-    // ── Render.com RAG (stream) ────────────────────────────────
-    const renderIntentStream = /\b(render|render\.com|deployment|deploy|service|api.*service)\b/i.test(userText);
-    if (renderIntentStream && renderSvc && process.env.RENDER_API_KEY) {
+    // ── Vercel RAG (stream) ───────────────────────────────────
+    const vercelIntentStream = /\bvercel\b|\b(deployment|deploy|production|preview|build|frontend|hosting)\b/i.test(userText);
+    if (vercelIntentStream && vercelSvc && process.env.VERCEL_TOKEN) {
       try {
-        res.write('data: {"token":"🚀 "}\n\n');
-        const services = await renderSvc.listServices();
-        if (services.length > 0) {
-          const lines = services.slice(0, 5).map(s =>
-            `- ${s.name} (${s.type}): ${s.status} | ${s.url || 'no url'} | branch: ${s.branch || 'main'}`
+        res.write('data: {"token":"▲ "}\n\n');
+        const deployments = await vercelSvc.listDeployments(3);
+        if (deployments.length > 0) {
+          const lines = deployments.map(d =>
+            `- ${d.target || 'preview'}: ${d.state} | ${d.url || 'building'} | branch: ${d.branch} | "${d.commit?.slice(0, 60) || ''}"`
           );
-          systemContent += `\n\n[Render.com DATA — deployed services]\n${lines.join('\n')}`;
+          systemContent += `\n\n[Vercel DATA — recent deployments for ${process.env.VERCEL_PROJECT || 'alec-ai'}]\n${lines.join('\n')}`;
         }
-      } catch (renderErr) {
-        console.warn('[Render RAG stream] Failed (non-critical):', renderErr.message?.slice(0, 80));
+      } catch (vercelErr) {
+        console.warn('[Vercel RAG stream] Failed (non-critical):', vercelErr.message?.slice(0, 80));
       }
     }
 
@@ -3768,31 +3757,27 @@ app.get('/api/aws/metrics', authenticateToken, requireFullCapabilities, async (r
 //  RENDER.COM  (/api/render/*)
 // ════════════════════════════════════════════════════════════════
 
-app.get('/api/render/status', authenticateToken, async (req, res) => {
-  if (!renderSvc) return res.json({ configured: false });
-  try { res.json(await renderSvc.status()); }
+// ════════════════════════════════════════════════════════════════
+//  VERCEL ENDPOINTS  (/api/vercel/*)
+// ════════════════════════════════════════════════════════════════
+
+app.get('/api/vercel/status', authenticateToken, async (req, res) => {
+  if (!vercelSvc) return res.json({ configured: false });
+  try { res.json(await vercelSvc.status()); }
   catch (err) { res.json({ configured: false, error: err.message }); }
 });
 
-app.get('/api/render/services', authenticateToken, requireFullCapabilities, async (req, res) => {
-  if (!renderSvc) return res.status(503).json({ error: 'Render not configured' });
-  try { res.json({ success: true, services: await renderSvc.listServices() }); }
+app.get('/api/vercel/deployments', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!vercelSvc) return res.status(503).json({ error: 'Vercel not configured — add VERCEL_TOKEN to .env' });
+  try { res.json({ success: true, deployments: await vercelSvc.listDeployments(parseInt(req.query.limit) || 10) }); }
   catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
 
-app.post('/api/render/services/:id/deploy', authenticateToken, requireFullCapabilities, async (req, res) => {
-  if (!renderSvc) return res.status(503).json({ error: 'Render not configured' });
+app.post('/api/vercel/redeploy', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!vercelSvc) return res.status(503).json({ error: 'Vercel not configured' });
   try {
-    const result = await renderSvc.deploy(req.params.id, req.body.clearCache || false);
+    const result = await vercelSvc.redeploy(req.body.deploymentId || null, req.body.project || null);
     res.json({ success: true, ...result });
-  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
-});
-
-app.get('/api/render/services/:id/logs', authenticateToken, requireFullCapabilities, async (req, res) => {
-  if (!renderSvc) return res.status(503).json({ error: 'Render not configured' });
-  try {
-    const logs = await renderSvc.getLogs(req.params.id, parseInt(req.query.limit) || 100);
-    res.json({ success: true, logs });
   } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
 

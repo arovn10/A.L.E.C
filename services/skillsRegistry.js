@@ -151,14 +151,16 @@ const BUILTIN_SKILLS = [
     },
   },
   {
-    id: 'render', name: 'Render.com', icon: '🚀', category: 'Development', global: false,
-    description: 'Manage Render deployments, view logs, restart services.',
+    id: 'vercel', name: 'Vercel', icon: '▲', category: 'Development', global: false,
+    description: 'Monitor deployments, check build status, and trigger redeploys from chat.',
     fields: [
-      { key: 'RENDER_API_KEY', label: 'Render API Key', type: 'password', placeholder: 'rnd_...', envVar: 'RENDER_API_KEY', required: true, hint: 'dashboard.render.com → Account → API Keys' },
+      { key: 'VERCEL_TOKEN',   label: 'Vercel API Token', type: 'password', placeholder: 'vercel_...', envVar: 'VERCEL_TOKEN',   required: true,  hint: 'vercel.com → Settings → Tokens → Create token' },
+      { key: 'VERCEL_PROJECT', label: 'Project Name',     type: 'text',     placeholder: 'alec-ai',    envVar: 'VERCEL_PROJECT', required: false, hint: 'Your Vercel project name (defaults to alec-ai)' },
+      { key: 'VERCEL_TEAM_ID', label: 'Team ID (optional)', type: 'text',   placeholder: 'team_...',   envVar: 'VERCEL_TEAM_ID', required: false, hint: 'Only needed for team/org projects — leave blank for personal' },
     ],
     async checkStatus() {
-      const r = require('./renderService.js');
-      return r.status();
+      const v = require('./vercelService.js');
+      return v.status();
     },
   },
 
