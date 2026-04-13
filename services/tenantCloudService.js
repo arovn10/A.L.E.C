@@ -34,17 +34,59 @@ function getIMessage() { try { return require('./iMessageService.js'); } catch {
 
 // ── Browser lifecycle ─────────────────────────────────────────────
 
-async function getBrowser() {
+async function getBrowser(headless = true) {
   if (_browser && _browser.isConnected()) return _browser;
   _browser = await puppeteerExtra.launch({
     executablePath: CHROME_PATH,
-    headless: true,
+    headless,
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
            '--disable-blink-features=AutomationControlled'],
   });
   _page    = null;
   _loggedIn = false;
   return _browser;
+}
+
+/**
+ * Open a visible Chrome window so the user can log in manually.
+ * Waits until they're past the login page, saves cookies, then closes.
+ * Returns { success, message }.
+ */
+async function startManualLogin() {
+  // Close any existing headless browser first
+  if (_browser) { try { await _browser.close(); } catch (_) {} _browser = null; _page = null; _loggedIn = false; }
+  fs.rmSync(SESSION_FILE, { force: true });
+
+  console.log('[TenantCloud] Opening visible Chrome for manual login...');
+  const browser = await puppeteerExtra.launch({
+    executablePath: CHROME_PATH,
+    headless: false,
+    defaultViewport: null, // use full window size
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--start-maximized'],
+  });
+
+  const page = await browser.newPage();
+  await page.goto(`${TC_BASE}/login`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+
+  // Poll until user navigates away from login (they logged in successfully)
+  const MAX_WAIT = 5 * 60 * 1000; // 5 minutes
+  const start = Date.now();
+  while (Date.now() - start < MAX_WAIT) {
+    await new Promise(r => setTimeout(r, 1000));
+    const url = page.url().toLowerCase();
+    if (!url.includes('/login') && !url.includes('/sign-in') && !isMfaPage(url)) {
+      // Logged in — save cookies
+      const cookies = await page.cookies();
+      saveCookies(cookies);
+      _loggedIn = true;
+      console.log('[TenantCloud] Manual login detected, cookies saved');
+      await browser.close();
+      return { success: true, message: 'Logged in successfully. TenantCloud is ready.' };
+    }
+  }
+
+  await browser.close();
+  return { success: false, message: 'Timed out waiting for login (5 min). Please try again.' };
 }
 
 async function getPage() {
@@ -474,5 +516,6 @@ module.exports = {
   listInquiries,
   getPortfolioSummary, analyzeRentPatterns,
   submitVerificationCode, isMfaPending,
+  startManualLogin,
   status,
 };

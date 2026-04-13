@@ -3893,6 +3893,26 @@ app.get('/api/tenantcloud/status', authenticateToken, async (req, res) => {
   catch (err) { res.json({ configured: false, error: err.message }); }
 });
 
+/**
+ * POST /api/tenantcloud/manual-login
+ * Opens a visible Chrome window on this Mac so the owner can log in manually.
+ * Once logged in, cookies are saved and headless scraping takes over.
+ * Owner-only — runs on the server Mac, not remotely.
+ */
+app.post('/api/tenantcloud/manual-login', authenticateToken, requireOwner, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not available' });
+  try {
+    res.json({ success: true, message: 'Opening Chrome on the server Mac — log in to TenantCloud in the window that appears. You have 5 minutes.' });
+    // Run async — don't block the response
+    tenantCloud.startManualLogin().then(result => {
+      console.log('[TenantCloud manual login]', result.message);
+      if (iMessage) iMessage.notifyOwner(result.success ? '🏠 TenantCloud logged in and ready!' : '⚠️ TenantCloud login timed out', 'TenantCloud').catch(() => {});
+    }).catch(err => console.error('[TenantCloud manual login error]', err.message));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 /** POST /api/tenantcloud/verify-code  { code: "123456" } */
 app.post('/api/tenantcloud/verify-code', authenticateToken, (req, res) => {
   if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not available' });

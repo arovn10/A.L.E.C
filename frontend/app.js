@@ -2297,6 +2297,19 @@ window.openSkillConfig = async function(skillId) {
       }
     }
 
+    // ── TenantCloud: add manual browser login button ─────────
+    if (skillId === 'tenantcloud') {
+      fieldsEl.innerHTML += `
+        <div style="margin-top:18px;padding:14px;background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:8px;">
+          <div style="font-weight:600;font-size:0.85rem;margin-bottom:6px;">🌐 reCAPTCHA blocks automated login</div>
+          <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:10px;">Click below to open a Chrome window on the server Mac. Log into TenantCloud normally — ALEC will capture your session automatically.</div>
+          <button class="btn btn-accent" id="tc-manual-login-btn" onclick="startTenantCloudLogin()" style="width:100%;font-size:0.85rem;">
+            🔓 Open Browser & Log In
+          </button>
+          <div id="tc-login-status" style="margin-top:8px;font-size:0.78rem;color:var(--text-muted);text-align:center;"></div>
+        </div>`;
+    }
+
     // Add "Reveal credentials" button at bottom (for all non-empty skills)
     if ((skill.fields || []).length > 0) {
       fieldsEl.innerHTML += `
@@ -2310,6 +2323,35 @@ window.openSkillConfig = async function(skillId) {
   } catch (e) {
     toast('Failed to load skill config: ' + e.message, 'error');
     console.error('[openSkillConfig]', e);
+  }
+};
+
+window.startTenantCloudLogin = async function() {
+  const btn    = document.getElementById('tc-manual-login-btn');
+  const status = document.getElementById('tc-login-status');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Opening Chrome…'; }
+  if (status) status.textContent = 'Chrome will open on this Mac. Log in to TenantCloud, then come back here.';
+  try {
+    await api('POST', '/api/tenantcloud/manual-login', {});
+    if (status) status.textContent = '✅ Chrome opened — log in and ALEC will capture your session automatically. You\'ll get an iMessage when done.';
+    if (btn) { btn.textContent = '⏳ Waiting for login…'; }
+    // Poll status every 5s until authenticated
+    const poll = setInterval(async () => {
+      try {
+        const s = await api('GET', '/api/tenantcloud/status');
+        if (s.authenticated) {
+          clearInterval(poll);
+          if (status) status.textContent = '✅ Logged in! TenantCloud is connected.';
+          if (btn) { btn.disabled = false; btn.textContent = '✅ Connected'; }
+          loadSkills();
+        }
+      } catch (_) {}
+    }, 5000);
+    // Stop polling after 6 minutes
+    setTimeout(() => clearInterval(poll), 360000);
+  } catch (err) {
+    if (status) status.textContent = '❌ ' + err.message;
+    if (btn) { btn.disabled = false; btn.textContent = '🔓 Open Browser & Log In'; }
   }
 };
 
