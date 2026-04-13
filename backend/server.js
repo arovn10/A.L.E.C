@@ -883,7 +883,7 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     }
 
     // ── TenantCloud RAG: inject property management data ──────────
-    const tcIntent = /\b(tenant|tenants|rent|payment|overdue|maintenance|lease|property|properties|unit|units|inquiry|inquiries|renter|renter|move.?out|move.?in|vacancy|vacant|occupan|evict)\b/i.test(userText);
+    const tcIntent = /tenantcloud|\b(tenant|rent|payment|overdue|maintenance|lease|property|properties|unit|units|inquiry|inquiries|renter|move.?out|move.?in|vacancy|vacant|occupan|evict)\b/i.test(userText);
     if (tcIntent && tenantCloud) {
       try {
         const summary = await tenantCloud.getPortfolioSummary();
@@ -1269,7 +1269,7 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
     }
 
     // ── TenantCloud RAG (stream) ────────────────────────────────
-    const tcIntentStream = /\b(tenant|tenants|rent|payment|overdue|maintenance|lease|property|properties|unit|units|inquiry|inquiries|renter|move.?out|move.?in|vacancy|vacant|occupan|evict)\b/i.test(userText);
+    const tcIntentStream = /tenantcloud|\b(tenant|rent|payment|overdue|maintenance|lease|property|properties|unit|units|inquiry|inquiries|renter|move.?out|move.?in|vacancy|vacant|occupan|evict)\b/i.test(userText);
     if (tcIntentStream && tenantCloud) {
       try {
         res.write('data: {"token":"🏠 "}\n\n');
