@@ -4020,6 +4020,87 @@ if (scheduler) {
   }
 }
 
+// ════════════════════════════════════════════════════════════════
+//  TWILIO WEBHOOKS  (incoming voice calls + SMS)
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * POST /api/twilio/voice
+ * Twilio calls this when someone calls your Twilio number.
+ * Responds with TwiML — greets the caller and records a voicemail,
+ * or redirects to a <Say> message from ALEC.
+ */
+app.post('/api/twilio/voice', express.urlencoded({ extended: false }), async (req, res) => {
+  const callerName = req.body.CallerName || req.body.From || 'Unknown caller';
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna">Hello, you've reached A.L.E.C., Alec Rovner's personal AI assistant. Alec is unavailable right now. Please leave a message after the beep and I'll make sure he gets it.</Say>
+  <Record maxLength="120" transcribe="true" transcribeCallback="/api/twilio/transcription" playBeep="true"/>
+  <Say voice="Polly.Joanna">Thank you for your message. Goodbye.</Say>
+</Response>`;
+  res.set('Content-Type', 'text/xml');
+  res.send(twiml);
+  console.log(`[Twilio Voice] Incoming call from ${callerName}`);
+
+  // Notify owner via iMessage
+  if (iMessage) {
+    iMessage.notifyOwner(`📞 Incoming call from ${callerName} — recording voicemail`, 'Twilio').catch(() => {});
+  }
+});
+
+/**
+ * POST /api/twilio/transcription
+ * Twilio sends voicemail transcription here when ready.
+ */
+app.post('/api/twilio/transcription', express.urlencoded({ extended: false }), async (req, res) => {
+  const text   = req.body.TranscriptionText || '(no transcription)';
+  const from   = req.body.From || 'Unknown';
+  const recUrl = req.body.RecordingUrl || '';
+  console.log(`[Twilio Transcription] From ${from}: ${text}`);
+
+  if (iMessage) {
+    iMessage.notifyOwner(`📞 Voicemail from ${from}:\n"${text}"${recUrl ? `\nRecording: ${recUrl}` : ''}`, 'Twilio Voicemail').catch(() => {});
+  }
+  res.sendStatus(204);
+});
+
+/**
+ * POST /api/twilio/sms
+ * Twilio calls this when someone texts your Twilio number.
+ * Passes the message to ALEC's LLM and replies via SMS.
+ */
+app.post('/api/twilio/sms', express.urlencoded({ extended: false }), async (req, res) => {
+  const from = req.body.From || '';
+  const body = (req.body.Body || '').trim();
+  console.log(`[Twilio SMS] Incoming from ${from}: ${body}`);
+
+  // Notify owner
+  if (iMessage) {
+    iMessage.notifyOwner(`💬 SMS from ${from}: "${body}"`, 'Twilio SMS').catch(() => {});
+  }
+
+  let reply = 'ALEC received your message.';
+  try {
+    // Run message through LLM for a response
+    const sysPrompt = buildSystemPrompt() + '\n\nYou are responding via SMS. Keep your reply under 160 characters. Be direct and helpful.';
+    reply = await callLLMText([
+      { role: 'system', content: sysPrompt },
+      { role: 'user',   content: body },
+    ], true);
+    // Truncate to SMS limit
+    if (reply.length > 155) reply = reply.slice(0, 152) + '…';
+  } catch (llmErr) {
+    console.warn('[Twilio SMS] LLM error:', llmErr.message);
+  }
+
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Message>${reply.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</Message>
+</Response>`;
+  res.set('Content-Type', 'text/xml');
+  res.send(twiml);
+});
+
 app.listen(PORT, HOST, () => {
   const lanIps = getLanAddresses();
   const lanList = lanIps.length > 0
