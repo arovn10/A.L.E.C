@@ -662,6 +662,22 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
       console.warn('[STOA RAG] Failed (non-critical):', stoaErr.message?.slice(0, 80));
     }
 
+    // ── AWS / Website RAG: inject server status ───────────────────
+    const awsIntent = /\b(campus|campusrental|website|server|aws|ec2|nginx|deploy|ssh|uptime|down|offline|traffic|hosting)\b/i.test(userText);
+    if (awsIntent && awsSvc) {
+      try {
+        const websiteStatus = await awsSvc.checkWebsiteStatus();
+        let awsCtx = `[AWS DATA — campusrentalsllc.com server status]\n`;
+        awsCtx += `Website: ${websiteStatus.online ? '✅ Online' : '❌ Offline'} (host: ${process.env.AWS_WEBSITE_HOST || 'not configured'})\n`;
+        if (websiteStatus.httpStatus) awsCtx += `HTTP status: ${websiteStatus.httpStatus}\n`;
+        if (websiteStatus.httpError) awsCtx += `Error: ${websiteStatus.httpError}\n`;
+        systemContent += '\n\n' + awsCtx;
+        console.log('[AWS RAG] Injected website status, online:', websiteStatus.online);
+      } catch (awsErr) {
+        console.warn('[AWS RAG] Failed (non-critical):', awsErr.message?.slice(0, 80));
+      }
+    }
+
     // ── Plaid RAG: inject investment/brokerage data ───────────────
     const plaidIntent = /\b(investment|portfolio|holdings|brokerage|schwab|fidelity|acorns|stock|balance|account|net.?worth|finance|financial|money|wealth)\b/i.test(userText);
     const isOwnerChat = req.user?.tokenType === 'OWNER' || req.user?.role === 'owner';
@@ -873,6 +889,22 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
       }
     } catch (stoaErr) {
       console.warn('[STOA RAG stream] Failed (non-critical):', stoaErr.message?.slice(0, 80));
+    }
+
+    // ── AWS / Website RAG (stream) ─────────────────────────────
+    const awsIntentStream = /\b(campus|campusrental|website|server|aws|ec2|nginx|deploy|ssh|uptime|down|offline|traffic|hosting)\b/i.test(userText);
+    if (awsIntentStream && awsSvc) {
+      try {
+        res.write('data: {"token":"☁️ "}\n\n');
+        const websiteStatus = await awsSvc.checkWebsiteStatus();
+        let awsCtx = `[AWS DATA — campusrentalsllc.com server status]\n`;
+        awsCtx += `Website: ${websiteStatus.online ? '✅ Online' : '❌ Offline'} (host: ${process.env.AWS_WEBSITE_HOST || 'not configured'})\n`;
+        if (websiteStatus.httpStatus) awsCtx += `HTTP status: ${websiteStatus.httpStatus}\n`;
+        if (websiteStatus.httpError) awsCtx += `Error: ${websiteStatus.httpError}\n`;
+        systemContent += '\n\n' + awsCtx;
+      } catch (awsErr) {
+        console.warn('[AWS RAG stream] Failed (non-critical):', awsErr.message?.slice(0, 80));
+      }
     }
 
     // ── Plaid RAG (stream) ─────────────────────────────────────

@@ -259,6 +259,38 @@ function registerSystemTasks() {
     return 'Export cleanup done';
   }, { description: 'Clean up old Excel exports', notifyWhenDone: false });
 
+  // campusrentalsllc.com uptime check — every 15 minutes
+  schedule('website-uptime-check', '*/15 * * * *', async () => {
+    const aws = require('./awsService.js');
+    const host = process.env.AWS_WEBSITE_HOST;
+    if (!host) return 'AWS_WEBSITE_HOST not configured';
+    const result = await aws.checkWebsiteStatus();
+    if (!result.online) {
+      await notifyOwner(`🚨 campusrentalsllc.com is DOWN! HTTP error: ${result.httpError || 'unknown'}. SSH status: ${result.serverStatus?.slice(0, 100) || 'unavailable'}`);
+      return `OFFLINE — ${result.httpError}`;
+    }
+    return `Online (HTTP ${result.httpStatus})`;
+  }, { description: 'campusrentalsllc.com uptime monitor', notifyWhenDone: false, notifyOnError: true });
+
+  // TenantCloud daily digest — 8 AM weekdays
+  schedule('tenantcloud-daily-digest', '0 8 * * 1-5', async () => {
+    const tc = require('./tenantCloudService.js');
+    try {
+      const summary = await tc.getPortfolioSummary();
+      const parts = [];
+      parts.push(`🏠 ${summary.properties?.total || 0} properties, ${summary.tenants?.active || 0} active tenants`);
+      if (summary.overdue?.count > 0) parts.push(`⚠️ ${summary.overdue.count} overdue payments ($${summary.overdue.totalAmount?.toLocaleString()})`);
+      if (summary.maintenance?.open > 0) parts.push(`🔧 ${summary.maintenance.open} open maintenance (${summary.maintenance.highPriority} high priority)`);
+      if (summary.messages?.unread > 0) parts.push(`💬 ${summary.messages.unread} unread messages`);
+      if (summary.inquiries?.new > 0) parts.push(`🔔 ${summary.inquiries.new} new rental inquiries`);
+      const msg = 'TenantCloud Daily:\n' + parts.join('\n');
+      await notifyOwner(msg);
+      return msg;
+    } catch (err) {
+      return `TenantCloud digest failed: ${err.message}`;
+    }
+  }, { description: 'Daily TenantCloud property digest', notifyWhenDone: false });
+
   console.log('📅 System task schedules registered');
 }
 
