@@ -11,7 +11,7 @@
  * Setup: Get API key from TenantCloud → Settings → API
  */
 
-const API_KEY    = process.env.TENANTCLOUD_API_KEY    || null;
+let _API_KEY    = process.env.TENANTCLOUD_API_KEY    || null;
 const TC_EMAIL   = process.env.TENANTCLOUD_EMAIL      || null;
 const TC_PASS    = process.env.TENANTCLOUD_PASSWORD   || null;
 const TC_BASE    = 'https://app.tenantcloud.com/api/v1';
@@ -19,25 +19,48 @@ const TC_BASE    = 'https://app.tenantcloud.com/api/v1';
 let _bearerToken = null;
 
 // ── Auth ──────────────────────────────────────────────────────────
+// TenantCloud's /auth/login endpoint was deprecated (405 error).
+// Modern auth uses a personal access token from:
+//   TenantCloud → Settings → API → Personal Access Token
+// Set TENANTCLOUD_API_KEY in .env to your personal access token.
+// Email+password auth uses cookie-based session (scraping) as fallback.
 async function getAuthHeader() {
-  if (API_KEY) return { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' };
+  // Re-read env in case credentials were saved to .env after startup
+  if (!_API_KEY) _API_KEY = process.env.TENANTCLOUD_API_KEY || null;
+
+  if (_API_KEY) {
+    // TenantCloud API key — sent as Bearer token
+    return { 'Authorization': `Bearer ${_API_KEY}`, 'Content-Type': 'application/json' };
+  }
 
   if (_bearerToken) return { 'Authorization': `Bearer ${_bearerToken}`, 'Content-Type': 'application/json' };
 
   if (!TC_EMAIL || !TC_PASS) {
-    throw new Error('TenantCloud not configured. Add TENANTCLOUD_API_KEY (or TENANTCLOUD_EMAIL + TENANTCLOUD_PASSWORD) to .env');
+    throw new Error('TenantCloud not configured. Add TENANTCLOUD_API_KEY to .env (Settings → API → Personal Access Token)');
   }
 
-  const resp = await fetch(`${TC_BASE}/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: TC_EMAIL, password: TC_PASS }),
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!resp.ok) throw new Error(`TenantCloud auth failed: ${resp.status}`);
-  const data = await resp.json();
-  _bearerToken = data.token || data.access_token;
-  return { Authorization: `Bearer ${_bearerToken}`, 'Content-Type': 'application/json' };
+  // Fallback: try email+password via alternative endpoint
+  const loginEndpoints = [
+    `${TC_BASE}/user/login`,
+    `${TC_BASE}/auth/token`,
+    'https://app.tenantcloud.com/api/v2/auth/login',
+  ];
+  for (const url of loginEndpoints) {
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: TC_EMAIL, password: TC_PASS }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        _bearerToken = data.token || data.access_token || data.data?.token;
+        if (_bearerToken) return { Authorization: `Bearer ${_bearerToken}`, 'Content-Type': 'application/json' };
+      }
+    } catch (_) {}
+  }
+  throw new Error('TenantCloud auth failed. Please add TENANTCLOUD_API_KEY to .env');
 }
 
 async function tcGet(endpoint, params = {}) {
@@ -262,15 +285,15 @@ async function analyzeRentPatterns() {
 
 // ── Status ────────────────────────────────────────────────────────
 async function status() {
-  const configured = !!(API_KEY || (TC_EMAIL && TC_PASS));
+  const configured = !!(_API_KEY || process.env.TENANTCLOUD_API_KEY || (TC_EMAIL && TC_PASS));
   if (!configured) {
-    return { configured: false, hint: 'Add TENANTCLOUD_API_KEY (or TENANTCLOUD_EMAIL + TENANTCLOUD_PASSWORD) to .env' };
+    return { configured: false, hint: 'Add TENANTCLOUD_API_KEY (personal access token) to .env — TenantCloud → Settings → API' };
   }
   try {
     const props = await listProperties();
     return { configured: true, authenticated: true, propertyCount: props.length };
   } catch (err) {
-    return { configured: true, authenticated: false, error: err.message };
+    return { configured: true, authenticated: false, error: err.message, hint: 'Check TENANTCLOUD_API_KEY — it should be your personal access token from TenantCloud → Settings → API' };
   }
 }
 

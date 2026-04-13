@@ -4,7 +4,7 @@
     "expression": "0 9 * * *",
     "description": "Daily portfolio occupancy snapshot",
     "notifyWhenDone": true,
-    "createdAt": "2026-04-13T13:38:33.751Z",
+    "createdAt": "2026-04-13T13:47:25.262Z",
     "lastRun": null,
     "lastStatus": null
   },
@@ -13,7 +13,7 @@
     "expression": "0 8 * * 1",
     "description": "Weekly expiring contracts alert",
     "notifyWhenDone": true,
-    "createdAt": "2026-04-13T13:38:33.754Z",
+    "createdAt": "2026-04-13T13:47:25.264Z",
     "lastRun": null,
     "lastStatus": null
   },
@@ -22,7 +22,25 @@
     "expression": "0 3 * * *",
     "description": "Clean up old Excel exports",
     "notifyWhenDone": false,
-    "createdAt": "2026-04-13T13:38:33.755Z",
+    "createdAt": "2026-04-13T13:47:25.265Z",
+    "lastRun": null,
+    "lastStatus": null
+  },
+  "website-uptime-check": {
+    "id": "website-uptime-check",
+    "expression": "*/15 * * * *",
+    "description": "campusrentalsllc.com uptime monitor",
+    "notifyWhenDone": false,
+    "createdAt": "2026-04-13T13:47:25.266Z",
+    "lastRun": "2026-04-13T13:45:00.006Z",
+    "lastStatus": "success"
+  },
+  "tenantcloud-daily-digest": {
+    "id": "tenantcloud-daily-digest",
+    "expression": "0 8 * * 1-5",
+    "description": "Daily TenantCloud property digest",
+    "notifyWhenDone": false,
+    "createdAt": "2026-04-13T13:47:25.267Z",
     "lastRun": null,
     "lastStatus": null
   }

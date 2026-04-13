@@ -153,9 +153,84 @@ ${caps.join('\n')}
 // Keep a static alias for backward compat with any code referencing ALEC_SYSTEM_PROMPT directly
 const ALEC_SYSTEM_PROMPT = buildSystemPrompt();
 
+// ── Anthropic Claude fallback ───────────────────────────────────
+// Used when: ANTHROPIC_API_KEY is set AND (local model not loaded OR user explicitly picks Claude)
+async function callClaudeText(messages, voiceMode = false) {
+  const maxTokens = voiceMode ? 200 : 2048;
+  const model = process.env.CLAUDE_MODEL || 'claude-opus-4-5';
+  const systemMsg = messages.find(m => m.role === 'system');
+  const chatMsgs  = messages.filter(m => m.role !== 'system');
+
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': process.env.ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: maxTokens,
+      system: systemMsg?.content || '',
+      messages: chatMsgs,
+    }),
+    signal: AbortSignal.timeout(60000),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(`Anthropic API error: ${err.error?.message || resp.status}`);
+  }
+  const data = await resp.json();
+  return data.content?.[0]?.text?.trim() || '';
+}
+
+async function* callClaudeStream(messages, voiceMode = false) {
+  const maxTokens = voiceMode ? 200 : 2048;
+  const model = process.env.CLAUDE_MODEL || 'claude-opus-4-5';
+  const systemMsg = messages.find(m => m.role === 'system');
+  const chatMsgs  = messages.filter(m => m.role !== 'system');
+
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': process.env.ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: maxTokens,
+      system: systemMsg?.content || '',
+      messages: chatMsgs,
+      stream: true,
+    }),
+    signal: AbortSignal.timeout(120000),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(`Anthropic stream error: ${err.error?.message || resp.status}`);
+  }
+
+  for await (const chunk of resp.body) {
+    const text = new TextDecoder().decode(chunk);
+    for (const line of text.split('\n')) {
+      if (!line.startsWith('data: ')) continue;
+      const raw = line.slice(6).trim();
+      if (raw === '[DONE]' || !raw) continue;
+      try {
+        const ev = JSON.parse(raw);
+        if (ev.type === 'content_block_delta' && ev.delta?.text) {
+          yield ev.delta.text;
+        }
+      } catch (_) {}
+    }
+  }
+}
+
 /**
  * Non-streaming call — returns text string.
  * Uses node-llama-cpp embedded engine (Metal GPU on Apple Silicon).
+ * Falls back to Anthropic Claude if ANTHROPIC_API_KEY set and local model unloaded.
  */
 async function callLLMText(messages, voiceMode = false) {
   const maxTokens  = voiceMode ? 150  : 1024;
@@ -168,11 +243,19 @@ async function callLLMText(messages, voiceMode = false) {
     ...messages,
   ];
 
+  // If Anthropic key is set and local model isn't loaded, use Claude as fallback
+  const localStatus = llamaEngine.getStatus();
+  if (!localStatus.loaded && process.env.ANTHROPIC_API_KEY) {
+    console.log('[LLM] Local model not loaded — falling back to Anthropic Claude');
+    return await callClaudeText(fullMsgs, voiceMode);
+  }
+
   return await llamaEngine.generate(fullMsgs, { maxTokens, temperature });
 }
 
 /**
  * Streaming call — returns async generator that yields token strings.
+ * Falls back to Anthropic Claude streaming if local model unloaded.
  */
 async function* callLLMStream(messages, voiceMode = false) {
   const maxTokens   = voiceMode ? 150  : 1024;
@@ -183,6 +266,14 @@ async function* callLLMStream(messages, voiceMode = false) {
     { role: 'system', content: buildSystemPrompt() },
     ...messages,
   ];
+
+  // Fall back to Anthropic Claude if local model not ready
+  const localStatus = llamaEngine.getStatus();
+  if (!localStatus.loaded && process.env.ANTHROPIC_API_KEY) {
+    console.log('[LLM Stream] Local model not loaded — falling back to Anthropic Claude');
+    yield* callClaudeStream(fullMsgs, voiceMode);
+    return;
+  }
 
   yield* llamaEngine.generateStream(fullMsgs, { maxTokens, temperature });
 }
