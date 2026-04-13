@@ -200,6 +200,35 @@ async function listWorkflowRuns(repo = null, limit = 10) {
   }));
 }
 
+// ── Workflows ─────────────────────────────────────────────────────
+
+/**
+ * List all workflows for a repo.
+ */
+async function listWorkflows(repo = null) {
+  const r = repo || process.env.GITHUB_REPO || 'arovn10/A.L.E.C';
+  const data = await ghApi(`repos/${r}/actions/workflows`);
+  return (data.workflows || []).map(w => ({
+    id:       w.id,
+    name:     w.name,
+    path:     w.path,
+    state:    w.state,
+  }));
+}
+
+/**
+ * Trigger a workflow_dispatch event on a workflow.
+ * @param {string|number} workflowId  — workflow file name (e.g. "deploy.yml") or numeric id
+ * @param {string}        ref         — branch or tag to run on (default: "main")
+ * @param {object}        inputs      — optional workflow inputs
+ * @param {string}        repo        — owner/repo (default: GITHUB_REPO env)
+ */
+async function triggerWorkflow(workflowId, ref = 'main', inputs = {}, repo = null) {
+  const r = repo || process.env.GITHUB_REPO || 'arovn10/A.L.E.C';
+  await ghApi(`repos/${r}/actions/workflows/${encodeURIComponent(String(workflowId))}/dispatches`, 'POST', { ref, inputs });
+  return { triggered: true, workflow: workflowId, ref, repo: r };
+}
+
 // ── Status ────────────────────────────────────────────────────────
 async function status() {
   try {
@@ -237,7 +266,7 @@ module.exports = {
   listIssues, createIssue,
   listPRs, createPR,
   getCommits, searchCode,
-  listWorkflowRuns,
+  listWorkflows, listWorkflowRuns, triggerWorkflow,
   cloneAndOpen,
   status,
   ghApi,

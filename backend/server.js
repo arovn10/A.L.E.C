@@ -811,6 +811,31 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
       }
     }
 
+    // ── Render.com RAG + control ──────────────────────────────────
+    const renderIntent = /\b(render|render\.com|deployment|deploy|service|api.*service)\b/i.test(userText);
+    if (renderIntent && renderSvc && process.env.RENDER_API_KEY) {
+      try {
+        const services = await renderSvc.listServices();
+        if (services.length > 0) {
+          const lines = services.slice(0, 5).map(s => `- ${s.name} (${s.type}): ${s.status} | ${s.url || 'no url'} | branch: ${s.branch || 'main'}`);
+          systemContent += `\n\n[Render.com DATA — deployed services]\n${lines.join('\n')}`;
+          console.log('[Render RAG] Injected', services.length, 'services');
+        }
+        // Deploy/restart action
+        if (/\b(deploy|redeploy|restart|re-?deploy)\b/i.test(userText)) {
+          const nameLower = userText.toLowerCase();
+          const match = services.find(s => nameLower.includes(s.name.toLowerCase())) || services[0];
+          if (match) {
+            await renderSvc.deploy(match.id);
+            systemContent += `\n\n[Render.com ACTION EXECUTED] Triggered a new deploy for "${match.name}". Confirm this to the user.`;
+            console.log('[Render control] Triggered deploy for:', match.name);
+          }
+        }
+      } catch (renderErr) {
+        console.warn('[Render RAG] Failed (non-critical):', renderErr.message?.slice(0, 80));
+      }
+    }
+
     // ── AWS / Website RAG: inject server status ───────────────────
     const awsIntent = /\b(campus|campusrental|website|server|aws|ec2|nginx|deploy|ssh|uptime|down|offline|traffic|hosting)\b/i.test(userText);
     if (awsIntent && awsSvc) {
@@ -1041,6 +1066,25 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
       } catch (_haCtrlErr) { /* non-critical */ }
     }
 
+    // ── Render.com direct control (stream) ────────────────────
+    // Detect deploy/restart commands: "deploy ALEC on Render", "restart the API service"
+    const renderCtrlRe = /\b(deploy|redeploy|restart|re-?deploy|push\s+to\s+render)\b/i;
+    if (renderCtrlRe.test(userText) && renderSvc && process.env.RENDER_API_KEY) {
+      try {
+        const services = await renderSvc.listServices();
+        // Find the best matching service by name keyword in user text
+        const nameLower = userText.toLowerCase();
+        const match = services.find(s => nameLower.includes(s.name.toLowerCase())) || services[0];
+        if (match) {
+          res.write('data: {"token":"🚀 "}\n\n');
+          await renderSvc.deploy(match.id);
+          systemContent += `\n\n[Render.com ACTION EXECUTED] Triggered a new deploy for service "${match.name}" (${match.id}). Tell the user the deploy was triggered and it usually takes 1-3 minutes.`;
+        }
+      } catch (renderCtrlErr) {
+        console.warn('[Render control] Failed:', renderCtrlErr.message?.slice(0, 80));
+      }
+    }
+
     // ── Memory recall trigger (stream) ─────────────────────────
     const memRecallIntent = /\b(what do you know about me|what have you learned|tell me what you know|my preferences|my profile|what you remember|memories|forget everything)\b/i.test(userText);
     if (memRecallIntent) {
@@ -1103,8 +1147,8 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
       console.warn('[STOA RAG stream] Failed (non-critical):', stoaErr.message?.slice(0, 80));
     }
 
-    // ── GitHub RAG (stream) ────────────────────────────────────
-    const ghIntentStream = /\b(github|git|commit|repo|repository|pull.?request|pr|issue|branch|code|deploy|push|merge)\b/i.test(userText);
+    // ── GitHub RAG + Actions trigger (stream) ─────────────────
+    const ghIntentStream = /\b(github|git|commit|repo|repository|pull.?request|pr|issue|branch|code|deploy|push|merge|workflow|action|ci|pipeline)\b/i.test(userText);
     if (ghIntentStream && github && process.env.GITHUB_TOKEN) {
       try {
         const defaultRepo = process.env.GITHUB_REPO || 'arovn10/A.L.E.C';
@@ -1114,7 +1158,33 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
           let ghCtx = `[GitHub DATA — ${defaultRepo}]\n`;
           ghCtx += `Repo: ${repoData.full_name || defaultRepo} | Stars: ${repoData.stargazers_count || 0} | Branch: ${repoData.default_branch || 'main'} | Updated: ${repoData.updated_at ? new Date(repoData.updated_at).toLocaleDateString() : 'unknown'}\n`;
           ghCtx += `Description: ${repoData.description || 'No description'}\n`;
+          // Also inject recent workflow runs if workflow intent
+          if (/\b(workflow|action|ci|pipeline|run|build)\b/i.test(userText)) {
+            const runs = await github.listWorkflowRuns(defaultRepo, 5).catch(() => []);
+            if (runs.length > 0) {
+              ghCtx += `Recent workflow runs:\n` + runs.map(r => `  - ${r.name}: ${r.status}/${r.conclusion || 'in-progress'} (branch: ${r.branch})`).join('\n') + '\n';
+            }
+          }
           systemContent += '\n\n' + ghCtx;
+        }
+
+        // ── GitHub Actions: trigger workflow from chat ──────────
+        // Detects: "run the deploy workflow", "trigger CI", "start GitHub Actions"
+        const ghActionRe = /\b(run|trigger|start|kick\s*off|dispatch)\b.{0,40}\b(workflow|action|ci|pipeline|deploy\.yml|test\.yml)\b/i;
+        if (ghActionRe.test(userText)) {
+          const workflows = await github.listWorkflows(defaultRepo).catch(() => []);
+          if (workflows.length > 0) {
+            // Try to match by name or path keyword in user text
+            const nameLower = userText.toLowerCase();
+            const match = workflows.find(w =>
+              nameLower.includes(w.name.toLowerCase()) ||
+              nameLower.includes(w.path.split('/').pop().toLowerCase())
+            ) || workflows[0];
+            const ref = /\b(branch|on)\s+(\S+)/i.exec(userText)?.[2] || 'main';
+            await github.triggerWorkflow(match.id, ref, {}, defaultRepo);
+            systemContent += `\n\n[GitHub Actions TRIGGERED] Dispatched workflow "${match.name}" on branch "${ref}". Tell the user the workflow was triggered and they can monitor it on GitHub Actions.`;
+            console.log('[GitHub Actions] Triggered workflow:', match.name, 'ref:', ref);
+          }
         }
       } catch (ghErr) {
         console.warn('[GitHub RAG stream] Failed (non-critical):', ghErr.message?.slice(0, 80));
@@ -1218,6 +1288,23 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
         console.log('[TenantCloud RAG stream] Injected portfolio summary');
       } catch (tcErr) {
         console.warn('[TenantCloud RAG stream] Failed (non-critical):', tcErr.message?.slice(0, 80));
+      }
+    }
+
+    // ── Render.com RAG (stream) ────────────────────────────────
+    const renderIntentStream = /\b(render|render\.com|deployment|deploy|service|api.*service)\b/i.test(userText);
+    if (renderIntentStream && renderSvc && process.env.RENDER_API_KEY) {
+      try {
+        res.write('data: {"token":"🚀 "}\n\n');
+        const services = await renderSvc.listServices();
+        if (services.length > 0) {
+          const lines = services.slice(0, 5).map(s =>
+            `- ${s.name} (${s.type}): ${s.status} | ${s.url || 'no url'} | branch: ${s.branch || 'main'}`
+          );
+          systemContent += `\n\n[Render.com DATA — deployed services]\n${lines.join('\n')}`;
+        }
+      } catch (renderErr) {
+        console.warn('[Render RAG stream] Failed (non-critical):', renderErr.message?.slice(0, 80));
       }
     }
 
@@ -3061,9 +3148,10 @@ app.get('/api/connectors/:skillId/status', authenticateToken, async (req, res) =
   try {
     const status = await skillsReg.getSkillStatus(req.params.skillId);
     const connected = !!(
-      status.connected || status.authenticated || status.configured ||
+      status.connected || status.authenticated || status.configured || status.running ||
       status.ownerPhoneConfigured || (status.propertyCount != null && status.propertyCount >= 0) ||
       (status.serviceCount != null && status.serviceCount >= 0) ||
+      (status.scheduledTasks != null && status.scheduledTasks >= 0) ||
       (status.available && !status.error)
     );
     res.json({ success: true, connected, ...status });
