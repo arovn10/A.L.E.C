@@ -142,6 +142,7 @@ ${caps.join('\n')}
 3. **NEVER invent STOA numbers** (occupancy %, rent, tenants, reviews). Real STOA data is injected via the RAG system — if it's not in context, say you don't have it.
 3b. **TenantCloud HARD RULE: If you do NOT see "[TenantCloud DATA" in this system prompt, you have ZERO tenant/rent/maintenance data. Never invent tenant names, payment amounts, or property details.**
 3c. **Plaid HARD RULE: If you do NOT see "[Plaid Financial DATA" in this prompt, you have no investment data. Never invent portfolio values, account balances, or holdings.**
+3d. **Home Assistant HARD RULE: If you do NOT see "[Home Assistant DATA" in this prompt, you have no device state information. Never guess whether lights are on/off or locks are locked/unlocked.**
 4. **NEVER claim you can't do something you CAN do** (GitHub, iMessage, STOA queries, Excel exports, research, SMS). Check the capabilities list above.
 5. **SMS/Texting**: If Twilio is ✅ and the owner asks you to text them, the server automatically sends the text — just confirm you're doing it and describe what the message will say.
 6. **Google Reviews / resident feedback**: The STOA database does NOT contain Google review text. If asked for reviews, say: "The STOA database doesn't include Google review text — I can see Google ratings if they're in the data, but not individual reviews. I can do a web search for recent reviews if you'd like."
@@ -662,6 +663,63 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
       console.warn('[STOA RAG] Failed (non-critical):', stoaErr.message?.slice(0, 80));
     }
 
+    // ── GitHub RAG: inject recent commits/repos ───────────────────
+    const ghIntent = /\b(github|git|commit|repo|repository|pull.?request|pr|issue|branch|code|deploy|push|merge)\b/i.test(userText);
+    if (ghIntent && github && process.env.GITHUB_TOKEN) {
+      try {
+        const defaultRepo = process.env.GITHUB_REPO || 'arovn10/A.L.E.C';
+        const [repoData, openIssues] = await Promise.allSettled([
+          github.getRepo(defaultRepo),
+          github.listIssues?.(defaultRepo, { state: 'open', per_page: 5 }).catch(() => []),
+        ]);
+        let ghCtx = `[GitHub DATA — ${defaultRepo}]\n`;
+        if (repoData.status === 'fulfilled') {
+          const r = repoData.value;
+          ghCtx += `Repo: ${r.full_name || defaultRepo} | Stars: ${r.stargazers_count || 0} | Default branch: ${r.default_branch || 'main'} | Last updated: ${r.updated_at ? new Date(r.updated_at).toLocaleDateString() : 'unknown'}\n`;
+          ghCtx += `Description: ${r.description || 'No description'}\n`;
+        }
+        if (openIssues.status === 'fulfilled' && Array.isArray(openIssues.value) && openIssues.value.length > 0) {
+          ghCtx += `Open issues (${openIssues.value.length}): ${openIssues.value.slice(0, 3).map(i => `#${i.number} ${i.title}`).join(', ')}\n`;
+        }
+        systemContent += '\n\n' + ghCtx;
+        console.log('[GitHub RAG] Injected repo data for:', defaultRepo);
+      } catch (ghErr) {
+        console.warn('[GitHub RAG] Failed (non-critical):', ghErr.message?.slice(0, 80));
+      }
+    }
+
+    // ── Home Assistant RAG: inject device states ──────────────────
+    const haIntent = /\b(light|lights|thermostat|temperature|lock|door|lock|garage|fan|switch|scene|automation|smart.?home|home.?assistant|device|sensor|camera|alarm|hvac|ac|heat|cool|humidity|motion)\b/i.test(userText);
+    const haUrl   = process.env.HOME_ASSISTANT_URL || process.env.HA_URL;
+    const haToken = process.env.HOME_ASSISTANT_ACCESS_TOKEN || process.env.HA_TOKEN;
+    if (haIntent && haUrl && haToken) {
+      try {
+        const haResp = await fetch(`${haUrl}/api/states`, {
+          headers: { Authorization: `Bearer ${haToken}`, 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(5000),
+        });
+        if (haResp.ok) {
+          const states = await haResp.json();
+          // Filter to interesting entities (lights, locks, thermostat, sensors)
+          const relevant = states.filter(s =>
+            /^(light|lock|climate|switch|binary_sensor|sensor|input_boolean|cover|fan|camera|alarm_control_panel)\../.test(s.entity_id)
+          ).slice(0, 30);
+          if (relevant.length > 0) {
+            const lines = relevant.map(s => {
+              const name = s.attributes?.friendly_name || s.entity_id;
+              const extra = s.attributes?.temperature ? ` (${s.attributes.temperature}°${s.attributes.unit_of_measurement || 'F'})` :
+                            s.attributes?.brightness ? ` (brightness: ${Math.round(s.attributes.brightness / 255 * 100)}%)` : '';
+              return `- ${name}: ${s.state}${extra}`;
+            });
+            systemContent += `\n\n[Home Assistant DATA — live device states]\n${lines.join('\n')}`;
+            console.log('[HA RAG] Injected', relevant.length, 'device states');
+          }
+        }
+      } catch (haErr) {
+        console.warn('[HA RAG] Failed (non-critical):', haErr.message?.slice(0, 80));
+      }
+    }
+
     // ── AWS / Website RAG: inject server status ───────────────────
     const awsIntent = /\b(campus|campusrental|website|server|aws|ec2|nginx|deploy|ssh|uptime|down|offline|traffic|hosting)\b/i.test(userText);
     if (awsIntent && awsSvc) {
@@ -860,6 +918,25 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
       }
     }
 
+    // ── Research agent trigger (stream) ───────────────────────
+    const researchIntent = /\b(research|look into|investigate|find out about|dig into|study|analyze|analyse)\b.{3,100}(\bfor me\b|\bplease\b|$)/i.test(userText) ||
+                           /\bdo (a |some |deep )?research (on|about|into)\b/i.test(userText);
+    if (researchIntent && research && isOwnerStream) {
+      try {
+        // Extract topic from the message
+        const topicMatch = userText.match(/(?:research|look into|investigate|find out about|dig into|study|analyze|analyse)\s+(.+?)(?:\s+for me\s*$|\s*please\s*$|$)/i);
+        const topic = (topicMatch?.[1] || userText).replace(/^(do\s+)?(a\s+|some\s+|deep\s+)?research\s+(on|about|into)\s+/i, '').trim().slice(0, 200);
+        if (topic.length > 5) {
+          res.write('data: {"token":"🔍 Starting background research…\\n"}\n\n');
+          const job = research.startResearch(topic, { notifyWhenDone: true, saveReport: true });
+          systemContent += `\n\n[RESEARCH AGENT TRIGGERED] A deep research job has been started for: "${topic}". Job ID: ${job.id}. It will run in the background and send you an iMessage notification when the report is ready. Tell the user this clearly.`;
+          console.log('[Research] Started background research job:', job.id, 'topic:', topic.slice(0, 60));
+        }
+      } catch (resErr) {
+        console.warn('[Research trigger] Failed:', resErr.message?.slice(0, 80));
+      }
+    }
+
     // ── iMessage RAG (stream) ─────────────────────────────────
     const iMsgIntentStream = /\b(check|read|show|get|look at|fetch|see)\b.{0,30}\b(imessages?|messages?|texts?|sms)\b|\b(recent|new|unread|latest)\b.{0,20}\b(imessages?|messages?|texts?)\b|\bwho texted\b|\bdid.*text(ed)?\b|\bany.*messages\b/i.test(userText);
     if (iMsgIntentStream && iMessage) {
@@ -889,6 +966,55 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
       }
     } catch (stoaErr) {
       console.warn('[STOA RAG stream] Failed (non-critical):', stoaErr.message?.slice(0, 80));
+    }
+
+    // ── GitHub RAG (stream) ────────────────────────────────────
+    const ghIntentStream = /\b(github|git|commit|repo|repository|pull.?request|pr|issue|branch|code|deploy|push|merge)\b/i.test(userText);
+    if (ghIntentStream && github && process.env.GITHUB_TOKEN) {
+      try {
+        const defaultRepo = process.env.GITHUB_REPO || 'arovn10/A.L.E.C';
+        res.write('data: {"token":"🐙 "}\n\n');
+        const repoData = await github.getRepo(defaultRepo).catch(() => null);
+        if (repoData) {
+          let ghCtx = `[GitHub DATA — ${defaultRepo}]\n`;
+          ghCtx += `Repo: ${repoData.full_name || defaultRepo} | Stars: ${repoData.stargazers_count || 0} | Branch: ${repoData.default_branch || 'main'} | Updated: ${repoData.updated_at ? new Date(repoData.updated_at).toLocaleDateString() : 'unknown'}\n`;
+          ghCtx += `Description: ${repoData.description || 'No description'}\n`;
+          systemContent += '\n\n' + ghCtx;
+        }
+      } catch (ghErr) {
+        console.warn('[GitHub RAG stream] Failed (non-critical):', ghErr.message?.slice(0, 80));
+      }
+    }
+
+    // ── Home Assistant RAG (stream) ────────────────────────────
+    const haIntentStream = /\b(light|lights|thermostat|temperature|lock|door|garage|fan|switch|scene|automation|smart.?home|home.?assistant|device|sensor|camera|alarm|hvac|ac|heat|cool|humidity|motion)\b/i.test(userText);
+    const haUrlStr   = process.env.HOME_ASSISTANT_URL || process.env.HA_URL;
+    const haTokenStr = process.env.HOME_ASSISTANT_ACCESS_TOKEN || process.env.HA_TOKEN;
+    if (haIntentStream && haUrlStr && haTokenStr) {
+      try {
+        res.write('data: {"token":"🏡 "}\n\n');
+        const haResp = await fetch(`${haUrlStr}/api/states`, {
+          headers: { Authorization: `Bearer ${haTokenStr}`, 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(5000),
+        });
+        if (haResp.ok) {
+          const states = await haResp.json();
+          const relevant = states.filter(s =>
+            /^(light|lock|climate|switch|binary_sensor|sensor|input_boolean|cover|fan|camera|alarm_control_panel)\../.test(s.entity_id)
+          ).slice(0, 30);
+          if (relevant.length > 0) {
+            const lines = relevant.map(s => {
+              const name = s.attributes?.friendly_name || s.entity_id;
+              const extra = s.attributes?.temperature ? ` (${s.attributes.temperature}°${s.attributes.unit_of_measurement || 'F'})` :
+                            s.attributes?.brightness ? ` (brightness: ${Math.round(s.attributes.brightness / 255 * 100)}%)` : '';
+              return `- ${name}: ${s.state}${extra}`;
+            });
+            systemContent += `\n\n[Home Assistant DATA — live device states]\n${lines.join('\n')}`;
+          }
+        }
+      } catch (haErr) {
+        console.warn('[HA RAG stream] Failed (non-critical):', haErr.message?.slice(0, 80));
+      }
     }
 
     // ── AWS / Website RAG (stream) ─────────────────────────────
@@ -1920,18 +2046,69 @@ app.delete('/api/sync/remove-device/:deviceId', authenticateToken, async (req, r
 
 /**
  * POST /api/smarthome/control
- * Body: { device, action, parameters? }
+ * Body: { entity_id?, domain?, service, service_data? }
+ * Routes to real Home Assistant API if configured, falls back to stub.
  */
 app.post('/api/smarthome/control', authenticateToken, async (req, res) => {
   if (!req.user.scope.includes('smart_home')) {
     return res.status(403).json({ error: 'Smart home access denied' });
   }
+  const haUrl   = process.env.HOME_ASSISTANT_URL || process.env.HA_URL;
+  const haToken = process.env.HOME_ASSISTANT_ACCESS_TOKEN || process.env.HA_TOKEN;
+
+  // If HA is configured, use real API
+  if (haUrl && haToken) {
+    try {
+      const { domain, service, service_data = {}, entity_id } = req.body;
+      if (!domain || !service) return res.status(400).json({ error: 'domain and service are required' });
+      const body = entity_id ? { ...service_data, entity_id } : service_data;
+      const haResp = await fetch(`${haUrl}/api/services/${domain}/${service}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${haToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!haResp.ok) {
+        const err = await haResp.text().catch(() => haResp.status.toString());
+        return res.status(502).json({ error: 'Home Assistant error', detail: err });
+      }
+      const data = await haResp.json().catch(() => ({}));
+      return res.json({ success: true, result: data, via: 'home-assistant' });
+    } catch (err) {
+      return res.status(500).json({ error: 'Smart home control failed', message: err.message });
+    }
+  }
+
+  // Fallback to stub
   try {
     const { device, action, parameters } = req.body;
     const result = await smartHomeConnector.executeCommand(device, action, parameters);
-    res.json({ success: true, result });
+    res.json({ success: true, result, via: 'stub' });
   } catch (error) {
     res.status(500).json({ error: 'Smart home control failed', message: error.message });
+  }
+});
+
+/**
+ * GET /api/smarthome/states
+ * Returns all HA entity states.
+ */
+app.get('/api/smarthome/states', authenticateToken, async (req, res) => {
+  const haUrl   = process.env.HOME_ASSISTANT_URL || process.env.HA_URL;
+  const haToken = process.env.HOME_ASSISTANT_ACCESS_TOKEN || process.env.HA_TOKEN;
+  if (!haUrl || !haToken) return res.json({ configured: false, states: [] });
+  try {
+    const haResp = await fetch(`${haUrl}/api/states`, {
+      headers: { Authorization: `Bearer ${haToken}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!haResp.ok) throw new Error(`HA returned ${haResp.status}`);
+    const states = await haResp.json();
+    const domain = req.query.domain;
+    const filtered = domain ? states.filter(s => s.entity_id.startsWith(domain + '.')) : states;
+    res.json({ success: true, count: filtered.length, states: filtered });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
