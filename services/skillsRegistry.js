@@ -181,8 +181,8 @@ const BUILTIN_SKILLS = [
     id: 'tenantcloud', name: 'TenantCloud', icon: '🏠', category: 'Real Estate', global: false,
     description: 'Monitor tenants, rent collection, maintenance, inquiries, and messages.',
     fields: [
-      { key: 'TENANTCLOUD_API_KEY',  label: 'Personal Access Token', type: 'password', placeholder: 'your-token...', envVar: 'TENANTCLOUD_API_KEY', required: true, hint: 'TenantCloud → Settings → API → Personal Access Token (email+password login is no longer supported by TenantCloud)' },
-      { key: 'TENANTCLOUD_EMAIL',    label: 'Email (for reference)', type: 'email',    placeholder: 'you@example.com', envVar: 'TENANTCLOUD_EMAIL', required: false },
+      { key: 'TENANTCLOUD_EMAIL',    label: 'TenantCloud Email',    type: 'email',    placeholder: 'you@example.com', envVar: 'TENANTCLOUD_EMAIL',    required: true,  hint: 'Your TenantCloud login email — ALEC logs in via browser automation, no API key needed' },
+      { key: 'TENANTCLOUD_PASSWORD', label: 'TenantCloud Password', type: 'password', placeholder: '••••••••',        envVar: 'TENANTCLOUD_PASSWORD', required: true,  hint: 'Your TenantCloud login password — stored encrypted, used only to authenticate the browser session' },
     ],
     async checkStatus() {
       const tc = require('./tenantCloudService.js');

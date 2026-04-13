@@ -1,281 +1,319 @@
 /**
- * A.L.E.C. TenantCloud Service
+ * A.L.E.C. TenantCloud Service — Browser Scraper
  *
- * Full integration with TenantCloud property management platform.
- * Monitors: tenants, leases, maintenance requests, payments, messages, inquiries.
+ * Uses Puppeteer to log into TenantCloud with your email/password,
+ * persist the session via cookies, and scrape live data from the UI.
  *
- * Requires:
- *   TENANTCLOUD_API_KEY or (TENANTCLOUD_EMAIL + TENANTCLOUD_PASSWORD) in .env
- *   API docs: https://app.tenantcloud.com/api/v1/
+ * No API key needed. Set in .env:
+ *   TENANTCLOUD_EMAIL=your@email.com
+ *   TENANTCLOUD_PASSWORD=yourpassword
  *
- * Setup: Get API key from TenantCloud → Settings → API
+ * The browser session is reused across calls (login once per server restart).
+ * Cookies are saved to data/tc-session.json so login survives restarts.
  */
 
-let _API_KEY    = process.env.TENANTCLOUD_API_KEY    || null;
-const TC_EMAIL   = process.env.TENANTCLOUD_EMAIL      || null;
-const TC_PASS    = process.env.TENANTCLOUD_PASSWORD   || null;
-const TC_BASE    = 'https://app.tenantcloud.com/api/v1';
+const puppeteer = require('puppeteer-core');
+const path      = require('path');
+const fs        = require('fs');
 
-let _bearerToken = null;
+const TC_BASE    = 'https://app.tenantcloud.com';
+const SESSION_FILE = path.join(__dirname, '../data/tc-session.json');
+const CHROME_PATH  = process.env.CHROME_PATH ||
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
-// ── Auth ──────────────────────────────────────────────────────────
-// TenantCloud's /auth/login endpoint was deprecated (405 error).
-// Modern auth uses a personal access token from:
-//   TenantCloud → Settings → API → Personal Access Token
-// Set TENANTCLOUD_API_KEY in .env to your personal access token.
-// Email+password auth uses cookie-based session (scraping) as fallback.
-async function getAuthHeader() {
-  // Re-read env in case credentials were saved to .env after startup
-  if (!_API_KEY) _API_KEY = process.env.TENANTCLOUD_API_KEY || null;
+let _browser = null;
+let _page    = null;
+let _loggedIn = false;
 
-  if (_API_KEY) {
-    // TenantCloud API key — sent as Bearer token
-    return { 'Authorization': `Bearer ${_API_KEY}`, 'Content-Type': 'application/json' };
-  }
+// ── Browser lifecycle ─────────────────────────────────────────────
 
-  if (_bearerToken) return { 'Authorization': `Bearer ${_bearerToken}`, 'Content-Type': 'application/json' };
-
-  if (!TC_EMAIL || !TC_PASS) {
-    throw new Error('TenantCloud not configured. Add TENANTCLOUD_API_KEY to .env (Settings → API → Personal Access Token)');
-  }
-
-  // Fallback: try email+password via alternative endpoint
-  const loginEndpoints = [
-    `${TC_BASE}/user/login`,
-    `${TC_BASE}/auth/token`,
-    'https://app.tenantcloud.com/api/v2/auth/login',
-  ];
-  for (const url of loginEndpoints) {
-    try {
-      const resp = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: TC_EMAIL, password: TC_PASS }),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        _bearerToken = data.token || data.access_token || data.data?.token;
-        if (_bearerToken) return { Authorization: `Bearer ${_bearerToken}`, 'Content-Type': 'application/json' };
-      }
-    } catch (_) {}
-  }
-  throw new Error('TenantCloud auth failed. Please add TENANTCLOUD_API_KEY to .env');
-}
-
-async function tcGet(endpoint, params = {}) {
-  const headers = await getAuthHeader();
-  const url = new URL(TC_BASE + endpoint);
-  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)));
-  const resp = await fetch(url.toString(), { headers, signal: AbortSignal.timeout(20000) });
-  if (!resp.ok) throw new Error(`TenantCloud API error: ${resp.status} ${endpoint}`);
-  return resp.json();
-}
-
-async function tcPost(endpoint, body) {
-  const headers = await getAuthHeader();
-  const resp = await fetch(TC_BASE + endpoint, {
-    method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(20000),
+async function getBrowser() {
+  if (_browser && _browser.isConnected()) return _browser;
+  _browser = await puppeteer.launch({
+    executablePath: CHROME_PATH,
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
   });
-  if (!resp.ok) throw new Error(`TenantCloud POST error: ${resp.status} ${endpoint}`);
-  return resp.json();
+  _page    = null;
+  _loggedIn = false;
+  return _browser;
 }
 
-// ── Properties ────────────────────────────────────────────────────
-async function listProperties() {
-  const data = await tcGet('/properties', { per_page: 100 });
-  return (data.data || data).map(p => ({
-    id:         p.id,
-    name:       p.name || p.title,
-    address:    p.address || `${p.street}, ${p.city}, ${p.state}`,
-    units:      p.units_count || p.number_of_units,
-    type:       p.property_type,
-    status:     p.status,
-  }));
+async function getPage() {
+  const browser = await getBrowser();
+  if (_page && !_page.isClosed()) return _page;
+  _page = await browser.newPage();
+  await _page.setViewport({ width: 1280, height: 900 });
+  // Suppress images/fonts to speed up scraping
+  await _page.setRequestInterception(true);
+  _page.on('request', req => {
+    if (['image', 'font', 'media'].includes(req.resourceType())) req.abort();
+    else req.continue();
+  });
+  return _page;
 }
 
-async function getProperty(propertyId) {
-  return tcGet(`/properties/${propertyId}`);
+// ── Session persistence ───────────────────────────────────────────
+
+function loadSavedCookies() {
+  try {
+    if (fs.existsSync(SESSION_FILE)) return JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8'));
+  } catch (_) {}
+  return null;
 }
 
-// ── Units ─────────────────────────────────────────────────────────
-async function listUnits(propertyId) {
-  const data = await tcGet(`/properties/${propertyId}/units`);
-  return (data.data || data);
+function saveCookies(cookies) {
+  try {
+    fs.mkdirSync(path.dirname(SESSION_FILE), { recursive: true });
+    fs.writeFileSync(SESSION_FILE, JSON.stringify(cookies));
+  } catch (_) {}
 }
 
-// ── Tenants ───────────────────────────────────────────────────────
-async function listTenants(params = {}) {
-  const data = await tcGet('/tenants', { per_page: 100, ...params });
-  return (data.data || data).map(t => ({
-    id:       t.id,
-    name:     `${t.first_name || ''} ${t.last_name || ''}`.trim() || t.name,
-    email:    t.email,
-    phone:    t.phone,
-    property: t.property_name || t.property?.name,
-    unit:     t.unit_number || t.unit?.number,
-    status:   t.status,
-    leaseEnd: t.lease_end || t.current_lease?.end_date,
-  }));
+// ── Login ─────────────────────────────────────────────────────────
+
+async function ensureLoggedIn() {
+  if (_loggedIn) return;
+
+  const email = process.env.TENANTCLOUD_EMAIL;
+  const pass  = process.env.TENANTCLOUD_PASSWORD;
+  if (!email || !pass) throw new Error('TENANTCLOUD_EMAIL and TENANTCLOUD_PASSWORD must be set in .env');
+
+  const page = await getPage();
+
+  // Try restoring saved session first
+  const saved = loadSavedCookies();
+  if (saved) {
+    await page.setCookie(...saved);
+    await page.goto(`${TC_BASE}/landlord/dashboard`, { waitUntil: 'networkidle2', timeout: 20000 });
+    const url = page.url();
+    if (!url.includes('/login') && !url.includes('/sign-in')) {
+      _loggedIn = true;
+      console.log('[TenantCloud] Restored session from cookies');
+      return;
+    }
+  }
+
+  // Full login flow
+  console.log('[TenantCloud] Logging in with email/password...');
+  await page.goto(`${TC_BASE}/login`, { waitUntil: 'networkidle2', timeout: 20000 });
+
+  // Fill email
+  await page.waitForSelector('input[type="email"], input[name="email"], #email', { timeout: 10000 });
+  await page.type('input[type="email"], input[name="email"], #email', email, { delay: 40 });
+
+  // Fill password
+  await page.waitForSelector('input[type="password"]', { timeout: 5000 });
+  await page.type('input[type="password"]', pass, { delay: 40 });
+
+  // Submit
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }),
+    page.keyboard.press('Enter'),
+  ]);
+
+  const url = page.url();
+  if (url.includes('/login') || url.includes('/sign-in')) {
+    throw new Error('TenantCloud login failed — check TENANTCLOUD_EMAIL and TENANTCLOUD_PASSWORD');
+  }
+
+  // Save cookies for next restart
+  const cookies = await page.cookies();
+  saveCookies(cookies);
+  _loggedIn = true;
+  console.log('[TenantCloud] Login successful, session saved');
 }
 
-async function getTenant(tenantId) {
-  return tcGet(`/tenants/${tenantId}`);
+// ── Helpers ───────────────────────────────────────────────────────
+
+async function scrapePage(url, scrapeFunc, retries = 1) {
+  await ensureLoggedIn();
+  const page = await getPage();
+  for (let i = 0; i <= retries; i++) {
+    try {
+      await page.goto(url, { waitUntil: 'networkidle2', timeout: 25000 });
+      // If redirected to login, re-authenticate
+      if (page.url().includes('/login')) {
+        _loggedIn = false;
+        await ensureLoggedIn();
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 25000 });
+      }
+      return await scrapeFunc(page);
+    } catch (err) {
+      if (i === retries) throw err;
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  }
 }
 
-// ── Leases ────────────────────────────────────────────────────────
-async function listLeases(params = {}) {
-  const data = await tcGet('/leases', { per_page: 100, ...params });
-  return (data.data || data).map(l => ({
-    id:         l.id,
-    tenant:     l.tenant_name || l.tenant?.name,
-    property:   l.property_name || l.property?.name,
-    unit:       l.unit_number || l.unit?.number,
-    rent:       l.monthly_rent || l.rent_amount,
-    startDate:  l.start_date,
-    endDate:    l.end_date,
-    status:     l.status,
-    depositPaid: l.security_deposit_paid,
-  }));
+// ── Scraping functions ────────────────────────────────────────────
+
+async function getPortfolioSummary() {
+  return scrapePage(`${TC_BASE}/landlord/dashboard`, async (page) => {
+    // Wait for dashboard cards to load
+    await page.waitForSelector('body', { timeout: 10000 });
+    await new Promise(r => setTimeout(r, 2000)); // let JS render
+
+    const data = await page.evaluate(() => {
+      const text = document.body.innerText;
+
+      // Helper: extract number near a keyword
+      function extractNum(re) {
+        const m = text.match(re);
+        return m ? parseInt(m[1].replace(/,/g, ''), 10) || 0 : 0;
+      }
+      function extractMoney(re) {
+        const m = text.match(re);
+        return m ? parseFloat(m[1].replace(/[,$]/g, '')) || 0 : 0;
+      }
+
+      return {
+        properties:  { total: extractNum(/(\d+)\s*propert/i) },
+        tenants:     { total: extractNum(/(\d+)\s*tenant/i), active: extractNum(/(\d+)\s*active\s*tenant/i) },
+        maintenance: { open: extractNum(/(\d+)\s*(open\s*)?maintenance/i), highPriority: 0 },
+        overdue:     { count: extractNum(/(\d+)\s*overdue/i), totalAmount: extractMoney(/\$([0-9,]+(?:\.\d+)?)\s*overdue/i) },
+        messages:    { unread: extractNum(/(\d+)\s*unread/i) },
+        inquiries:   { new: extractNum(/(\d+)\s*(new\s*)?inquir/i) },
+        updatedAt:   new Date().toISOString(),
+        _source:     'browser-scrape',
+      };
+    });
+    return data;
+  });
 }
 
-async function getExpiringLeases(daysAhead = 60) {
-  const cutoff = new Date(Date.now() + daysAhead * 86400000).toISOString().split('T')[0];
-  const today  = new Date().toISOString().split('T')[0];
-  const data = await tcGet('/leases', { per_page: 100, status: 'active', end_date_before: cutoff });
-  return (data.data || data).filter(l => l.end_date >= today);
+async function listTenants() {
+  return scrapePage(`${TC_BASE}/landlord/tenants`, async (page) => {
+    await page.waitForSelector('body', { timeout: 10000 });
+    await new Promise(r => setTimeout(r, 1500));
+
+    return page.evaluate(() => {
+      const rows = [...document.querySelectorAll('table tbody tr, [class*="tenant-row"], [class*="list-item"]')];
+      return rows.slice(0, 50).map(row => {
+        const cells = [...row.querySelectorAll('td, [class*="cell"]')].map(c => c.innerText.trim());
+        return { name: cells[0] || '', email: cells[1] || '', unit: cells[2] || '', status: cells[3] || '', raw: cells.join(' | ') };
+      }).filter(r => r.name);
+    });
+  });
 }
 
-// ── Rent / Payments ───────────────────────────────────────────────
-async function listPayments(params = {}) {
-  const data = await tcGet('/payments', { per_page: 100, ...params });
-  return (data.data || data).map(p => ({
-    id:       p.id,
-    tenant:   p.tenant_name || p.tenant?.name,
-    amount:   p.amount,
-    dueDate:  p.due_date,
-    paidDate: p.paid_date,
-    status:   p.status, // paid, overdue, pending
-    type:     p.payment_type,
-  }));
-}
+async function listMaintenance(filter = '') {
+  const url = `${TC_BASE}/landlord/maintenance` + (filter ? `?status=${filter}` : '');
+  return scrapePage(url, async (page) => {
+    await page.waitForSelector('body', { timeout: 10000 });
+    await new Promise(r => setTimeout(r, 1500));
 
-async function getOverdueRent() {
-  return listPayments({ status: 'overdue' });
-}
-
-async function getOutstandingRent() {
-  const data = await tcGet('/reports/outstanding-rent', {});
-  return data;
-}
-
-// ── Maintenance Requests ──────────────────────────────────────────
-async function listMaintenance(params = {}) {
-  const data = await tcGet('/maintenance-requests', { per_page: 100, ...params });
-  return (data.data || data).map(m => ({
-    id:          m.id,
-    title:       m.title || m.subject,
-    description: m.description?.slice(0, 300),
-    property:    m.property_name || m.property?.name,
-    unit:        m.unit_number || m.unit?.number,
-    tenant:      m.tenant_name || m.tenant?.name,
-    status:      m.status, // open, in_progress, completed
-    priority:    m.priority,
-    category:    m.category,
-    createdAt:   m.created_at,
-    updatedAt:   m.updated_at,
-  }));
+    return page.evaluate(() => {
+      const rows = [...document.querySelectorAll('table tbody tr, [class*="request-row"], [class*="list-item"]')];
+      return rows.slice(0, 30).map(row => {
+        const cells = [...row.querySelectorAll('td, [class*="cell"]')].map(c => c.innerText.trim());
+        return { title: cells[0] || '', property: cells[1] || '', status: cells[2] || '', priority: cells[3] || '', createdAt: cells[4] || '' };
+      }).filter(r => r.title);
+    });
+  });
 }
 
 async function getOpenMaintenance() {
-  return listMaintenance({ status: 'open' });
+  return listMaintenance('open');
 }
 
-async function updateMaintenanceStatus(requestId, status, notes = '') {
-  return tcPost(`/maintenance-requests/${requestId}/status`, { status, notes });
+async function listPayments(filter = '') {
+  const url = `${TC_BASE}/landlord/payments` + (filter ? `?status=${filter}` : '');
+  return scrapePage(url, async (page) => {
+    await page.waitForSelector('body', { timeout: 10000 });
+    await new Promise(r => setTimeout(r, 1500));
+
+    return page.evaluate(() => {
+      const rows = [...document.querySelectorAll('table tbody tr, [class*="payment-row"], [class*="list-item"]')];
+      return rows.slice(0, 30).map(row => {
+        const cells = [...row.querySelectorAll('td, [class*="cell"]')].map(c => c.innerText.trim());
+        return { tenant: cells[0] || '', amount: cells[1] || '', dueDate: cells[2] || '', status: cells[3] || '', type: cells[4] || '' };
+      }).filter(r => r.tenant);
+    });
+  });
 }
 
-// ── Messages / Inbox ──────────────────────────────────────────────
-async function listMessages(params = {}) {
-  const data = await tcGet('/messages', { per_page: 50, ...params });
-  return (data.data || data).map(m => ({
-    id:        m.id,
-    from:      m.sender_name || m.from,
-    subject:   m.subject,
-    preview:   m.body?.slice(0, 200),
-    isRead:    m.is_read,
-    createdAt: m.created_at,
-    property:  m.property_name,
-  }));
+async function getOverdueRent() {
+  return listPayments('overdue');
+}
+
+async function listLeases() {
+  return scrapePage(`${TC_BASE}/landlord/leases`, async (page) => {
+    await page.waitForSelector('body', { timeout: 10000 });
+    await new Promise(r => setTimeout(r, 1500));
+
+    return page.evaluate(() => {
+      const rows = [...document.querySelectorAll('table tbody tr, [class*="lease-row"], [class*="list-item"]')];
+      return rows.slice(0, 30).map(row => {
+        const cells = [...row.querySelectorAll('td, [class*="cell"]')].map(c => c.innerText.trim());
+        return { tenant: cells[0] || '', property: cells[1] || '', unit: cells[2] || '', startDate: cells[3] || '', endDate: cells[4] || '', rent: cells[5] || '', status: cells[6] || '' };
+      }).filter(r => r.tenant);
+    });
+  });
+}
+
+async function listProperties() {
+  return scrapePage(`${TC_BASE}/landlord/properties`, async (page) => {
+    await page.waitForSelector('body', { timeout: 10000 });
+    await new Promise(r => setTimeout(r, 1500));
+
+    return page.evaluate(() => {
+      const rows = [...document.querySelectorAll('table tbody tr, [class*="property-row"], [class*="list-item"], [class*="property-card"]')];
+      return rows.slice(0, 30).map(row => {
+        const cells = [...row.querySelectorAll('td, [class*="cell"], [class*="info"]')].map(c => c.innerText.trim());
+        return { name: cells[0] || '', address: cells[1] || '', units: cells[2] || '', type: cells[3] || '', status: cells[4] || '' };
+      }).filter(r => r.name);
+    });
+  });
+}
+
+async function listMessages() {
+  return scrapePage(`${TC_BASE}/landlord/messages`, async (page) => {
+    await page.waitForSelector('body', { timeout: 10000 });
+    await new Promise(r => setTimeout(r, 1500));
+
+    return page.evaluate(() => {
+      const rows = [...document.querySelectorAll('[class*="message-row"], [class*="conversation"], [class*="list-item"], table tbody tr')];
+      return rows.slice(0, 20).map(row => ({
+        from:    row.querySelector('[class*="sender"], [class*="name"], td:first-child')?.innerText.trim() || '',
+        subject: row.querySelector('[class*="subject"], [class*="title"], td:nth-child(2)')?.innerText.trim() || '',
+        preview: row.querySelector('[class*="preview"], [class*="body"], td:nth-child(3)')?.innerText.trim().slice(0, 120) || '',
+        isRead:  !row.classList.toString().includes('unread'),
+      })).filter(r => r.from);
+    });
+  });
 }
 
 async function getUnreadMessages() {
-  return listMessages({ is_read: false });
+  const all = await listMessages();
+  return all.filter(m => !m.isRead);
 }
 
-// ── Inquiries (leads) ─────────────────────────────────────────────
-async function listInquiries(params = {}) {
-  const data = await tcGet('/inquiries', { per_page: 100, ...params });
-  return (data.data || data).map(i => ({
-    id:       i.id,
-    name:     i.name || `${i.first_name} ${i.last_name}`.trim(),
-    email:    i.email,
-    phone:    i.phone,
-    property: i.property_name || i.property?.name,
-    unit:     i.unit_number,
-    message:  i.message?.slice(0, 300),
-    status:   i.status,
-    createdAt: i.created_at,
-  }));
+async function listInquiries() {
+  return scrapePage(`${TC_BASE}/landlord/inquiries`, async (page) => {
+    await page.waitForSelector('body', { timeout: 10000 });
+    await new Promise(r => setTimeout(r, 1500));
+
+    return page.evaluate(() => {
+      const rows = [...document.querySelectorAll('table tbody tr, [class*="inquiry-row"], [class*="list-item"]')];
+      return rows.slice(0, 20).map(row => {
+        const cells = [...row.querySelectorAll('td, [class*="cell"]')].map(c => c.innerText.trim());
+        return { name: cells[0] || '', property: cells[1] || '', email: cells[2] || '', message: cells[3]?.slice(0, 200) || '', status: cells[4] || '' };
+      }).filter(r => r.name);
+    });
+  });
 }
 
-// ── Analytics & Insights ───────────────────────────────────────────
-async function getPortfolioSummary() {
-  const [properties, tenants, maintenance, overdue, messages, inquiries] = await Promise.allSettled([
-    listProperties(),
-    listTenants(),
-    getOpenMaintenance(),
-    getOverdueRent(),
-    getUnreadMessages(),
-    listInquiries({ status: 'new' }),
-  ]);
-
-  const props   = properties.value  || [];
-  const tens    = tenants.value     || [];
-  const maint   = maintenance.value || [];
-  const overdueR = overdue.value    || [];
-  const msgs    = messages.value    || [];
-  const inqs    = inquiries.value   || [];
-
-  return {
-    properties: { total: props.length },
-    tenants:    { total: tens.length, active: tens.filter(t => t.status === 'active').length },
-    maintenance: { open: maint.length, highPriority: maint.filter(m => m.priority === 'high').length },
-    overdue:    { count: overdueR.length, totalAmount: overdueR.reduce((a, p) => a + (Number(p.amount) || 0), 0) },
-    messages:   { unread: msgs.length },
-    inquiries:  { new: inqs.length },
-    updatedAt:  new Date().toISOString(),
-  };
-}
-
-/**
- * Analyze rent collection patterns and generate insights.
- */
 async function analyzeRentPatterns() {
-  const [payments, leases] = await Promise.all([listPayments({ per_page: 200 }), listLeases()]);
-
-  const paid    = payments.filter(p => p.status === 'paid');
-  const overdue = payments.filter(p => p.status === 'overdue');
-  const pending = payments.filter(p => p.status === 'pending');
-
-  const totalCollected = paid.reduce((a, p) => a + (Number(p.amount) || 0), 0);
-  const totalOverdue   = overdue.reduce((a, p) => a + (Number(p.amount) || 0), 0);
-
+  const payments = await listPayments();
+  const paid    = payments.filter(p => /paid/i.test(p.status));
+  const overdue = payments.filter(p => /overdue|late/i.test(p.status));
+  const totalOverdue = overdue.reduce((a, p) => {
+    const n = parseFloat(String(p.amount).replace(/[^0-9.]/g, '')) || 0;
+    return a + n;
+  }, 0);
   return {
-    collected:       { count: paid.length, total: totalCollected },
-    overdue:         { count: overdue.length, total: totalOverdue },
-    pending:         { count: pending.length },
-    collectionRate:  paid.length / (paid.length + overdue.length + 0.001) * 100,
+    collected: { count: paid.length },
+    overdue:   { count: overdue.length, total: totalOverdue },
     insights: [
       totalOverdue > 0 ? `⚠️ $${totalOverdue.toLocaleString()} overdue across ${overdue.length} payments` : '✅ No overdue rent',
       overdue.length > 0 ? `Late payers: ${overdue.map(p => p.tenant).slice(0, 3).join(', ')}` : null,
@@ -283,19 +321,35 @@ async function analyzeRentPatterns() {
   };
 }
 
+// ── Stubs for API-compat (not easily scrapeable) ─────────────────
+
+async function getProperty(id)               { return listProperties().then(p => p.find(x => x.id === id) || p[0]); }
+async function listUnits()                    { return []; }
+async function getTenant(id)                  { return listTenants().then(t => t.find(x => x.id === id) || t[0]); }
+async function getExpiringLeases(days = 60)   { return listLeases(); }
+async function getOutstandingRent()           { return getOverdueRent(); }
+async function updateMaintenanceStatus()      { return { success: false, reason: 'browser-scrape mode: not supported' }; }
+
 // ── Status ────────────────────────────────────────────────────────
+
 async function status() {
-  const configured = !!(_API_KEY || process.env.TENANTCLOUD_API_KEY || (TC_EMAIL && TC_PASS));
-  if (!configured) {
-    return { configured: false, hint: 'Add TENANTCLOUD_API_KEY (personal access token) to .env — TenantCloud → Settings → API' };
+  const email = process.env.TENANTCLOUD_EMAIL;
+  const pass  = process.env.TENANTCLOUD_PASSWORD;
+  if (!email || !pass) {
+    return { configured: false, hint: 'Add TENANTCLOUD_EMAIL and TENANTCLOUD_PASSWORD to .env' };
   }
   try {
+    await ensureLoggedIn();
     const props = await listProperties();
-    return { configured: true, authenticated: true, propertyCount: props.length };
+    return { configured: true, authenticated: true, propertyCount: props.length, mode: 'browser-scrape' };
   } catch (err) {
-    return { configured: true, authenticated: false, error: err.message, hint: 'Check TENANTCLOUD_API_KEY — it should be your personal access token from TenantCloud → Settings → API' };
+    return { configured: true, authenticated: false, error: err.message, mode: 'browser-scrape' };
   }
 }
+
+// ── Cleanup on process exit ───────────────────────────────────────
+process.on('exit', () => { if (_browser) _browser.close().catch(() => {}); });
+process.on('SIGINT', () => { if (_browser) _browser.close().catch(() => {}); });
 
 module.exports = {
   listProperties, getProperty, listUnits,
