@@ -4,6 +4,18 @@
 const path = require('path');
 const fs = require('fs');
 
+// pptxgenjs uses dynamic import() internally which is incompatible with Jest's
+// VM sandbox. Mock the entire module so pptxService.generate() can be tested
+// without triggering the real library's ESM internals.
+jest.mock('pptxgenjs', () => {
+  const mockSlide = { addText: jest.fn() };
+  return jest.fn().mockImplementation(() => ({
+    layout: '',
+    addSlide: jest.fn().mockReturnValue(mockSlide),
+    writeFile: jest.fn().mockResolvedValue(undefined),
+  }));
+});
+
 jest.mock('../services/financeService', () => ({
   getOutstandingLoans: jest.fn().mockResolvedValue({
     data: [
