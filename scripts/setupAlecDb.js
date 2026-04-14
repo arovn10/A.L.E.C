@@ -73,10 +73,13 @@ const TABLES = [
  */
 function runMigration(dbPath = DEFAULT_DB_PATH) {
   const db = new Database(dbPath);
-  for (const ddl of TABLES) {
-    db.prepare(ddl).run();
+  try {
+    for (const ddl of TABLES) {
+      db.prepare(ddl).run();
+    }
+  } finally {
+    db.close();
   }
-  db.close();
   console.log('[setupAlecDb] Migration complete:', dbPath);
 }
 

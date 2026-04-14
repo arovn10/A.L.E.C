@@ -2,6 +2,7 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 const os = require('os');
+const fs = require('fs');
 
 const TEST_DB = path.join(os.tmpdir(), `alec_test_${Date.now()}.db`);
 process.env.ALEC_LOCAL_DB_PATH = TEST_DB;
@@ -9,6 +10,10 @@ process.env.ALEC_LOCAL_DB_PATH = TEST_DB;
 const { runMigration } = require('../scripts/setupAlecDb');
 
 const EXPECTED_TABLES = ['fine_tune_jobs', 'quality_scores', 'model_versions', 'review_queue', 'entity_cache'];
+
+afterAll(() => {
+  try { fs.unlinkSync(TEST_DB); } catch (_) {}
+});
 
 test.each(EXPECTED_TABLES)('creates table: %s', (tableName) => {
   runMigration(TEST_DB);
