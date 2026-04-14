@@ -6,6 +6,7 @@ training, feedback, health, tasks, stoa, auth, and metrics APIs.
 Port 8000 by default. Called by the Node.js backend on localhost.
 """
 
+import asyncio
 import os
 import uuid
 import time
@@ -1832,7 +1833,7 @@ def drive_cycle():
 
 # ── RAG Embedding ─────────────────────────────────────────────────────────────
 class EmbedRequest(BaseModel):
-    text: str
+    text: str = Field(..., min_length=1, max_length=8192)
 
 @app.post("/embed")
 async def embed_text(req: EmbedRequest):
@@ -1843,7 +1844,8 @@ async def embed_text(req: EmbedRequest):
     """
     try:
         from ragPipeline import get_embedding
-        vector = get_embedding(req.text)
+        loop = asyncio.get_event_loop()
+        vector = await loop.run_in_executor(None, get_embedding, req.text)
         return {"vector": vector, "dim": len(vector)}
     except Exception as e:
         logger.error(f"[embed] error: {e}")
