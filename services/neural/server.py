@@ -1844,8 +1844,7 @@ async def embed_text(req: EmbedRequest):
     """
     try:
         from ragPipeline import get_embedding
-        loop = asyncio.get_event_loop()
-        vector = await loop.run_in_executor(None, get_embedding, req.text)
+        vector = await asyncio.to_thread(get_embedding, req.text)
         return {"vector": vector, "dim": len(vector)}
     except Exception as e:
         logger.error(f"[embed] error: {e}")
