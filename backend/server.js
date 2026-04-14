@@ -70,6 +70,9 @@ const awsSvc       = (() => { try { return require('../services/awsService.js');
 const research     = (() => { try { return require('../services/researchAgent.js');   } catch { return null; } })();
 const skillsReg    = (() => { try { return require('../services/skillsRegistry.js');  } catch { return null; } })();
 
+const RagService     = require('../services/ragService');
+const StoaBrainSync  = require('../services/stoaBrainSync');
+
 // ── Data Connector Registry ──────────────────────────────────────────────────
 const { registry: connectorRegistry } = require('../dataConnectors/index');
 try {
@@ -79,6 +82,16 @@ try {
   console.log('[Connectors] Registered:', connectorRegistry.list().join(', '));
 } catch (connErr) {
   console.warn('[Connectors] One or more connectors failed to register:', connErr.message);
+}
+
+let ragService    = null;
+let stoaBrainSync = null;
+try {
+  ragService    = new RagService();
+  stoaBrainSync = new StoaBrainSync();
+  stoaBrainSync.startCron();
+} catch (ragInitErr) {
+  console.warn('[RAG] Service init failed (Weaviate unavailable?):', ragInitErr.message);
 }
 
 // Warm up the embedded engine on startup
@@ -591,6 +604,35 @@ const requireFullCapabilities = (req, res, next) => {
   next();
 };
 
+// ── GitHub Webhook — STOA Brain Sync ────────────────────────────────────────
+app.post(
+  '/api/webhooks/github',
+  express.raw({ type: '*/*' }),
+  async (req, res) => {
+    const sig = req.headers['x-hub-signature-256'] || '';
+    if (!stoaBrainSync || !stoaBrainSync.verifyWebhookSignature(req.body, sig)) {
+      return res.status(401).json({ error: 'Invalid webhook signature' });
+    }
+    let payload;
+    try {
+      payload = JSON.parse(req.body.toString('utf8'));
+    } catch {
+      return res.status(400).json({ error: 'Invalid JSON payload' });
+    }
+    if (req.headers['x-github-event'] !== 'push') {
+      return res.status(200).json({ ok: true, skipped: 'not a push event' });
+    }
+    try {
+      const result = await stoaBrainSync.handlePushEvent(payload);
+      console.log('[stoaBrainSync] webhook indexed:', result);
+      return res.json({ ok: true, ...result });
+    } catch (err) {
+      console.error('[stoaBrainSync] webhook error:', err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  },
+);
+
 // ════════════════════════════════════════════════════════════════
 //  HEALTH CHECK
 // ════════════════════════════════════════════════════════════════
@@ -741,7 +783,11 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     // Build system prompt with memory
     const mem = loadMemory();
     const memCtx = buildMemoryContext(mem);
-    let systemContent = buildSystemPrompt() + (memCtx ? '\n\n' + memCtx : '');
+    let ragContext = '';
+    try { ragContext = ragService ? await ragService.retrieve(userText) : ''; } catch (_) {}
+    let systemContent = buildSystemPrompt()
+      + (memCtx ? '\n\n' + memCtx : '')
+      + (ragContext ? '\n\n' + ragContext : '');
 
     // ── Self-improvement trigger — owner can ask ALEC to improve itself ──
     const isOwner = req.user?.tokenType === 'OWNER' || req.user?.role === 'owner';
@@ -1069,7 +1115,11 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
     // System prompt + memory
     const mem = loadMemory();
     const memCtx = buildMemoryContext(mem);
-    let systemContent = buildSystemPrompt() + (memCtx ? '\n\n' + memCtx : '');
+    let ragContext = '';
+    try { ragContext = ragService ? await ragService.retrieve(userText) : ''; } catch (_) {}
+    let systemContent = buildSystemPrompt()
+      + (memCtx ? '\n\n' + memCtx : '')
+      + (ragContext ? '\n\n' + ragContext : '');
 
     // ── Excel export detection (stream) — send download link immediately ──
     const exportIntentStream = excelExport.detectExportIntent(userText);
