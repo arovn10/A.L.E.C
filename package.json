@@ -11,7 +11,7 @@
     "download-model": "bash scripts/download-model.sh",
     "start:full": "bash scripts/start-alec.sh",
     "build": "echo 'No build step required'",
-    "test": "jest --forceExit",
+    "test": "NODE_OPTIONS=--experimental-vm-modules jest --forceExit",
     "lint": "node -c backend/server.js && node -c services/neuralEngine.js && node -c frontend/app.js"
   },
   "keywords": [
@@ -31,6 +31,7 @@
     "@anthropic-ai/sdk": "^0.25.0",
     "@lmstudio/sdk": "^1.5.0",
     "@octokit/rest": "^22.0.1",
+    "axios": "^1.15.0",
     "bcryptjs": "^2.4.3",
     "better-sqlite3": "^12.9.0",
     "cors": "^2.8.5",
@@ -57,7 +58,8 @@
     "@types/jsonwebtoken": "^9.0.6",
     "@types/ws": "^8.5.11",
     "jest": "^29.7.0",
-    "nodemon": "^3.1.4"
+    "nodemon": "^3.1.4",
+    "supertest": "^7.2.2"
   },
   "engines": {
     "node": ">=18.0.0"

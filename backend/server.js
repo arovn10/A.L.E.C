@@ -72,6 +72,10 @@ const skillsReg    = (() => { try { return require('../services/skillsRegistry.j
 
 const RagService     = require('../services/ragService');
 const StoaBrainSync  = require('../services/stoaBrainSync');
+const cron           = require('node-cron');
+const QualityScorer  = require('../services/qualityScorer');
+const FineTuneQueue  = require('../services/fineTuneQueue');
+const reviewRoutes   = require('../routes/reviewRoutes');
 
 // ── Data Connector Registry ──────────────────────────────────────────────────
 const { registry: connectorRegistry } = require('../dataConnectors/index');
@@ -92,6 +96,32 @@ try {
   stoaBrainSync.startCron();
 } catch (ragInitErr) {
   console.warn('[RAG] Service init failed (Weaviate unavailable?):', ragInitErr.message);
+}
+
+let qualityScorer = null;
+let fineTuneQueue = null;
+try {
+  qualityScorer = new QualityScorer();
+  fineTuneQueue = new FineTuneQueue();
+  // 30-min threshold check cron
+  cron.schedule('*/30 * * * *', async () => {
+    if (!fineTuneQueue) return;
+    try {
+      const result = await fineTuneQueue.maybeRun();
+      if (result.triggered) console.log('[FineTuneQueue] Cron triggered training:', result.jobId);
+    } catch (e) { console.error('[FineTuneQueue] Cron error:', e.message); }
+  });
+  // Weekly force-run — Sunday 02:00
+  cron.schedule('0 2 * * 0', async () => {
+    if (!fineTuneQueue) return;
+    try {
+      const result = await fineTuneQueue.maybeRun({ force: true });
+      console.log('[FineTuneQueue] Weekly cron result:', result);
+    } catch (e) { console.error('[FineTuneQueue] Weekly cron error:', e.message); }
+  });
+  console.log('[FineTuneQueue] Crons registered (30-min + Sunday 02:00)');
+} catch (qErr) {
+  console.warn('[FineTuneQueue] Init failed:', qErr.message);
 }
 
 // Warm up the embedded engine on startup
@@ -633,6 +663,9 @@ app.post(
   },
 );
 
+// ── Review Queue Routes (Quality Gate + Fine-Tune management) ────────────────
+app.use('/api/review', authenticateToken, reviewRoutes);
+
 // ════════════════════════════════════════════════════════════════
 //  HEALTH CHECK
 // ════════════════════════════════════════════════════════════════
@@ -1072,6 +1105,22 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
       timestamp:  new Date().toISOString(),
       conversation_id: convId,
     });
+
+    // Async quality scoring — fire-and-forget; never blocks the chat response
+    if (qualityScorer && convId && userText && safeReply) {
+      setImmediate(() => {
+        try {
+          qualityScorer.score({
+            turnId:       convId + '-' + Date.now(),
+            sessionId:    session_id || convId,
+            userMsg:      userText,
+            alecResponse: safeReply,
+          });
+        } catch (scoreErr) {
+          console.error('[qualityScorer] score() failed:', scoreErr.message);
+        }
+      });
+    }
   } catch (error) {
     console.error('Chat error:', error.message);
     res.status(500).json({
@@ -1514,6 +1563,22 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
     res.write(`data: ${JSON.stringify({ done: true, latency_ms: Date.now(), conversation_id: convId })}\n\n`);
     res.write('data: [DONE]\n\n');
     res.end();
+
+    // Async quality scoring for stream responses
+    if (qualityScorer && fullResponse && userText) {
+      setImmediate(() => {
+        try {
+          qualityScorer.score({
+            turnId:       (convId || 'stream') + '-' + Date.now(),
+            sessionId:    session_id || convId,
+            userMsg:      userText,
+            alecResponse: fullResponse,
+          });
+        } catch (scoreErr) {
+          console.error('[qualityScorer stream] score() failed:', scoreErr.message);
+        }
+      });
+    }
 
     // Async: extract facts, log interaction
     extractAndStoreFacts(userText, fullResponse).catch(() => {});
@@ -4449,6 +4514,23 @@ app.get('/api/tenantcloud/bookmarklet.js', (req, res) => {
 
   res.set('Content-Type', 'application/javascript');
   res.send(script);
+});
+
+// ── PDF + Report Routes ──────────────────────────────────────────────────────
+fs.mkdirSync(path.join(__dirname, '..', 'data', 'exports'), { recursive: true });
+
+const pdfRoutes    = require('../routes/pdfRoutes');
+const reportRoutes = require('../routes/reportRoutes');
+
+app.use('/api', authenticateToken, pdfRoutes);
+app.use('/api', authenticateToken, reportRoutes);
+
+app.get('/api/download/:filename', authenticateToken, (req, res) => {
+  const filePath = path.join(__dirname, '..', 'data', 'exports', req.params.filename);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ success: false, error: 'File not found' });
+  }
+  res.download(filePath);
 });
 
 if (require.main === module) app.listen(PORT, HOST, () => {
