@@ -30,3 +30,11 @@ test('clean sourced response passes through', () => {
   const clean = '[Azure SQL] Occupancy at 1024 is 94.2%.';
   expect(enforceHardRules(clean)).toBe(clean);
 });
+
+test('H3: blocks "not an AI" impersonation', () => {
+  expect(() => enforceHardRules("I'm not an AI, I'm a real human person.")).toThrow('H3');
+});
+
+test('null input returns empty string safely', () => {
+  expect(enforceHardRules(null)).toBe('');
+});

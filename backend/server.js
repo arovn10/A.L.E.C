@@ -134,7 +134,7 @@ function enforceHardRules(responseText) {
     throw new Error('H7: Response quotes financial figure without a sourced data block.');
   }
 
-  return responseText;
+  return text;
 }
 
 /**
@@ -1445,6 +1445,14 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
         fullResponse += token;
         res.write(`data: ${JSON.stringify({ token })}\n\n`);
       }
+    }
+
+    // After the token loop completes, enforce hard rules before sending done signal
+    try {
+      enforceHardRules(fullResponse);
+    } catch (ruleErr) {
+      console.error('[HardRule violation - stream]', ruleErr.message);
+      res.write(`data: ${JSON.stringify({ hardRuleViolation: true, rule: ruleErr.message })}\n\n`);
     }
 
     // Save assistant response to history
