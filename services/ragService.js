@@ -37,7 +37,7 @@ class RagService {
    * @returns {Promise<string>} formatted context block, or '' if no hits
    */
   async retrieve(query, opts = {}) {
-    const limit = opts.limit || DEFAULT_LIMIT;
+    const limit = opts.limit ?? DEFAULT_LIMIT;
     const collections = opts.collections || ['ALECConversation', 'ALECDocument'];
 
     let vector = [];
@@ -48,9 +48,14 @@ class RagService {
     }
 
     const hits = [];
-    for (const col of collections) {
-      const results = await this._weaviate.hybridSearch(col, query, vector, { limit });
-      for (const r of results) hits.push({ ...r, _collection: col });
+    try {
+      for (const col of collections) {
+        const results = await this._weaviate.hybridSearch(col, query, vector, { limit });
+        for (const r of results) hits.push({ ...r, _collection: col });
+      }
+    } catch (err) {
+      console.warn('[ragService] Weaviate unavailable, returning empty context:', err.message);
+      return '';
     }
 
     // Lower distance = more similar — surface the best matches first
