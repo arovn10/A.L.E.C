@@ -34,6 +34,7 @@
     "bcryptjs": "^2.4.3",
     "better-sqlite3": "^12.9.0",
     "cors": "^2.8.5",
+    "docx": "^9.6.1",
     "dotenv": "^16.6.1",
     "exceljs": "^4.4.0",
     "express": "^4.19.2",
@@ -43,9 +44,12 @@
     "node-cron": "^4.2.1",
     "node-fetch": "^3.3.2",
     "node-llama-cpp": "^3.18.1",
+    "pdf-parse": "^2.4.5",
+    "pptxgenjs": "^4.0.1",
     "puppeteer-core": "^24.40.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "weaviate-ts-client": "^2.2.0",
     "ws": "^8.17.0"
   },
   "devDependencies": {
