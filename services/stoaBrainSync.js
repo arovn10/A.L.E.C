@@ -30,8 +30,11 @@ class StoaBrainSync {
   verifyWebhookSignature(rawBody, signatureHeader) {
     const secret = process.env.GITHUB_WEBHOOK_SECRET || '';
     const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+    const sigBuf = Buffer.from(signatureHeader);
+    const expBuf = Buffer.from(expected);
+    if (sigBuf.length !== expBuf.length) return false;
     try {
-      return crypto.timingSafeEqual(Buffer.from(signatureHeader), Buffer.from(expected));
+      return crypto.timingSafeEqual(sigBuf, expBuf);
     } catch {
       return false;
     }
@@ -69,8 +72,14 @@ class StoaBrainSync {
    * @returns {Promise<{indexed: number, skipped: number, errors: Array}>}
    */
   async fullSync() {
-    const filesResult = await registry.fetch('github', { action: 'listFiles' });
-    const fileList = filesResult.data || filesResult || [];
+    let fileList;
+    try {
+      const filesResult = await registry.fetch('github', { action: 'listFiles' });
+      fileList = filesResult.data || filesResult || [];
+    } catch (err) {
+      console.error('[stoaBrainSync] fullSync: listFiles failed:', err.message);
+      return { indexed: 0, skipped: 0, errors: [{ path: 'listFiles', error: err.message }] };
+    }
     const results = { indexed: 0, skipped: 0, errors: [] };
     for (const file of fileList) {
       const filePath = file.path || file;
