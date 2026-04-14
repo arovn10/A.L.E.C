@@ -72,10 +72,14 @@ const skillsReg    = (() => { try { return require('../services/skillsRegistry.j
 
 // ── Data Connector Registry ──────────────────────────────────────────────────
 const { registry: connectorRegistry } = require('../dataConnectors/index');
-connectorRegistry.register(require('../dataConnectors/azureSqlConnector'));
-connectorRegistry.register(require('../dataConnectors/tenantCloudConnector'));
-connectorRegistry.register(require('../dataConnectors/githubConnector'));
-console.log('[Connectors] Registered:', connectorRegistry.list().join(', '));
+try {
+  connectorRegistry.register(require('../dataConnectors/azureSqlConnector'));
+  connectorRegistry.register(require('../dataConnectors/tenantCloudConnector'));
+  connectorRegistry.register(require('../dataConnectors/githubConnector'));
+  console.log('[Connectors] Registered:', connectorRegistry.list().join(', '));
+} catch (connErr) {
+  console.warn('[Connectors] One or more connectors failed to register:', connErr.message);
+}
 
 // Warm up the embedded engine on startup
 llamaEngine.warmUp();

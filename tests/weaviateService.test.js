@@ -53,3 +53,14 @@ test('search() returns array with distance field', async () => {
   expect(results[0]).toHaveProperty('distance');
   expect(results[0]).toHaveProperty('id');
 });
+
+test('hybridSearch() returns array with distance, score, and id fields', async () => {
+  const results = await svc.hybridSearch('ALECConversation', 'hello', [0.1, 0.2], { limit: 5 });
+  expect(Array.isArray(results)).toBe(true);
+  expect(results[0]).toHaveProperty('distance');
+  expect(results[0]).toHaveProperty('id');
+});
+
+test('init() calls schema.exists and does not throw', async () => {
+  await expect(svc.init()).resolves.not.toThrow();
+});

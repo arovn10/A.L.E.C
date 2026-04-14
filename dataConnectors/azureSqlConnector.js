@@ -21,7 +21,14 @@ const DB_CONFIG = {
 
 let _pool = null;
 async function getPool() {
-  if (!_pool) _pool = await sql.connect(DB_CONFIG);
+  if (!_pool) {
+    try {
+      _pool = await sql.connect(DB_CONFIG);
+    } catch (err) {
+      _pool = null; // Allow retry on next call
+      throw err;
+    }
+  }
   return _pool;
 }
 

@@ -32,7 +32,10 @@ class WeaviateService {
   }
 
   /**
-   * Upsert a document into a Weaviate collection.
+   * Insert a document into a Weaviate collection.
+   * NOTE: This always creates a new object. It does not deduplicate — callers
+   * are responsible for ensuring the same document is not submitted twice.
+   * True upsert (with deterministic ID) will be added in Plan B.
    * @param {string} collection - 'ALECConversation'|'ALECEntity'|'ALECDocument'
    * @param {object} properties - Fields matching the collection schema
    * @param {number[]} vector - Embedding from nomic-embed-text
