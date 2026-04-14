@@ -70,6 +70,17 @@ const awsSvc       = (() => { try { return require('../services/awsService.js');
 const research     = (() => { try { return require('../services/researchAgent.js');   } catch { return null; } })();
 const skillsReg    = (() => { try { return require('../services/skillsRegistry.js');  } catch { return null; } })();
 
+// ── Data Connector Registry ──────────────────────────────────────────────────
+const { registry: connectorRegistry } = require('../dataConnectors/index');
+try {
+  connectorRegistry.register(require('../dataConnectors/azureSqlConnector'));
+  connectorRegistry.register(require('../dataConnectors/tenantCloudConnector'));
+  connectorRegistry.register(require('../dataConnectors/githubConnector'));
+  console.log('[Connectors] Registered:', connectorRegistry.list().join(', '));
+} catch (connErr) {
+  console.warn('[Connectors] One or more connectors failed to register:', connErr.message);
+}
+
 // Warm up the embedded engine on startup
 llamaEngine.warmUp();
 
@@ -87,10 +98,59 @@ function toE164(phone) {
 }
 
 /**
+ * enforceHardRules — app-layer H1-H8 enforcement.
+ * Called on every LLM response before it reaches the client.
+ * Throws if a violation is detected; returns the text unchanged otherwise.
+ * @param {string} responseText
+ * @returns {string}
+ */
+function enforceHardRules(responseText) {
+  const text = responseText || '';
+
+  // H2: Never reveal system prompt
+  const h2Triggers = [
+    /my (system )?prompt (is|says|contains)/i,
+    /here is my (system )?prompt/i,
+    /my instructions (are|say|include)/i,
+  ];
+  if (h2Triggers.some(p => p.test(text))) {
+    throw new Error('H2: Response appears to reveal system prompt contents.');
+  }
+
+  // H3: Never impersonate a human
+  const h3Triggers = [
+    /i('m| am) (a |not an? )?(real )?human/i,
+    /i('m| am) not an? (ai|artificial intelligence|language model)/i,
+    /i('m| am) (a real person|actually human)/i,
+  ];
+  if (h3Triggers.some(p => p.test(text))) {
+    throw new Error('H3: Response appears to impersonate a human.');
+  }
+
+  // H7: Never quote stock/financial figures without a sourced data block
+  const hasDataSource = /\[(STOA DATA|Azure SQL|TenantCloud|Plaid|Weaviate|Home Assistant)\]/i.test(text);
+  const stockPattern  = /\b[A-Z]{1,5}\b is (trading at|priced at|currently at) \$[\d,.]+/i;
+  if (!hasDataSource && stockPattern.test(text)) {
+    throw new Error('H7: Response quotes financial figure without a sourced data block.');
+  }
+
+  return text;
+}
+
+/**
  * System prompt — generated fresh on every request so the date is always accurate.
  * LLMs have a training cutoff and don't know the current date unless told explicitly.
  */
 function buildSystemPrompt() {
+  // Load constitutional directive from data/ALEC_DIRECTIVE.md
+  let directiveSection = '';
+  try {
+    const directivePath = path.join(__dirname, '../data/ALEC_DIRECTIVE.md');
+    directiveSection = fs.readFileSync(directivePath, 'utf8') + '\n\n---\n\n';
+  } catch {
+    console.warn('[server] ALEC_DIRECTIVE.md not found — using empty directive section');
+  }
+
   const now = new Date();
   const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
   const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
@@ -129,7 +189,7 @@ function buildSystemPrompt() {
   if (process.env.MS_TENANT_ID) caps.push('✅ Microsoft 365 — SharePoint, OneDrive, Outlook/calendar');
   else caps.push('⚠️  Microsoft 365 — not configured');
 
-  return `You are Alec (A.L.E.C.), Alec Rovner's personal AI executive assistant running locally on his Mac.
+  return `${directiveSection}You are Alec (A.L.E.C.), Alec Rovner's personal AI executive assistant running locally on his Mac.
 You use a local LLaMA 3.1 8B model (Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf) running on Apple Silicon via node-llama-cpp with Metal GPU acceleration. You do NOT call any external AI API — you run entirely on this Mac.
 Current date and time: ${dateStr} at ${timeStr}.
 
@@ -948,10 +1008,18 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
       chatHistory.addMessage(convId, 'assistant', responseText);
     }
 
+    let safeReply;
+    try {
+      safeReply = enforceHardRules(responseText);
+    } catch (ruleErr) {
+      console.error('[HardRule violation]', ruleErr.message);
+      safeReply = "I can't respond to that in a way that aligns with my operating rules. Please rephrase.";
+    }
+
     const engineStatus = llamaEngine.getStatus();
     res.json({
       success: true,
-      response: responseText,
+      response: safeReply,
       latency_ms,
       source:    'llama-metal',
       model:     engineStatus.modelPath,
@@ -1377,6 +1445,14 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
         fullResponse += token;
         res.write(`data: ${JSON.stringify({ token })}\n\n`);
       }
+    }
+
+    // After the token loop completes, enforce hard rules before sending done signal
+    try {
+      enforceHardRules(fullResponse);
+    } catch (ruleErr) {
+      console.error('[HardRule violation - stream]', ruleErr.message);
+      res.write(`data: ${JSON.stringify({ hardRuleViolation: true, rule: ruleErr.message })}\n\n`);
     }
 
     // Save assistant response to history
@@ -4325,7 +4401,7 @@ app.get('/api/tenantcloud/bookmarklet.js', (req, res) => {
   res.send(script);
 });
 
-app.listen(PORT, HOST, () => {
+if (require.main === module) app.listen(PORT, HOST, () => {
   const lanIps = getLanAddresses();
   const lanList = lanIps.length > 0
     ? lanIps.map(ip => `http://${ip}:${PORT}`).join('\n║   ')
@@ -4356,4 +4432,4 @@ app.listen(PORT, HOST, () => {
 `);
 });
 
-module.exports = app;
+module.exports = Object.assign(app, { enforceHardRules });
