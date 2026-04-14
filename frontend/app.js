@@ -53,10 +53,17 @@ function formatDate(val) {
 
 function timeAgo(val) {
   if (!val) return '—';
-  const d = new Date(val);
+  // SQLite datetime('now') returns 'YYYY-MM-DD HH:MM:SS' without timezone.
+  // Force UTC parsing by appending 'Z' if no zone indicator is present.
+  let str = String(val);
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(str) && !str.endsWith('Z') && !str.includes('+')) {
+    str = str.replace(' ', 'T') + 'Z';
+  }
+  const d = new Date(str);
   if (isNaN(d)) return val;
-  const diff = Math.floor((Date.now() - d) / 1000);
-  if (diff < 60) return `${diff}s ago`;
+  const diff = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (diff < 5)   return 'just now';
+  if (diff < 60)  return `${diff}s ago`;
   if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
   if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
   return d.toLocaleDateString();
@@ -94,8 +101,14 @@ function renderMarkdown(text) {
   html = html.replace(/(<li>.*<\/li>\n?)+/g, (m) => `<ul>${m}</ul>`);
   // Ordered list
   html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
-  // Links
+  // Download buttons — /exports/*.xlsx gets a styled download button
+  html = html.replace(/\[([^\]]+)\]\((\/exports\/[^\)]+\.xlsx)\)/g,
+    (_, label, url) => `<a href="${url}" download class="download-btn">⬇️ ${label}</a>`
+  );
+  // Absolute links
   html = html.replace(/\[(.+?)\]\((https?:\/\/.+?)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // Relative links (non-export)
+  html = html.replace(/\[(.+?)\]\((\/[^\)]+)\)/g, '<a href="$2">$1</a>');
   // Horizontal rule
   html = html.replace(/^---$/gm, '<hr/>');
   // Line breaks / paragraphs
@@ -452,13 +465,14 @@ function switchPanel(panelId) {
 
 function onPanelSwitch(panelId) {
   switch (panelId) {
+    case 'chat':     loadChatHistorySidebar(); break;
     case 'metrics':  loadMetrics(); break;
     case 'files':    loadFiles(); break;
     case 'training': loadTrainingStatus(); loadAdapters(); break;
     case 'skills':   loadSkills(); break;
     case 'stoa':     loadStoaStatus(); loadStoaTables(); break;
     case 'tasks':    loadTasks(); break;
-      case 'memory':   loadMemoryStats(); loadAllMemories(); break;
+    case 'memory':   loadMemoryStats(); loadAllMemories(); break;
     case 'finance':  loadLinkedAccounts(); loadPortfolio(); break;
     case 'settings': loadModelInfo(); buildPersonalitySliders(); break;
   }
@@ -891,88 +905,210 @@ document.getElementById('export-training-btn').addEventListener('click', async (
   }
 });
 
-/* ─── SKILLS ─────────────────────────────────────────────────── */
-async function loadSkills() {
-  await Promise.all([loadInstalledSkills(), loadAvailableSkills()]);
-}
+/* ─── CHAT HISTORY SIDEBAR ───────────────────────────────────── */
 
-async function loadInstalledSkills() {
-  const container = document.getElementById('installed-skills-list');
+async function loadChatHistorySidebar() {
+  const list = document.getElementById('chat-history-list');
+  if (!list) return;
   try {
-    const data = await api('GET', '/api/skills/installed');
-    const skills = Array.isArray(data) ? data : (data.skills || []);
-
-    if (!skills.length) {
-      container.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-dim);font-size:0.8rem;">No skills installed.</div>';
+    const data = await api('GET', '/api/history/conversations');
+    const convs = data.conversations || [];
+    if (!convs.length) {
+      list.innerHTML = '<div style="padding:12px 14px;color:var(--text-dim);font-size:11px;">No chats yet. Start a conversation!</div>';
       return;
     }
+    list.innerHTML = convs.map(c => `
+      <div class="chat-history-item ${state.currentConversationId === c.id ? 'active' : ''}"
+           data-conv-id="${escapeHtml(c.id)}"
+           onclick="loadConversation('${escapeHtml(c.id)}')"
+           title="${escapeHtml(c.title || 'New Chat')}"
+           style="position:relative;padding:8px 12px;cursor:pointer;border-radius:6px;margin:1px 4px;transition:background .15s;${state.currentConversationId === c.id ? 'background:var(--accent-dim,rgba(99,102,241,.15));' : ''}">
+        <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:155px;color:var(--text);">${escapeHtml(c.title || 'New Chat')}</div>
+        <div style="font-size:10px;color:var(--text-dim);margin-top:2px;">${timeAgo(c.updated_at)}</div>
+        <button onclick="event.stopPropagation();deleteConversation('${escapeHtml(c.id)}')"
+          style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:14px;padding:2px 4px;border-radius:3px;opacity:0;"
+          class="conv-delete-btn" title="Delete chat">×</button>
+      </div>`).join('');
 
-    container.innerHTML = skills.map(s => {
-      const status = s.actual_status || (s.auto_installed ? 'active' : 'needs_setup');
-      const hasConfig = s.requires_config || (s.config_fields && s.config_fields.length > 0);
-      const colors = { active: '#10b981', connected: '#10b981', needs_setup: '#f59e0b', error: '#ef4444' };
-      const labels = { active: 'ACTIVE', connected: 'CONNECTED', needs_setup: 'NEEDS SETUP', error: 'ERROR' };
-      const c = colors[status] || '#f59e0b';
-      const l = labels[status] || 'NEEDS SETUP';
-      return `
-        <div class="skill-item">
-          <div class="skill-icon">${s.icon || '🔌'}</div>
-          <div class="skill-info">
-            <div class="skill-name">${escapeHtml(s.name || '—')}</div>
-            <div class="skill-desc">${escapeHtml(s.description || '—')}</div>
-            ${s.setup_instructions && status === 'needs_setup' ? `<div style="font-size:11px;color:#f59e0b;margin-top:4px;">⚠️ ${escapeHtml(s.setup_instructions)}</div>` : ''}
-          </div>
-          <div style="display:flex;gap:6px;align-items:center;">
-            ${hasConfig ? `<button class="btn btn-ghost btn-sm" onclick="openSkillConfig('${s.id}')">⚙️ Configure</button>` : ''}
-            <span style="background:${c}20;color:${c};border:1px solid ${c}40;font-size:11px;padding:2px 8px;border-radius:4px;font-weight:600;">${l}</span>
-          </div>
-        </div>
-      `;
-    }).join('');
+    // Show delete on hover
+    list.querySelectorAll('.chat-history-item').forEach(el => {
+      const btn = el.querySelector('.conv-delete-btn');
+      el.addEventListener('mouseenter', () => { if (btn) btn.style.opacity = '1'; });
+      el.addEventListener('mouseleave', () => { if (btn) btn.style.opacity = '0'; });
+    });
   } catch {
-    container.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-dim);font-size:0.8rem;">No skills loaded.</div>';
+    list.innerHTML = '<div style="padding:12px 14px;color:var(--text-dim);font-size:11px;">History unavailable.</div>';
   }
 }
 
-async function loadAvailableSkills() {
-  const container = document.getElementById('available-skills-list');
+window.loadConversation = async function(convId) {
   try {
-    const data = await api('GET', '/api/skills/available');
-    const skills = Array.isArray(data) ? data : (data.skills || []);
-    const notInstalled = skills.filter(s => !s.installed);
+    const data = await api('GET', `/api/history/conversations/${convId}/messages`);
+    const messages = data.messages || [];
+    state.currentConversationId = convId;
+    state.chatHistory = messages.map(m => ({ role: m.role, content: m.content }));
 
-    if (!notInstalled.length) {
-      container.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-dim);font-size:0.8rem;">All skills installed!</div>';
-      return;
-    }
+    // Render messages
+    const chatMsgs = document.getElementById('chat-messages');
+    chatMsgs.innerHTML = '';
+    document.getElementById('chat-welcome')?.remove();
 
-    container.innerHTML = notInstalled.map(s => `
-      <div class="skill-item">
-        <div class="skill-icon">${s.icon || '📦'}</div>
-        <div class="skill-info">
-          <div class="skill-name">${escapeHtml(s.name || '—')}</div>
-          <div class="skill-desc">${escapeHtml(s.description || '—')}</div>
-        </div>
-        <button class="btn btn-accent btn-sm" onclick="installSkill('${escapeHtml(s.id || '')}')">Install</button>
-      </div>
-    `).join('');
-  } catch {
-    container.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-dim);font-size:0.8rem;">No available skills listed.</div>';
-  }
-}
-
-window.installSkill = async function(skillId) {
-  try {
-    toast(`Installing skill ${skillId}…`, 'info');
-    await api('POST', '/api/skills/install', { skill_id: skillId });
-    toast('Skill installed!', 'success');
-    loadSkills();
+    messages.forEach(m => {
+      if (m.role === 'user') {
+        addUserMessage(m.content);
+      } else if (m.role === 'assistant') {
+        // addAssistantMessage expects an object {text, ...}
+        addAssistantMessage({ text: m.content });
+      }
+    });
+    scrollToBottom();
+    loadChatHistorySidebar();
   } catch (err) {
-    toast('Install failed: ' + err.message, 'error');
+    toast('Failed to load conversation: ' + err.message, 'error');
   }
 };
 
+window.deleteConversation = async function(convId) {
+  if (!confirm('Delete this chat?')) return;
+  try {
+    await api('DELETE', `/api/history/conversations/${convId}`);
+    if (state.currentConversationId === convId) {
+      startNewChat();
+    }
+    loadChatHistorySidebar();
+  } catch (err) {
+    toast('Delete failed: ' + err.message, 'error');
+  }
+};
+
+function startNewChat() {
+  state.currentConversationId = null;
+  state.chatHistory = [];
+  const chatMsgs = document.getElementById('chat-messages');
+  chatMsgs.innerHTML = '';
+  // Re-inject welcome
+  const welcome = document.createElement('div');
+  welcome.id = 'chat-welcome';
+  welcome.className = 'chat-welcome';
+  welcome.innerHTML = `
+    <div style="font-size:3rem;">🤖</div>
+    <h2>Hey, I'm A.L.E.C. — your autonomous AI</h2>
+    <p>Adaptive Learning Executive Coordinator — your personal AI, trained on your data and continuously improving.</p>
+    <div class="suggestion-chips">
+      <div class="chip" data-prompt="How is the STOA portfolio performing?">STOA portfolio</div>
+      <div class="chip" data-prompt="Check my recent iMessages">Check iMessages</div>
+      <div class="chip" data-prompt="Research Google Ads optimization for apartment rentals">Research Google Ads</div>
+      <div class="chip" data-prompt="How is settlers trace performing over the last 6 months?">Settlers Trace trend</div>
+    </div>`;
+  chatMsgs.appendChild(welcome);
+  // Re-attach chip clicks
+  welcome.querySelectorAll('.chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const p = chip.dataset.prompt;
+      if (p) { document.getElementById('chat-input').value = p; sendMessage(); }
+    });
+  });
+  loadChatHistorySidebar();
+}
+
+// New Chat button
+const newChatBtn = document.getElementById('new-chat-btn');
+if (newChatBtn) newChatBtn.addEventListener('click', startNewChat);
+
+// Load chat sidebar on init
+setTimeout(loadChatHistorySidebar, 500);
+
+/* ─── SKILLS / CONNECTORS ────────────────────────────────────── */
+async function loadSkills() {
+  const catalog = document.getElementById('skills-catalog');
+  if (!catalog) return;
+  catalog.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-dim);font-size:0.8rem;">Loading…</div>';
+
+  try {
+    const data = await api('GET', '/api/connectors/catalog');
+    const byCategory = data.catalog?.byCategory || data.catalog || {};
+
+    if (Object.keys(byCategory).length === 0) {
+      catalog.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-dim);font-size:0.8rem;">No connectors available.</div>';
+      return;
+    }
+
+    const categoryIcons = {
+      Communication: '💬', Development: '⚙️', Property: '🏢', Cloud: '☁️',
+      Research: '🔬', Automation: '🤖', AI: '🧠', Custom: '🔌'
+    };
+
+    let html = '';
+    for (const [category, skills] of Object.entries(byCategory)) {
+      html += `
+        <div style="margin-bottom:28px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border);">
+            <span style="font-size:1.1rem;">${categoryIcons[category] || '🔌'}</span>
+            <span style="font-weight:700;font-size:0.85rem;letter-spacing:.04em;color:var(--text-muted);text-transform:uppercase;">${escapeHtml(category)}</span>
+          </div>
+          <div style="display:grid;gap:10px;">
+            ${skills.map(s => renderSkillCard(s)).join('')}
+          </div>
+        </div>`;
+    }
+    catalog.innerHTML = html;
+  } catch (err) {
+    catalog.innerHTML = `<div style="padding:24px;color:var(--danger-color);font-size:0.8rem;">Failed to load connectors: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderSkillCard(s) {
+  const configured = s.configured;
+  const statusColor = configured ? '#10b981' : '#6b7280';
+  const statusLabel = configured ? 'CONNECTED' : 'NOT SET UP';
+  const statusBg    = configured ? 'rgba(16,185,129,.12)' : 'rgba(107,114,128,.1)';
+  return `
+    <div style="display:flex;align-items:center;gap:12px;padding:12px 14px;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;transition:border-color .2s;" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+      <div style="font-size:1.6rem;flex-shrink:0;">${s.icon || '🔌'}</div>
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:600;font-size:0.9rem;margin-bottom:2px;">${escapeHtml(s.name)}</div>
+        <div style="font-size:0.75rem;color:var(--text-muted);line-height:1.4;">${escapeHtml(s.description || '')}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0;">
+        <span style="background:${statusBg};color:${statusColor};border:1px solid ${statusColor}40;font-size:10px;padding:2px 7px;border-radius:4px;font-weight:700;letter-spacing:.04em;">${statusLabel}</span>
+        <button class="btn btn-ghost btn-sm" onclick="openSkillConfig('${escapeHtml(s.id)}')" style="font-size:11px;padding:3px 10px;">⚙️ Configure</button>
+      </div>
+    </div>`;
+}
+
 document.getElementById('skills-refresh-btn').addEventListener('click', loadSkills);
+
+// Custom skill button
+const addCustomBtn = document.getElementById('add-custom-skill-btn');
+if (addCustomBtn) {
+  addCustomBtn.addEventListener('click', () => {
+    document.getElementById('custom-skill-modal').style.display = 'flex';
+  });
+}
+
+window.closeCustomSkillModal = function() {
+  document.getElementById('custom-skill-modal').style.display = 'none';
+};
+
+window.saveCustomSkill = async function() {
+  const id    = document.getElementById('cs-id')?.value?.trim();
+  const name  = document.getElementById('cs-name')?.value?.trim();
+  const icon  = document.getElementById('cs-icon')?.value?.trim() || '🔌';
+  const desc  = document.getElementById('cs-desc')?.value?.trim();
+  const fields = (document.getElementById('cs-fields')?.value?.trim() || '').split(',').map(f => f.trim()).filter(Boolean);
+  if (!id || !name) { toast('ID and Name are required', 'warning'); return; }
+  try {
+    await api('POST', '/api/connectors/custom', {
+      id, name, icon, description: desc,
+      fields: fields.map(k => ({ key: k, label: k, type: 'text', envVar: k })),
+    });
+    toast('Custom skill added!', 'success');
+    closeCustomSkillModal();
+    loadSkills();
+  } catch (err) {
+    toast('Failed: ' + err.message, 'error');
+  }
+};
 
 const mcpConnectBtn = document.getElementById('mcp-connect-btn');
 if (mcpConnectBtn) {
@@ -1415,6 +1551,7 @@ async function sendMessage() {
     message: userText,
     messages: state.chatHistory,
     session_id: state.sessionId,
+    conversation_id: state.currentConversationId || null,
   };
   if (attachments.length) body.file_ids = attachments.map(a => a.fileId);
 
@@ -1459,6 +1596,27 @@ async function sendMessage() {
     let buf      = '';
     const t0     = Date.now();
 
+    // ── Streaming TTS: speak each sentence as it completes ──────────
+    // Accumulates tokens and fires browser TTS the moment a sentence
+    // boundary appears — so the first words play in <500ms, not after
+    // the entire response finishes.
+    let ttsSentenceBuffer = '';
+    let ttsActive = state._voiceTriggered;
+
+    function flushTTSSentence(force = false) {
+      if (!ttsActive) return;
+      // Sentence boundary patterns
+      const bound = /(?<=[.!?])\s+(?=[A-Z"'])|(?<=\.)\s*$|\n\n/;
+      const parts = ttsSentenceBuffer.split(bound);
+      // Flush all complete parts; keep last (potentially incomplete) part
+      const toSpeak = force ? parts : parts.slice(0, -1);
+      ttsSentenceBuffer = force ? '' : (parts[parts.length - 1] || '');
+      toSpeak.forEach(s => {
+        const clean = s.trim();
+        if (clean.length > 3) _enqueueTTSChunk(clean);
+      });
+    }
+
     outer: while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -1472,6 +1630,10 @@ async function sendMessage() {
         try {
           const parsed = JSON.parse(payload);
           if (parsed.error) throw new Error(parsed.error);
+          // Capture conversation_id from done event so history persists
+          if (parsed.done && parsed.conversation_id) {
+            state.currentConversationId = parsed.conversation_id;
+          }
           if (parsed.token) {
             fullText += parsed.token;
             bubbleEl.innerHTML = renderMarkdown(fullText);
@@ -1480,6 +1642,11 @@ async function sendMessage() {
             cur.textContent = '▋';
             bubbleEl.appendChild(cur);
             scrollToBottom();
+            // Streaming TTS: buffer and flush on sentence boundaries
+            if (ttsActive) {
+              ttsSentenceBuffer += parsed.token;
+              flushTTSSentence(false);
+            }
           }
         } catch (e) { if (e.message && !e.message.includes('JSON')) throw e; }
       }
@@ -1498,7 +1665,7 @@ async function sendMessage() {
 
     const srcBadge = document.createElement('span');
     srcBadge.className = 'alec-src-badge alec-src-llm';
-    srcBadge.textContent = '⚡ Ollama';
+    srcBadge.textContent = '⚡ LLaMA 3.1 (local)';
 
     const fbDiv = document.createElement('div');
     fbDiv.className = 'feedback-btns';
@@ -1527,8 +1694,22 @@ async function sendMessage() {
     state.chatHistory.push({ role: 'assistant', content: fullText });
     if (state.chatHistory.length > 20) state.chatHistory = state.chatHistory.slice(-20);
 
-    // Speak if voice-triggered
-    if (state._voiceTriggered && typeof speakResponse === 'function') {
+    // Refresh chat sidebar (conversation was auto-named by server)
+    setTimeout(loadChatHistorySidebar, 600);
+
+    // Streaming TTS: flush final partial sentence then let queue drain
+    if (ttsActive) {
+      flushTTSSentence(true); // force-flush any remaining buffer
+      // Resume wake word loop after TTS queue empties
+      _ttsQueueOnDrain(() => {
+        setTimeout(() => {
+          if (typeof _voiceListening !== 'undefined' && _voiceListening && !_voiceSpeaking && !_voiceCommandMode) {
+            _startWakeWordLoop();
+          }
+        }, 800);
+      });
+    } else if (state._voiceTriggered && typeof speakResponse === 'function') {
+      // Fallback: non-streaming TTS for edge cases
       speakResponse(fullText).catch(() => {}).finally(() => {
         setTimeout(() => {
           if (typeof _voiceListening !== 'undefined' && _voiceListening && !_voiceSpeaking && !_voiceCommandMode) {
@@ -1826,82 +2007,461 @@ switchPanel = function(panelId) {
 
 let _currentSkillConfig = null;
 
+// ── Helper: render a single credential field ──────────────────
+function renderCredField(f, isFilled) {
+  const ph = isFilled ? '(already set — leave blank to keep)' : (f.placeholder || '');
+  const isPass = f.type === 'password';
+  return `<div class="cred-field">
+    <div class="cred-label">
+      ${escapeHtml(f.label)}
+      ${f.required ? '<span class="cred-required">*</span>' : ''}
+      ${isFilled ? '<span class="cred-set-badge">✓ set</span>' : ''}
+    </div>
+    <div class="cred-input-wrap">
+      <input
+        type="${isPass ? 'password' : (f.type || 'text')}"
+        class="input-field skill-config-input"
+        data-key="${escapeHtml(f.key)}"
+        data-env="${escapeHtml(f.envVar || f.key)}"
+        placeholder="${escapeHtml(ph)}"
+        autocomplete="off"
+      >
+      ${isPass ? `<button type="button" class="cred-toggle-btn" onclick="togglePwVisibility(this)" title="Show/hide">👁</button>` : ''}
+    </div>
+    ${f.hint ? `<div class="cred-hint">${escapeHtml(f.hint)}</div>` : ''}
+  </div>`;
+}
+
+// ── Show/hide password field ──────────────────────────────────
+window.togglePwVisibility = function(btn) {
+  const input = btn.closest('.cred-input-wrap')?.querySelector('input');
+  if (!input) return;
+  const isHidden = input.type === 'password';
+  input.type = isHidden ? 'text' : 'password';
+  btn.textContent = isHidden ? '🙈' : '👁';
+};
+
+// ── Show/hide all values via "Reveal credentials" ─────────────
+window.revealSkillCredentials = async function(skillId) {
+  const btn = document.getElementById('skill-reveal-btn');
+  const box = document.getElementById('skill-revealed-box');
+  if (!btn || !box) return;
+
+  if (box.style.display === 'block') {
+    box.style.display = 'none';
+    btn.textContent = '👁 Reveal stored credentials';
+    return;
+  }
+
+  btn.textContent = '⏳ Loading…';
+  btn.disabled = true;
+  try {
+    const data = await api('POST', `/api/connectors/${skillId}/reveal`);
+    const values = data.values || {};
+    if (Object.keys(values).length === 0) {
+      box.textContent = '(no credentials stored for this skill)';
+    } else {
+      box.textContent = Object.entries(values).map(([k,v]) => `${k} = ${v}`).join('\n');
+    }
+    box.style.display = 'block';
+    btn.textContent = '🙈 Hide credentials';
+  } catch (e) {
+    toast('Could not reveal: ' + e.message, 'error');
+    btn.textContent = '👁 Reveal stored credentials';
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+// ── MS365: open instance config form ─────────────────────────
+window.openInstanceForm = async function(skillId, instanceId) {
+  const skill = _currentSkillConfig;
+  if (!skill) return;
+  const fields = skill.instanceFields || skill.fields || [];
+
+  let existingVals = {};
+  if (instanceId) {
+    try {
+      const d = await api('POST', `/api/connectors/${skillId}/instances/${instanceId}/reveal`);
+      existingVals = d.values || {};
+    } catch {}
+  }
+
+  const fieldsEl = document.getElementById('skill-config-fields');
+  const existing = instanceId ? (skill._instances || []).find(i => i.id === instanceId) : null;
+  const nameVal  = existing?.name || '';
+
+  fieldsEl.innerHTML = `
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;">
+      <button class="btn btn-ghost btn-sm" onclick="renderInstanceList('${escapeHtml(skillId)}')">← Back</button>
+      <span style="font-weight:700;">${instanceId ? 'Edit Account' : 'Add Microsoft 365 Account'}</span>
+    </div>
+    <div class="cred-field">
+      <div class="cred-label">Account Name <span class="cred-required">*</span></div>
+      <div class="cred-input-wrap">
+        <input type="text" class="input-field" id="inst-name" placeholder="e.g. STOA Group, CampusRentals…" value="${escapeHtml(nameVal)}">
+      </div>
+    </div>
+    ${fields.map(f => renderCredField(f, !!(existingVals[f.key]))).join('')}
+    <button class="btn btn-primary" style="width:100%;margin-top:8px;" onclick="saveInstance('${escapeHtml(skillId)}','${instanceId || ''}')">
+      ${instanceId ? '💾 Update Account' : '➕ Add Account'}
+    </button>`;
+
+  // Pre-fill revealed values
+  Object.entries(existingVals).forEach(([k,v]) => {
+    const input = fieldsEl.querySelector(`[data-key="${k}"]`);
+    if (input && v) { input.value = v; input.type = 'text'; }
+  });
+};
+
+window.saveInstance = async function(skillId, instanceId) {
+  const name = document.getElementById('inst-name')?.value?.trim();
+  if (!name) { toast('Account name is required', 'warning'); return; }
+
+  const creds = { name };
+  if (instanceId) creds.instId = instanceId;
+  document.querySelectorAll('.skill-config-input').forEach(el => {
+    const key = el.dataset.env || el.dataset.key;
+    const val = el.value.trim();
+    if (key && val) creds[key] = val;
+  });
+
+  try {
+    await api('POST', `/api/connectors/${skillId}/instances`, creds);
+    toast(`Account "${name}" saved!`, 'success');
+    await renderInstanceList(skillId);
+    loadSkills();
+  } catch (e) {
+    toast('Save failed: ' + e.message, 'error');
+  }
+};
+
+window.deleteInstance = async function(skillId, instanceId, name) {
+  if (!confirm(`Remove "${name}"?`)) return;
+  try {
+    await api('DELETE', `/api/connectors/${skillId}/instances/${instanceId}`);
+    toast('Account removed', 'success');
+    await renderInstanceList(skillId);
+    loadSkills();
+  } catch (e) {
+    toast('Remove failed: ' + e.message, 'error');
+  }
+};
+
+async function renderInstanceList(skillId) {
+  const fieldsEl = document.getElementById('skill-config-fields');
+  let instances = [];
+  try {
+    const d = await api('GET', `/api/connectors/${skillId}/instances`);
+    instances = d.instances || [];
+    if (_currentSkillConfig) _currentSkillConfig._instances = instances;
+  } catch {}
+
+  const rows = instances.length === 0
+    ? `<div style="text-align:center;padding:24px;color:var(--text-dim);font-size:13px;">No accounts yet. Add your first Microsoft 365 connection below.</div>`
+    : `<div class="instances-list">${instances.map(inst => `
+        <div class="instance-row">
+          <div class="instance-row-icon">📎</div>
+          <div class="instance-row-name">${escapeHtml(inst.name)}</div>
+          <div class="instance-row-status">${Object.values(inst.fields || {}).filter(Boolean).length}/${Object.keys(inst.fields || {}).length} fields set</div>
+          <div class="instance-row-btns">
+            <button class="instance-action-btn" onclick="openInstanceForm('${escapeHtml(skillId)}','${escapeHtml(inst.id)}')">✏️ Edit</button>
+            <button class="instance-action-btn danger" onclick="deleteInstance('${escapeHtml(skillId)}','${escapeHtml(inst.id)}','${escapeHtml(inst.name)}')">🗑</button>
+          </div>
+        </div>`).join('')}
+      </div>`;
+
+  fieldsEl.innerHTML = rows + `
+    <button class="add-instance-btn" onclick="openInstanceForm('${escapeHtml(skillId)}','')">
+      ➕ Add Microsoft 365 / SharePoint Account
+    </button>`;
+
+  // Update save button to not be needed for instances (managed inline)
+  const saveBtn = document.getElementById('skill-save-btn');
+  if (saveBtn) { saveBtn.style.display = 'none'; }
+}
+
+// ── Phone verification helper (for iMessage / Twilio skill) ───
+window.sendPhoneVerification = async function() {
+  const btn   = document.getElementById('phone-send-code-btn');
+  const input = document.getElementById('phone-number-input');
+  const status= document.getElementById('phone-verify-status');
+  if (!input) return;
+  const phone = input.value.trim();
+  if (!phone) { toast('Enter a phone number first', 'warning'); return; }
+  btn.disabled = true; btn.textContent = 'Sending…';
+  try {
+    await api('POST', '/api/connectors/sms/send-verification', { phone });
+    status.style.color = 'var(--success)';
+    status.textContent = `✅ Code sent to ${phone}. Check your messages.`;
+    document.getElementById('phone-otp-row')?.style.setProperty('display', 'flex');
+  } catch (e) {
+    status.style.color = 'var(--danger)';
+    status.textContent = '❌ ' + e.message;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Send Code';
+  }
+};
+
+window.verifyPhoneCode = async function() {
+  const phone = document.getElementById('phone-number-input')?.value?.trim();
+  const code  = document.getElementById('phone-otp-input')?.value?.trim();
+  const status= document.getElementById('phone-verify-status');
+  if (!phone || !code) { toast('Enter code first', 'warning'); return; }
+  try {
+    await api('POST', '/api/connectors/sms/verify', { phone, code });
+    status.style.color = 'var(--success)';
+    status.textContent = `✅ Phone verified and saved! ALEC will text you at ${phone}.`;
+    document.getElementById('phone-otp-row')?.style.setProperty('display', 'none');
+    loadSkills();
+  } catch (e) {
+    status.style.color = 'var(--danger)';
+    status.textContent = '❌ ' + e.message;
+  }
+};
+
+// ── Open skill config modal ───────────────────────────────────
 window.openSkillConfig = async function(skillId) {
   try {
-    const data = await api('GET', '/api/skills/available');
-    const skill = (data.skills || []).find(s => s.id === skillId);
+    const data       = await api('GET', '/api/connectors/catalog');
+    const allSkills  = data.catalog?.skills || Object.values(data.catalog?.byCategory || {}).flat();
+    const skill      = allSkills.find(s => s.id === skillId);
     if (!skill) { toast('Skill not found', 'error'); return; }
 
     _currentSkillConfig = skill;
-    const modal = document.getElementById('skill-config-modal');
-    document.getElementById('skill-config-title').textContent = `Configure ${skill.name}`;
-    document.getElementById('skill-config-instructions').textContent = skill.setup_instructions || '';
-    document.getElementById('skill-config-result').textContent = '';
 
-    const fieldsEl = document.getElementById('skill-config-fields');
-    const fields = skill.config_fields || [];
-    if (fields.length === 0) {
-      fieldsEl.innerHTML = '<p style="color:var(--text-muted);">No configuration needed for this skill.</p>';
-    } else {
-      // Get existing config
-      const installed = await api('GET', '/api/skills/installed');
-      const existing = (installed.skills || []).find(s => s.id === skillId);
-      const existingConfig = existing?.config || {};
-
-      fieldsEl.innerHTML = fields.map(f => {
-        const val = existingConfig[f.key] || '';
-        if (f.type === 'select') {
-          return `<div style="margin-bottom:8px;">
-            <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px;">${f.label}</label>
-            <select class="input-field skill-config-input" data-key="${f.key}" style="width:100%;">
-              ${(f.options || []).map(o => `<option value="${o}" ${val===o?'selected':''}>${o}</option>`).join('')}
-            </select>
-          </div>`;
-        }
-        return `<div style="margin-bottom:8px;">
-          <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px;">${f.label}</label>
-          <input type="${f.type || 'text'}" class="input-field skill-config-input" data-key="${f.key}" 
-                 placeholder="${f.placeholder || ''}" value="${val}" style="width:100%;">
-        </div>`;
-      }).join('');
+    // Populate header
+    document.getElementById('skill-modal-icon').textContent     = skill.icon || '🔌';
+    document.getElementById('skill-modal-title').textContent    = `Configure ${skill.name}`;
+    document.getElementById('skill-modal-subtitle').textContent = skill.description || '';
+    const badge = document.getElementById('skill-modal-scope-badge');
+    if (badge) {
+      if (skill.global) {
+        badge.textContent = '🌐 Global (server-level)';
+        badge.className = 'skill-modal-header-badge global';
+      } else {
+        badge.textContent = '👤 Per Account';
+        badge.className = 'skill-modal-header-badge personal';
+      }
     }
 
-    modal.style.display = 'flex';
-    modal.classList.remove('hidden');
+    // Reset status / save button
+    const resultEl = document.getElementById('skill-config-result');
+    if (resultEl) { resultEl.style.display = 'none'; resultEl.textContent = ''; }
+    const saveBtn = document.getElementById('skill-save-btn');
+    if (saveBtn) { saveBtn.style.display = ''; saveBtn.disabled = false; saveBtn.textContent = '💾 Save & Connect'; }
+
+    const fieldsEl = document.getElementById('skill-config-fields');
+
+    // ── Multi-instance skill (Microsoft 365) ─────────────────
+    if (skill.multiInstance) {
+      await renderInstanceList(skillId);
+      document.getElementById('skill-config-modal').classList.add('open');
+      return;
+    }
+
+    // ── Special: iMessage — add phone verification flow ───────
+    if (skillId === 'imessage' || skillId === 'twilio') {
+      const statusData = await api('GET', `/api/connectors/${skillId}/credentials`).catch(() => ({ fields: {} }));
+      const existing   = statusData.fields || {};
+      const fields     = skill.fields || [];
+      const isPhone    = skillId === 'imessage';
+
+      fieldsEl.innerHTML = fields.map(f => renderCredField(f, existing[f.key] === true)).join('') +
+        (isPhone ? `
+          <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
+            <div class="cred-label">📱 Verify Your Phone Number</div>
+            <p style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Enter your number, then tap Send Code. ALEC will text you a 6-digit code to confirm.</p>
+            <div class="phone-verify-row">
+              <input type="tel" id="phone-number-input" class="input-field" placeholder="+15551234567">
+              <button class="send-code-btn" id="phone-send-code-btn" onclick="sendPhoneVerification()">Send Code</button>
+            </div>
+            <div class="otp-verify-row" id="phone-otp-row" style="display:none;">
+              <input type="text" id="phone-otp-input" class="input-field" placeholder="6-digit code" style="letter-spacing:4px;font-size:18px;text-align:center;" maxlength="6">
+              <button class="verify-btn" onclick="verifyPhoneCode()">✓ Verify</button>
+            </div>
+            <div class="verify-status" id="phone-verify-status"></div>
+          </div>` : '');
+    } else {
+      // ── Standard credential fields ────────────────────────
+      const statusData = await api('GET', `/api/connectors/${skillId}/credentials`).catch(() => ({ fields: {} }));
+      const existing   = statusData.fields || {};
+      const fields     = skill.fields || [];
+
+      if (fields.length === 0) {
+        fieldsEl.innerHTML = `<p style="color:var(--text-muted);font-size:13px;text-align:center;padding:20px 0;">
+          This connector works out-of-the-box — no credentials needed.</p>`;
+        if (saveBtn) saveBtn.style.display = 'none';
+      } else {
+        fieldsEl.innerHTML = fields.map(f => renderCredField(f, existing[f.key] === true)).join('');
+      }
+    }
+
+    // ── TenantCloud: bookmarklet + sync UI ───────────────────
+    if (skillId === 'tenantcloud') {
+      // Bookmarklet injects a <script> tag — browser executes natively without eval
+      const bmHref = "javascript:void(function(){var s=document.createElement('script');s.src='http://localhost:3001/api/tenantcloud/bookmarklet.js?_='+Date.now();document.head.appendChild(s)})()";
+      fieldsEl.innerHTML += `
+        <div style="margin-top:18px;padding:14px;background:rgba(34,197,94,.07);border:1px solid rgba(34,197,94,.25);border-radius:8px;">
+          <div style="font-weight:600;font-size:0.85rem;margin-bottom:4px;">🏠 TenantCloud Browser Sync</div>
+          <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:12px;">
+            TenantCloud blocks automated login (reCAPTCHA), so ALEC reads data from your authenticated browser.
+            <strong>One-time:</strong> drag the button below to your bookmarks bar.
+            Click it on any TenantCloud page to instantly push data to ALEC.
+          </div>
+          <a id="tc-bookmarklet-link" href="${bmHref}"
+             style="display:block;padding:10px 14px;background:rgba(34,197,94,.12);border:2px dashed rgba(34,197,94,.4);border-radius:6px;color:var(--text-primary);font-weight:600;font-size:0.85rem;text-align:center;text-decoration:none;cursor:grab;margin-bottom:10px;"
+             title="Drag to bookmarks bar — click it whenever you're on TenantCloud">
+            🔖 Drag to Bookmarks → "Sync ALEC"
+          </a>
+          <button class="btn btn-accent" onclick="syncTenantCloudNow()" style="width:100%;font-size:0.85rem;">
+            ⚡ Sync Now (TenantCloud must be open in Chrome)
+          </button>
+          <div id="tc-sync-status" style="margin-top:8px;font-size:0.78rem;color:var(--text-muted);text-align:center;"></div>
+        </div>
+
+        <div style="margin-top:10px;padding:12px 14px;background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.15);border-radius:8px;">
+          <div style="font-weight:600;font-size:0.82rem;margin-bottom:4px;">Open a new window to log in</div>
+          <button class="btn" id="tc-manual-login-btn" onclick="startTenantCloudLogin()" style="width:100%;font-size:0.82rem;margin-top:4px;">
+            🔓 Open Browser & Log In
+          </button>
+          <div id="tc-login-status" style="margin-top:6px;font-size:0.78rem;color:var(--text-muted);text-align:center;"></div>
+        </div>`;
+    }
+
+    // Add "Reveal credentials" button at bottom (for all non-empty skills)
+    if ((skill.fields || []).length > 0) {
+      fieldsEl.innerHTML += `
+        <button id="skill-reveal-btn" class="cred-reveal-btn" onclick="revealSkillCredentials('${escapeHtml(skillId)}')">
+          👁 Reveal stored credentials
+        </button>
+        <div id="skill-revealed-box" class="cred-revealed-box" style="display:none;"></div>`;
+    }
+
+    document.getElementById('skill-config-modal').classList.add('open');
   } catch (e) {
     toast('Failed to load skill config: ' + e.message, 'error');
+    console.error('[openSkillConfig]', e);
+  }
+};
+
+window.startTenantCloudLogin = async function() {
+  const btn    = document.getElementById('tc-manual-login-btn');
+  const status = document.getElementById('tc-login-status');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Opening Chrome…'; }
+  if (status) status.textContent = 'Chrome will open on this Mac. Log in to TenantCloud, then come back here.';
+  try {
+    await api('POST', '/api/tenantcloud/manual-login', {});
+    if (status) status.textContent = '✅ Chrome opened — log in and ALEC will capture your session automatically. You\'ll get an iMessage when done.';
+    if (btn) { btn.textContent = '⏳ Waiting for login…'; }
+    // Poll status every 5s until authenticated
+    const poll = setInterval(async () => {
+      try {
+        const s = await api('GET', '/api/tenantcloud/status');
+        if (s.authenticated) {
+          clearInterval(poll);
+          if (status) status.textContent = '✅ Logged in! TenantCloud is connected.';
+          if (btn) { btn.disabled = false; btn.textContent = '✅ Connected'; }
+          loadSkills();
+        }
+      } catch (_) {}
+    }, 5000);
+    // Stop polling after 6 minutes
+    setTimeout(() => clearInterval(poll), 360000);
+  } catch (err) {
+    if (status) status.textContent = '❌ ' + err.message;
+    if (btn) { btn.disabled = false; btn.textContent = '🔓 Open Browser & Log In'; }
+  }
+};
+
+/**
+ * "Sync Now" — asks the server to inject the bookmarklet script into the
+ * TenantCloud Chrome tab via the DevTools MCP (server-side Chrome control).
+ * Falls back gracefully if the tab isn't open.
+ */
+window.syncTenantCloudNow = async function() {
+  const status = document.getElementById('tc-sync-status');
+  if (status) status.textContent = '⏳ Triggering sync…';
+  try {
+    const result = await api('POST', '/api/tenantcloud/inject-sync', {});
+    if (result.ok) {
+      if (status) status.textContent = '✅ Sync triggered! ALEC is pulling your TenantCloud data now.';
+      // Check cache in 3s
+      setTimeout(async () => {
+        try {
+          const cache = await api('GET', '/api/tenantcloud/cache');
+          const count = cache.keys?.length || 0;
+          if (count > 0 && status) {
+            status.textContent = `✅ Synced ${count} data sets from TenantCloud.`;
+          }
+        } catch (_) {}
+      }, 3000);
+    } else {
+      if (status) status.textContent = result.message || '⚠️ Could not reach TenantCloud tab. Make sure TenantCloud is open in Chrome, then click the bookmarklet instead.';
+    }
+  } catch (err) {
+    if (status) status.textContent = '⚠️ ' + err.message + ' — use the bookmarklet instead while on TenantCloud.';
   }
 };
 
 window.closeSkillConfig = function() {
-  const modal = document.getElementById('skill-config-modal');
-  modal.style.display = 'none';
-  modal.classList.add('hidden');
+  document.getElementById('skill-config-modal').classList.remove('open');
   _currentSkillConfig = null;
 };
 
+// Close on overlay click
+document.getElementById('skill-config-modal')?.addEventListener('click', function(e) {
+  if (e.target === this) closeSkillConfig();
+});
+
 window.saveSkillConfig = async function() {
   if (!_currentSkillConfig) return;
-  const config = {};
+  const skillId = _currentSkillConfig.id;
+
+  const credentials = {};
   document.querySelectorAll('.skill-config-input').forEach(el => {
-    const key = el.dataset.key;
+    const key = el.dataset.env || el.dataset.key;
     const val = el.value.trim();
-    if (key && val) config[key] = val;
+    if (key && val) credentials[key] = val;
   });
 
   const resultEl = document.getElementById('skill-config-result');
+  const saveBtn  = document.getElementById('skill-save-btn');
+  saveBtn.disabled = true;
+  saveBtn.textContent = '⏳ Saving…';
+
   try {
-    // First install if not already
-    await api('POST', '/api/skills/install', { skill_id: _currentSkillConfig.id, config });
-    // Then configure
-    await api('POST', '/api/skills/configure', { skill_id: _currentSkillConfig.id, config });
-    resultEl.style.color = 'var(--success-color)';
-    resultEl.textContent = '✅ Connected and saved! Credentials are encrypted.';
+    await api('POST', `/api/connectors/${skillId}/credentials`, credentials);
+
+    if (resultEl) {
+      resultEl.style.display = 'block';
+      resultEl.style.color   = 'var(--text-muted)';
+      resultEl.textContent   = 'Saved. Testing connection…';
+    }
+
+    // Live connection test
+    try {
+      const statusData = await api('GET', `/api/connectors/${skillId}/status`);
+      const ok = !!(statusData.connected || statusData.authenticated || statusData.configured || statusData.available);
+      if (resultEl) {
+        resultEl.style.color   = ok ? 'var(--success)' : 'var(--warning)';
+        resultEl.textContent   = ok
+          ? `✅ Connected and verified! Ready to use in chat.`
+          : `⚠️ Saved, but couldn't confirm connection: ${statusData.error || 'check credentials and try again'}`;
+      }
+    } catch { /* status check is optional */ }
+
     loadSkills();
-    setTimeout(closeSkillConfig, 1500);
+    setTimeout(closeSkillConfig, 3000);
   } catch (e) {
-    resultEl.style.color = 'var(--danger-color)';
-    resultEl.textContent = 'Failed: ' + e.message;
+    if (resultEl) {
+      resultEl.style.display = 'block';
+      resultEl.style.color   = 'var(--danger)';
+      resultEl.textContent   = '❌ Save failed: ' + e.message;
+    }
+  } finally {
+    saveBtn.disabled = false;
+    saveBtn.textContent = '💾 Save & Connect';
   }
 };
 
@@ -1934,6 +2494,58 @@ function _loadVoiceState() {
 // ── TTS: speak A.L.E.C.'s response out loud ──
 // Active audio element for stopping playback
 let _ttsAudio = null;
+
+// ── Streaming TTS chunk queue ──────────────────────────────────────
+// Sentences arrive one by one as the LLM streams. We queue them and
+// play them back-to-back using SpeechSynthesisUtterance so there's
+// no gap between sentences.
+const _ttsChunkQueue   = [];
+let   _ttsDrainCbs     = [];
+let   _ttsChunkPlaying = false;
+
+function _enqueueTTSChunk(text) {
+  if (!text || !text.trim()) return;
+  _ttsChunkQueue.push(text.trim());
+  if (!_ttsChunkPlaying) _playNextTTSChunk();
+}
+
+function _playNextTTSChunk() {
+  if (!_ttsChunkQueue.length) {
+    _ttsChunkPlaying = false;
+    _ttsDrainCbs.forEach(cb => cb());
+    _ttsDrainCbs = [];
+    return;
+  }
+  _ttsChunkPlaying = true;
+  _voiceSpeaking   = true;
+  const text = _ttsChunkQueue.shift();
+
+  // Prefer browser speechSynthesis for low latency (no server round-trip)
+  if (window.speechSynthesis) {
+    const utt = new SpeechSynthesisUtterance(text);
+    utt.lang = 'en-AU';
+    utt.rate = 1.05;
+    const voices = window.speechSynthesis.getVoices();
+    const preferred = voices.find(v => v.lang === 'en-AU')
+      || voices.find(v => v.lang === 'en-GB')
+      || voices.find(v => v.lang.startsWith('en'));
+    if (preferred) utt.voice = preferred;
+    utt.onend   = () => _playNextTTSChunk();
+    utt.onerror = () => _playNextTTSChunk();
+    window.speechSynthesis.speak(utt);
+  } else {
+    _ttsChunkPlaying = false;
+    _playNextTTSChunk();
+  }
+}
+
+function _ttsQueueOnDrain(cb) {
+  if (!_ttsChunkPlaying && !_ttsChunkQueue.length) {
+    cb(); // already drained
+  } else {
+    _ttsDrainCbs.push(cb);
+  }
+}
 
 async function speakResponse(text) {
   // Server-side TTS via edge-tts (works in iframes, HA panels, everywhere)

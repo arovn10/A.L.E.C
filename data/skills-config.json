@@ -1,0 +1,48 @@
+{
+  "users": {
+    "1": {
+      "tenantcloud": {
+        "TENANTCLOUD_EMAIL": "4a9efd88d0d5444ebbd0bcd200b1a076:87dc49d8e49cc19873e73ac466f8fa9153f588246dfd1e3bd1cad2c87ca2beb2",
+        "TENANTCLOUD_PASSWORD": "38eb3bb6721b8616fafa1fb4caa4222e:1516bbf01cb099e976df55fa073f6613"
+      }
+    },
+    "_legacy": {
+      "github": {
+        "GITHUB_TOKEN": "469849d42604a93936cfa10da41dbcc5:ca9c6d2db8d1af812f1a721a920a79bf9943e10710145e4b81599e1f0544bf90"
+      },
+      "render": {
+        "RENDER_API_KEY": "c9354f66ab8c10e9496732f68923052c:7556d20d6dc9082b82a9fdedde341141c95bdfb84b4e832a54ee1dbfb9d8cf81"
+      },
+      "tenantcloud": {
+        "TENANTCLOUD_API_KEY": "bff8de72287a074e53aa5e4b1a45a37d:45d49ae31eca93efca7f73567fb05e79fbdaabea2bc16522ac803f1215432084",
+        "TENANTCLOUD_EMAIL": "1f59087e7b94ee082ae0e99ab1c4bcb1:a8e6576bb63365edccc116120e5371acc7e5ab7a3e590c734c9f0287107638e8",
+        "TENANTCLOUD_PASSWORD": "713a1819d20f77db38b3400eedd62edf:cc63839435970b29706b8b93ae9f78b8"
+      }
+    },
+    "arovner@campusrentalsllc.com": {
+      "twilio": {
+        "TWILIO_ACCOUNT_SID": "ef3c46ffa3515c84ef3981e9f116ac7f:94bdf6ce01948e6b70e0c2669d51b308d687a260767c4762525a23de07a0d1c6540dd87e8a5dafa3007b8c42c9e89209",
+        "TWILIO_AUTH_TOKEN": "8ff0d842d2d1c0ddab99bee802eb5d58:a6da70aea7d2f3cfa2a3adfd6388ba12fec9f1a7d05eee179f6073f2cdac4ee62e4d8ce11e967724154c070820c82356",
+        "TWILIO_FROM_NUMBER": "ae9c7dc3a89a20662453283a4047cf29:dc2b5a32dc4242e5463c013970d953a9"
+      }
+    }
+  },
+  "global": {
+    "imessage": {
+      "OWNER_PHONE": "682e1518262366a8682fdee9dec5d15a:0624a6edeb57ad191c50ad225f423247"
+    },
+    "stoa": {
+      "STOA_DB_HOST": "4754af59c3d7a9c28b5dc6f7046a23ad:e1b83d212bc00b09d06682b050e5614fd586dd9713e520b22ed835a596500ed9bdfdae98110ba5f485e2ada6a5217eff",
+      "STOA_DB_NAME": "c9b080b83f940974e226cab0549656bd:b319de23891841ea878e2916317dd91b",
+      "STOA_DB_USER": "de254338c4fcfb093308a3c46d3341ea:2da4fd4323c6ee993ba2ede722ce17a7",
+      "STOA_DB_PASSWORD": "9402f8523e97d689824a44c476eb8c54:9d196964a5caf37819f2b6f0d4b1c02b"
+    },
+    "homeassistant": {
+      "HOME_ASSISTANT_URL": "1a19e94367839e259a05b8397e2861fc:bd5dad7995037efc201e0fccc7ecf093ea8e4412bf29fb3b14f0e1d0744c7f78",
+      "HOME_ASSISTANT_ACCESS_TOKEN": "47661c957c4cbb81dae1d7dcfada728d:17ec9aeaf716537f92c02cfd0bfcc678880364b72a4c35b2110d250056b4df1e"
+    },
+    "vscode": {},
+    "task-scheduler": {}
+  },
+  "custom": []
+}

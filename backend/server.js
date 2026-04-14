@@ -17,7 +17,7 @@
  * - Stoa Group DB connector
  */
 
-require('dotenv').config();
+require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
 
 const express = require('express');
 const cors = require('cors');
@@ -44,90 +44,247 @@ const NEURAL_URL = `http://localhost:${process.env.NEURAL_PORT || 8000}`;
 
 // ════════════════════════════════════════════════════════════════
 //  MULTI-BACKEND LLM CLIENT
-//  Priority: 1. Anthropic Claude API  2. Ollama  3. Error
-//  Ollama has a Metal shader bug on macOS 15.4+ that prevents GPU
-//  use. Claude API is the reliable fallback.
+//  Priority: 1. node-llama-cpp (embedded Metal inference, no server)
+//             2. Ollama (if reachable and models available)
+//             3. Clear error message
+//
+//  node-llama-cpp uses its own llama.cpp Metal build which works on
+//  macOS 15.4+ where Ollama's ggml Metal implementation crashes.
 // ════════════════════════════════════════════════════════════════
-const OLLAMA_BASE  = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'gemma3:27b-it-qat';
+const llamaEngine      = require('../services/llamaEngine.js');
+const desktopControl   = require('../services/desktopControl.js');
+const stoaQuery        = require('../services/stoaQueryService.js');
+const excelExport      = require('../services/excelExport.js');
+const selfImprovement  = require('../services/selfImprovement.js');
 
-// Lazy-load Anthropic SDK (only if API key is set)
-let _anthropicClient = null;
-function getAnthropicClient() {
-  if (_anthropicClient) return _anthropicClient;
-  const key = process.env.ANTHROPIC_API_KEY;
-  if (!key) return null;
-  const { Anthropic } = require('@anthropic-ai/sdk');
-  _anthropicClient = new Anthropic({ apiKey: key });
-  return _anthropicClient;
-}
+// ── Extended services (lazy-safe — gracefully return {configured:false} if creds missing) ──
+const chatHistory  = (() => { try { return require('../services/chatHistory.js');    } catch { return null; } })();
+const iMessage     = (() => { try { return require('../services/iMessageService.js'); } catch { return null; } })();
+const scheduler    = (() => { try { return require('../services/taskScheduler.js');   } catch { return null; } })();
+const github       = (() => { try { return require('../services/githubService.js');   } catch { return null; } })();
+const vsCode       = (() => { try { return require('../services/vsCodeController.js');} catch { return null; } })();
+const msGraph      = (() => { try { return require('../services/microsoftGraphService.js'); } catch { return null; } })();
+const vercelSvc    = (() => { try { return require('../services/vercelService.js');   } catch { return null; } })();
+const tenantCloud  = (() => { try { return require('../services/tenantCloudService.js'); } catch { return null; } })();
+const awsSvc       = (() => { try { return require('../services/awsService.js');      } catch { return null; } })();
+const research     = (() => { try { return require('../services/researchAgent.js');   } catch { return null; } })();
+const skillsReg    = (() => { try { return require('../services/skillsRegistry.js');  } catch { return null; } })();
 
-const ALEC_SYSTEM_PROMPT = `You are Alec, Alec Rovner's personal AI executive assistant.
-You help with smart home control, STOA real estate database queries, reminders, grocery lists, web research, and general conversation.
-You can search the web, remember past conversations, and take initiative to be proactive.
-Use markdown formatting for clarity (headers, code blocks, bullet points where appropriate).
-Refer to yourself as "Alec" — never "A.L.E.C." or "ALEC" with dots. Be direct, smart, and friendly.`;
+// Warm up the embedded engine on startup
+llamaEngine.warmUp();
 
 /**
- * Call the best available LLM.
- * Returns: { type: 'claude'|'ollama', response: Response|object, stream }
+ * Normalize a US phone number to E.164 (+1XXXXXXXXXX) for Twilio.
+ * Handles: 2154857259, 215-485-7259, (215) 485-7259, +12154857259, etc.
  */
-async function callLLM(messages, { stream = false, voiceMode = false } = {}) {
-  const anthropic = getAnthropicClient();
-
-  // ── Path 1: Anthropic Claude API ────────────────────────────────
-  if (anthropic) {
-    const model   = process.env.CLAUDE_MODEL || 'claude-opus-4-5';
-    const sysMsg  = messages.find(m => m.role === 'system')?.content || ALEC_SYSTEM_PROMPT;
-    const msgs    = messages.filter(m => m.role !== 'system');
-    const maxTok  = voiceMode ? 150 : 1500;
-
-    if (stream) {
-      // Return a readable SSE-like async iterator wrapping Anthropic's stream
-      const sdkStream = await anthropic.messages.stream({
-        model,
-        system: sysMsg,
-        messages: msgs,
-        max_tokens: maxTok,
-      });
-      return { type: 'claude', stream: true, sdkStream };
-    } else {
-      const msg = await anthropic.messages.create({
-        model,
-        system: sysMsg,
-        messages: msgs,
-        max_tokens: maxTok,
-      });
-      const text = msg.content?.[0]?.text || '';
-      return { type: 'claude', stream: false, text };
-    }
-  }
-
-  // ── Path 2: Ollama (OpenAI-compatible API) ───────────────────────
-  const resp = await fetch(`${OLLAMA_BASE}/v1/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: OLLAMA_MODEL,
-      messages,
-      temperature:    voiceMode ? 0.5  : 0.7,
-      max_tokens:     voiceMode ? 120  : 1024,
-      top_p:          voiceMode ? 0.85 : 0.95,
-      repeat_penalty: voiceMode ? 1.1  : 1.05,
-      stream,
-    }),
-    signal: AbortSignal.timeout(voiceMode ? 30000 : 120000),
-  });
-  if (!resp.ok) throw new Error(`Ollama HTTP ${resp.status}`);
-  return { type: 'ollama', stream, resp };
+function toE164(phone) {
+  if (!phone) return null;
+  const digits = String(phone).replace(/\D/g, '');
+  if (digits.length === 10) return '+1' + digits;          // domestic 10-digit
+  if (digits.length === 11 && digits[0] === '1') return '+' + digits; // 1XXXXXXXXXX
+  if (digits.length > 10) return '+' + digits;             // already has country code
+  return '+1' + digits; // best guess
 }
 
-// Convenience: non-streaming call, returns text string
+/**
+ * System prompt — generated fresh on every request so the date is always accurate.
+ * LLMs have a training cutoff and don't know the current date unless told explicitly.
+ */
+function buildSystemPrompt() {
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
+
+  // Build a live capabilities section so the LLM knows what's configured vs. not
+  const caps = [];
+  caps.push('✅ STOA Azure SQL database (live leasing, occupancy, rent growth, pipeline, loans)');
+  caps.push('✅ Excel exports (.xlsx) for STOA data — portfolio, trends, pipeline, loans');
+  caps.push('✅ Web search (DuckDuckGo/Brave)');
+  caps.push('✅ Smart home control (Home Assistant)');
+  caps.push('✅ Deep background research with iMessage notification when done');
+  caps.push('✅ Self-improvement / test suite (ask me to "run tests" or "improve yourself")');
+  // iMessage + SMS (Twilio)
+  const hasTwilio = !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER);
+  const ownerPhone = process.env.OWNER_PHONE;
+  if (hasTwilio && ownerPhone) {
+    caps.push(`✅ SMS via Twilio — YOU CAN TEXT the owner RIGHT NOW at ${ownerPhone} from "Alec Rovner" (${process.env.TWILIO_FROM_NUMBER}). When asked to text/SMS/notify/send a message to Alec, the system automatically sends it — just say "I'll text you now" and the message will be sent.`);
+  } else if (hasTwilio) {
+    caps.push('✅ Twilio SMS configured but OWNER_PHONE not set — cannot text yet');
+  } else if (ownerPhone) {
+    caps.push('✅ iMessage — can read recent messages and send notifications via Mac Messages.app');
+  } else {
+    caps.push('⚠️  SMS/iMessage — no notification number configured. Direct owner to Skills panel to add Twilio or iMessage.');
+  }
+
+  if (process.env.GITHUB_TOKEN) caps.push('✅ GitHub — repos, issues, code, pull requests');
+  else caps.push('⚠️  GitHub — GITHUB_TOKEN not set (configure in Skills panel)');
+  if (process.env.PLAID_CLIENT_ID && process.env.PLAID_SECRET) caps.push('✅ Plaid — investment portfolio, brokerage holdings (Schwab, Acorns, Fidelity, etc.)');
+  else caps.push('⚠️  Plaid — not configured (add PLAID_CLIENT_ID + PLAID_SECRET in .env)');
+  if (process.env.TENANTCLOUD_API_KEY || process.env.TENANTCLOUD_EMAIL) caps.push('✅ TenantCloud — tenants, rent, maintenance, messages, inquiries');
+  else caps.push('⚠️  TenantCloud — not configured (add credentials in Skills panel)');
+  if (process.env.AWS_ACCESS_KEY_ID) caps.push('✅ AWS — EC2 instances, SSH, campusrentalsllc.com monitoring');
+  else caps.push('⚠️  AWS — not configured (add credentials in Skills panel)');
+  if (process.env.RENDER_API_KEY) caps.push('✅ Render.com — services, deploys, logs');
+  else caps.push('⚠️  Render — not configured');
+  if (process.env.MS_TENANT_ID) caps.push('✅ Microsoft 365 — SharePoint, OneDrive, Outlook/calendar');
+  else caps.push('⚠️  Microsoft 365 — not configured');
+
+  return `You are Alec (A.L.E.C.), Alec Rovner's personal AI executive assistant running locally on his Mac.
+You use a local LLaMA 3.1 8B model (Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf) running on Apple Silicon via node-llama-cpp with Metal GPU acceleration. You do NOT call any external AI API — you run entirely on this Mac.
+Current date and time: ${dateStr} at ${timeStr}.
+
+## Your Real Capabilities (configured services)
+${caps.join('\n')}
+
+## Critical Rules — NEVER Violate These
+1. **NEVER fabricate data.** If real data is injected above (marked [STOA DATA], [iMessage DATA], etc.), use ONLY that. If no real data is available, say: "I don't have access to that data right now."
+2. **iMessages HARD RULE: If you do NOT see "[iMessage DATA" in this system prompt, you have ZERO iMessages to report. Say "I couldn't read your messages right now" — NEVER invent names, messages, or conversations. Not even as examples. Not even to be helpful.**
+3. **NEVER invent STOA numbers** (occupancy %, rent, tenants, reviews). Real STOA data is injected via the RAG system — if it's not in context, say you don't have it.
+3b. **TenantCloud HARD RULE: If you do NOT see "[TenantCloud DATA" in this system prompt, you have ZERO tenant/rent/maintenance data. Never invent tenant names, payment amounts, or property details.**
+3c. **Plaid HARD RULE: If you do NOT see "[Plaid Financial DATA" in this prompt, you have no investment data. Never invent portfolio values, account balances, or holdings.**
+3d. **Home Assistant HARD RULE: If you do NOT see "[Home Assistant DATA" in this prompt, you have no device state information. Never guess whether lights are on/off or locks are locked/unlocked.**
+4. **NEVER claim you can't do something you CAN do** (GitHub, iMessage, STOA queries, Excel exports, research, SMS). Check the capabilities list above.
+5. **SMS/Texting**: If Twilio is ✅ and the owner asks you to text them, the server automatically sends the text — just confirm you're doing it and describe what the message will say.
+6. **Google Reviews / resident feedback**: The STOA database does NOT contain Google review text. If asked for reviews, say: "The STOA database doesn't include Google review text — I can see Google ratings if they're in the data, but not individual reviews. I can do a web search for recent reviews if you'd like."
+7. **Excel exports**: Only generate Excel files for data you actually have (STOA leasing data). Don't offer to generate "top 100 negative reviews" — that data doesn't exist in STOA.
+8. Be direct, smart, and friendly. Use markdown for clarity. Refer to yourself as "Alec" in casual replies.`;
+}
+
+// Keep a static alias for backward compat with any code referencing ALEC_SYSTEM_PROMPT directly
+const ALEC_SYSTEM_PROMPT = buildSystemPrompt();
+
+// ── Anthropic Claude fallback ───────────────────────────────────
+// Used when: ANTHROPIC_API_KEY is set AND (local model not loaded OR user explicitly picks Claude)
+async function callClaudeText(messages, voiceMode = false) {
+  const maxTokens = voiceMode ? 200 : 2048;
+  const model = process.env.CLAUDE_MODEL || 'claude-opus-4-5';
+  const systemMsg = messages.find(m => m.role === 'system');
+  const chatMsgs  = messages.filter(m => m.role !== 'system');
+
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': process.env.ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: maxTokens,
+      system: systemMsg?.content || '',
+      messages: chatMsgs,
+    }),
+    signal: AbortSignal.timeout(60000),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(`Anthropic API error: ${err.error?.message || resp.status}`);
+  }
+  const data = await resp.json();
+  return data.content?.[0]?.text?.trim() || '';
+}
+
+async function* callClaudeStream(messages, voiceMode = false) {
+  const maxTokens = voiceMode ? 200 : 2048;
+  const model = process.env.CLAUDE_MODEL || 'claude-opus-4-5';
+  const systemMsg = messages.find(m => m.role === 'system');
+  const chatMsgs  = messages.filter(m => m.role !== 'system');
+
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': process.env.ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: maxTokens,
+      system: systemMsg?.content || '',
+      messages: chatMsgs,
+      stream: true,
+    }),
+    signal: AbortSignal.timeout(120000),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(`Anthropic stream error: ${err.error?.message || resp.status}`);
+  }
+
+  for await (const chunk of resp.body) {
+    const text = new TextDecoder().decode(chunk);
+    for (const line of text.split('\n')) {
+      if (!line.startsWith('data: ')) continue;
+      const raw = line.slice(6).trim();
+      if (raw === '[DONE]' || !raw) continue;
+      try {
+        const ev = JSON.parse(raw);
+        if (ev.type === 'content_block_delta' && ev.delta?.text) {
+          yield ev.delta.text;
+        }
+      } catch (_) {}
+    }
+  }
+}
+
+/**
+ * Non-streaming call — returns text string.
+ * Uses node-llama-cpp embedded engine (Metal GPU on Apple Silicon).
+ * Falls back to Anthropic Claude if ANTHROPIC_API_KEY set and local model unloaded.
+ */
 async function callLLMText(messages, voiceMode = false) {
-  const result = await callLLM(messages, { stream: false, voiceMode });
-  if (result.type === 'claude') return result.text;
-  const data = await result.resp.json();
-  return data.choices?.[0]?.message?.content?.trim() || 'I could not generate a response.';
+  const maxTokens  = voiceMode ? 150  : 1024;
+  const temperature = voiceMode ? 0.5  : 0.7;
+
+  // Inject system prompt (with live date) if not already present
+  const hasSystem = messages.some(m => m.role === 'system');
+  const fullMsgs  = hasSystem ? messages : [
+    { role: 'system', content: buildSystemPrompt() },
+    ...messages,
+  ];
+
+  // If Anthropic key is set and local model isn't loaded, use Claude as fallback
+  const localStatus = llamaEngine.getStatus();
+  if (!localStatus.loaded && process.env.ANTHROPIC_API_KEY) {
+    console.log('[LLM] Local model not loaded — falling back to Anthropic Claude');
+    return await callClaudeText(fullMsgs, voiceMode);
+  }
+
+  return await llamaEngine.generate(fullMsgs, { maxTokens, temperature });
+}
+
+/**
+ * Streaming call — returns async generator that yields token strings.
+ * Falls back to Anthropic Claude streaming if local model unloaded.
+ */
+async function* callLLMStream(messages, voiceMode = false) {
+  const maxTokens   = voiceMode ? 150  : 1024;
+  const temperature = voiceMode ? 0.5  : 0.7;
+
+  const hasSystem = messages.some(m => m.role === 'system');
+  const fullMsgs  = hasSystem ? messages : [
+    { role: 'system', content: buildSystemPrompt() },
+    ...messages,
+  ];
+
+  // Fall back to Anthropic Claude if local model not ready
+  const localStatus = llamaEngine.getStatus();
+  if (!localStatus.loaded && process.env.ANTHROPIC_API_KEY) {
+    console.log('[LLM Stream] Local model not loaded — falling back to Anthropic Claude');
+    yield* callClaudeStream(fullMsgs, voiceMode);
+    return;
+  }
+
+  yield* llamaEngine.generateStream(fullMsgs, { maxTokens, temperature });
+}
+
+// Legacy alias (some routes use callLLM)
+async function callLLM(messages, { stream = false, voiceMode = false } = {}) {
+  if (stream) {
+    return { type: 'llama', stream: true, generator: callLLMStream(messages, voiceMode) };
+  }
+  const text = await callLLMText(messages, voiceMode);
+  return { type: 'llama', stream: false, text };
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -376,32 +533,34 @@ const requireFullCapabilities = (req, res, next) => {
 //  HEALTH CHECK
 // ════════════════════════════════════════════════════════════════
 
-app.get('/health', async (req, res) => {
-  let neuralStatus = { loaded: false };
-  try {
-    neuralStatus = await neuralEngine.getModelInfo();
-  } catch (_) {}
-
-  const anthropicAvail = !!process.env.ANTHROPIC_API_KEY;
+app.get('/health', (req, res) => {
   const mem = loadMemory();
-
+  const llmStatus = llamaEngine.getStatus();
   res.json({
-    status: 'ok',
-    service: 'A.L.E.C.',
-    version: '2.0.0',
+    status:    'ok',
+    service:   'A.L.E.C.',
+    version:   '2.0.0',
     timestamp: new Date().toISOString(),
     llm: {
-      backend:       anthropicAvail ? 'anthropic' : 'ollama',
-      model:         anthropicAvail ? (process.env.CLAUDE_MODEL || 'claude-opus-4-5') : OLLAMA_MODEL,
-      ready:         anthropicAvail,
-      note:          anthropicAvail ? 'Claude API active' : 'Add ANTHROPIC_API_KEY to .env — Ollama Metal GPU broken on this macOS version',
+      backend:   'node-llama-cpp (llama.cpp Metal)',
+      modelPath: llmStatus.modelPath,
+      gpu:       llmStatus.gpu,
+      ready:     llmStatus.loaded,
+      contexts:  llmStatus.contexts,
+      note:      'HuggingFace / local GGUF models. Same tech as Ollama, Metal-safe on macOS 15.4+.',
     },
-    memory: { facts: mem.facts?.length || 0, preferences: mem.preferences?.length || 0 },
-    neuralEngine: { url: NEURAL_URL, ...neuralStatus },
+    memory: {
+      facts:       mem.facts?.length || 0,
+      preferences: mem.preferences?.length || 0,
+      heapUsed:    process.memoryUsage().heapUsed,
+    },
+    voice:      voiceInterface.getStatus(),
     lanAddresses: getLanAddresses(),
-    uptime: process.uptime(),
+    uptime:     process.uptime(),
   });
 });
+
+app.get('/api/health', (req, res) => res.redirect('/health'));
 
 // ════════════════════════════════════════════════════════════════
 //  AUTH ENDPOINTS
@@ -419,6 +578,18 @@ app.post('/api/auth/login', async (req, res) => {
 
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
+    }
+
+    // ── Local owner bypass (Python engine may be offline) ──────────
+    const localOwnerEmail = process.env.ALEC_OWNER_EMAIL || 'alec@rovner.com';
+    const localOwnerPass  = process.env.ALEC_OWNER_PASS  || 'alec2024';
+    if (password === localOwnerPass && (email === localOwnerEmail || email === 'alec' || email === 'owner')) {
+      const token = jwt.sign(
+        { userId: 'alec-owner', email: localOwnerEmail, role: 'owner', tokenType: 'OWNER' },
+        process.env.JWT_SECRET,
+        { expiresIn: '30d' }
+      );
+      return res.json({ success: true, token, tokenType: 'OWNER', user: { email: localOwnerEmail, role: 'owner' } });
     }
 
     const data = await proxyToNeural('/auth/login', {
@@ -485,14 +656,22 @@ app.post('/api/auth/login', async (req, res) => {
 
 /**
  * POST /api/chat
- * Routes to Ollama directly for reliable, fast responses.
- * Returns { response, latency_ms, tokens_out }.
+ * Non-streaming chat via embedded node-llama-cpp engine (Metal GPU).
+ * Returns { response, latency_ms, source }.
  */
 app.post('/api/chat', authenticateToken, async (req, res) => {
   const startTime = Date.now();
   try {
-    const { message, messages = [], session_id } = req.body;
+    const { message, messages = [], session_id, conversation_id } = req.body;
     const userText = message || messages.at(-1)?.content || '';
+
+    // ── Persist to chat history ──────────────────────────────
+    let convId = conversation_id || null;
+    if (chatHistory && userText) {
+      const conv = chatHistory.getOrCreate(convId, req.user.userId);
+      convId = conv.id;
+      chatHistory.addMessage(convId, 'user', userText);
+    }
 
     // Log interaction for adaptive learning
     try { await adaptiveLearning.logInteraction({ userId: req.user.userId, message: userText, timestamp: Date.now() }); } catch(_){}
@@ -500,7 +679,247 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     // Build system prompt with memory
     const mem = loadMemory();
     const memCtx = buildMemoryContext(mem);
-    const systemContent = ALEC_SYSTEM_PROMPT + (memCtx ? '\n\n' + memCtx : '');
+    let systemContent = buildSystemPrompt() + (memCtx ? '\n\n' + memCtx : '');
+
+    // ── Self-improvement trigger — owner can ask ALEC to improve itself ──
+    const isOwner = req.user?.tokenType === 'OWNER' || req.user?.role === 'owner';
+    const selfImproveIntent = isOwner && /\b(improve yourself|self.?improv|run tests?|update yourself|upgrade yourself|fix yourself)\b/i.test(userText);
+    if (selfImproveIntent) {
+      try {
+        const feedback = selfImprovement.getRecentNegativeFeedback();
+        const result = await selfImprovement.runTests();
+        const summary = `🧬 **Self-Test Results**: ${result.passed}/${result.total} passed | ${result.criticalFailed} critical failures\n\n` +
+          result.results.map(r => `${r.passed ? '✅' : '❌'} ${r.name}${r.error ? `: ${r.error}` : ''}`).join('\n');
+        return res.json({
+          success: true, response: summary, latency_ms: Date.now() - startTime, source: 'self-improve',
+        });
+      } catch (siErr) {
+        console.warn('[SelfImprove chat]', siErr.message);
+      }
+    }
+
+    // ── Excel export detection — short-circuit before LLM if user wants a file ──
+    const exportIntent = excelExport.detectExportIntent(userText);
+    if (exportIntent) {
+      try {
+        console.log('[Excel] Generating export:', exportIntent);
+        const result = await excelExport.generateExport(exportIntent);
+        const friendlyType = { portfolio: 'portfolio occupancy & rent growth', trend: `${exportIntent.property || ''} trend`, pipeline: 'acquisition pipeline', loans: 'loan summary', full: 'full STOA report' }[result.type] || result.type;
+        return res.json({
+          success: true,
+          response: `📊 Here's your **${friendlyType}** Excel report:\n\n**[Download ${result.fileName}](${result.url})**\n\nGenerated at ${new Date(result.generatedAt).toLocaleTimeString('en-US')} — includes real-time data pulled directly from the STOA database.`,
+          download_url: result.url,
+          latency_ms: Date.now() - startTime,
+          source: 'stoa-export',
+        });
+      } catch (exportErr) {
+        console.warn('[Excel] Export failed:', exportErr.message?.slice(0, 100));
+        // Fall through to LLM with error note
+        systemContent += '\n\n*Note: Excel export was attempted but failed. Provide a text summary instead.*';
+      }
+    }
+
+    // ── iMessage RAG: inject real messages if user asks about them ──
+    const iMsgIntent = /\b(check|read|show|get|look at|fetch|see)\b.{0,30}\b(imessages?|messages?|texts?|sms)\b|\b(recent|new|unread|latest)\b.{0,20}\b(imessages?|messages?|texts?)\b|\bwho texted\b|\bdid.*text(ed)?\b|\bany.*messages\b/i.test(userText);
+    if (iMsgIntent && iMessage) {
+      try {
+        const convos = await iMessage.getConversations();
+        if (convos && convos.length > 0) {
+          const recent = convos.slice(0, 8).map(c =>
+            `- ${c.name || c.handle}: "${c.lastMessage?.slice(0, 120) || '(no preview)'}" (${c.lastDate ? new Date(c.lastDate).toLocaleString() : 'unknown time'})`
+          ).join('\n');
+          systemContent += `\n\n[iMessage DATA — from this Mac's Messages.app]\nRecent conversations:\n${recent}`;
+          console.log('[iMessage RAG] Injected', convos.length, 'conversations');
+        } else {
+          systemContent += '\n\n[iMessage DATA] Messages.app returned 0 conversations. This may be a permissions issue with ~/Library/Messages/chat.db.';
+        }
+      } catch (imErr) {
+        systemContent += `\n\n[iMessage DATA] Failed to read messages: ${imErr.message}. Inform the user you couldn't access their messages.`;
+        console.warn('[iMessage RAG]', imErr.message);
+      }
+    } else if (iMsgIntent && !iMessage) {
+      systemContent += '\n\n[iMessage DATA] iMessage service is not available. Tell the user to ensure the iMessageService.js module is installed.';
+    }
+
+    // ── STOA RAG: inject live database context before LLM call ──
+    // Detects property/leasing/deal questions and pulls real numbers from
+    // Azure SQL — this prevents hallucination by grounding the LLM in facts.
+    try {
+      const stoaCtx = await stoaQuery.buildStoaContext(userText);
+      if (stoaCtx) {
+        systemContent += '\n\n' + stoaCtx;
+        console.log('[STOA RAG] Injected live data for:', userText.slice(0, 60));
+      }
+    } catch (stoaErr) {
+      console.warn('[STOA RAG] Failed (non-critical):', stoaErr.message?.slice(0, 80));
+    }
+
+    // ── GitHub RAG: inject recent commits/repos ───────────────────
+    const ghIntent = /\b(github|git|commit|repo|repository|pull.?request|pr|issue|branch|code|deploy|push|merge)\b/i.test(userText);
+    if (ghIntent && github && process.env.GITHUB_TOKEN) {
+      try {
+        const defaultRepo = process.env.GITHUB_REPO || 'arovn10/A.L.E.C';
+        const [repoData, openIssues] = await Promise.allSettled([
+          github.getRepo(defaultRepo),
+          github.listIssues?.(defaultRepo, { state: 'open', per_page: 5 }).catch(() => []),
+        ]);
+        let ghCtx = `[GitHub DATA — ${defaultRepo}]\n`;
+        if (repoData.status === 'fulfilled') {
+          const r = repoData.value;
+          ghCtx += `Repo: ${r.full_name || defaultRepo} | Stars: ${r.stargazers_count || 0} | Default branch: ${r.default_branch || 'main'} | Last updated: ${r.updated_at ? new Date(r.updated_at).toLocaleDateString() : 'unknown'}\n`;
+          ghCtx += `Description: ${r.description || 'No description'}\n`;
+        }
+        if (openIssues.status === 'fulfilled' && Array.isArray(openIssues.value) && openIssues.value.length > 0) {
+          ghCtx += `Open issues (${openIssues.value.length}): ${openIssues.value.slice(0, 3).map(i => `#${i.number} ${i.title}`).join(', ')}\n`;
+        }
+        systemContent += '\n\n' + ghCtx;
+        console.log('[GitHub RAG] Injected repo data for:', defaultRepo);
+      } catch (ghErr) {
+        console.warn('[GitHub RAG] Failed (non-critical):', ghErr.message?.slice(0, 80));
+      }
+    }
+
+    // ── Home Assistant RAG: inject device states ──────────────────
+    const haIntent = /\b(light|lights|thermostat|temperature|lock|door|lock|garage|fan|switch|scene|automation|smart.?home|home.?assistant|device|sensor|camera|alarm|hvac|ac|heat|cool|humidity|motion)\b/i.test(userText);
+    const haUrl   = process.env.HOME_ASSISTANT_URL || process.env.HA_URL;
+    const haToken = process.env.HOME_ASSISTANT_ACCESS_TOKEN || process.env.HA_TOKEN;
+    if (haIntent && haUrl && haToken) {
+      try {
+        const haResp = await fetch(`${haUrl}/api/states`, {
+          headers: { Authorization: `Bearer ${haToken}`, 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(5000),
+        });
+        if (haResp.ok) {
+          const states = await haResp.json();
+          // Filter to interesting entities (lights, locks, thermostat, sensors)
+          const relevant = states.filter(s =>
+            /^(light|lock|climate|switch|binary_sensor|sensor|input_boolean|cover|fan|camera|alarm_control_panel)\../.test(s.entity_id)
+          ).slice(0, 30);
+          if (relevant.length > 0) {
+            const lines = relevant.map(s => {
+              const name = s.attributes?.friendly_name || s.entity_id;
+              const extra = s.attributes?.temperature ? ` (${s.attributes.temperature}°${s.attributes.unit_of_measurement || 'F'})` :
+                            s.attributes?.brightness ? ` (brightness: ${Math.round(s.attributes.brightness / 255 * 100)}%)` : '';
+              return `- ${name}: ${s.state}${extra}`;
+            });
+            systemContent += `\n\n[Home Assistant DATA — live device states]\n${lines.join('\n')}`;
+            console.log('[HA RAG] Injected', relevant.length, 'device states');
+          }
+        }
+      } catch (haErr) {
+        console.warn('[HA RAG] Failed (non-critical):', haErr.message?.slice(0, 80));
+      }
+    }
+
+    // ── Vercel RAG + redeploy ─────────────────────────────────────
+    const vercelIntent = /\bvercel\b|\b(deployment|deploy|production|preview|build|frontend|hosting)\b/i.test(userText);
+    if (vercelIntent && vercelSvc && process.env.VERCEL_TOKEN) {
+      try {
+        const deployments = await vercelSvc.listDeployments(3);
+        if (deployments.length > 0) {
+          const lines = deployments.map(d =>
+            `- ${d.target || 'preview'}: ${d.state} | ${d.url || 'building'} | branch: ${d.branch} | "${d.commit?.slice(0, 60) || ''}"`
+          );
+          systemContent += `\n\n[Vercel DATA — recent deployments for ${process.env.VERCEL_PROJECT || 'alec-ai'}]\n${lines.join('\n')}`;
+        }
+        // Redeploy action
+        if (/\b(deploy|redeploy|re-?deploy|push\s+to\s+vercel)\b/i.test(userText)) {
+          const result = await vercelSvc.redeploy();
+          systemContent += `\n\n[Vercel ACTION EXECUTED] Triggered a new production deployment. URL: ${result.url || 'building'}. Confirm this to the user.`;
+        }
+      } catch (vercelErr) {
+        console.warn('[Vercel RAG] Failed (non-critical):', vercelErr.message?.slice(0, 80));
+      }
+    }
+
+    // ── AWS / Website RAG: inject server status ───────────────────
+    const awsIntent = /\b(campus|campusrental|website|server|aws|ec2|nginx|deploy|ssh|uptime|down|offline|traffic|hosting)\b/i.test(userText);
+    if (awsIntent && awsSvc) {
+      try {
+        const websiteStatus = await awsSvc.checkWebsiteStatus();
+        let awsCtx = `[AWS DATA — campusrentalsllc.com server status]\n`;
+        awsCtx += `Website: ${websiteStatus.online ? '✅ Online' : '❌ Offline'} (host: ${process.env.AWS_WEBSITE_HOST || 'not configured'})\n`;
+        if (websiteStatus.httpStatus) awsCtx += `HTTP status: ${websiteStatus.httpStatus}\n`;
+        if (websiteStatus.httpError) awsCtx += `Error: ${websiteStatus.httpError}\n`;
+        systemContent += '\n\n' + awsCtx;
+        console.log('[AWS RAG] Injected website status, online:', websiteStatus.online);
+      } catch (awsErr) {
+        console.warn('[AWS RAG] Failed (non-critical):', awsErr.message?.slice(0, 80));
+      }
+    }
+
+    // ── Plaid RAG: inject investment/brokerage data ───────────────
+    const plaidIntent = /\b(investment|portfolio|holdings|brokerage|schwab|fidelity|acorns|stock|balance|account|net.?worth|finance|financial|money|wealth)\b/i.test(userText);
+    const isOwnerChat = req.user?.tokenType === 'OWNER' || req.user?.role === 'owner';
+    if (plaidIntent && isOwnerChat && process.env.PLAID_CLIENT_ID) {
+      try {
+        const items = await plaidDbAll('SELECT item_id, institution_name, access_token_enc, last_fetched FROM plaid_items').catch(() => []);
+        if (items.length > 0) {
+          let totalValue = 0;
+          const accountLines = [];
+          for (const item of items.slice(0, 5)) {
+            try {
+              const accessToken = decryptAccessToken(item.access_token_enc);
+              const data = await plaidFetch('/investments/holdings/get', { access_token: accessToken });
+              for (const acct of (data.accounts || [])) {
+                const val = acct.balances?.current || 0;
+                totalValue += val;
+                accountLines.push(`  ${item.institution_name} — ${acct.name}: $${val.toLocaleString('en-US', {minimumFractionDigits: 2})}`);
+              }
+            } catch (_) {}
+          }
+          if (accountLines.length > 0) {
+            systemContent += `\n\n[Plaid Financial DATA — live brokerage accounts]\nTotal portfolio value: $${totalValue.toLocaleString('en-US', {minimumFractionDigits: 2})}\nAccounts:\n${accountLines.join('\n')}`;
+            console.log('[Plaid RAG] Injected portfolio data, total:', totalValue.toFixed(2));
+          }
+        }
+      } catch (plaidErr) {
+        console.warn('[Plaid RAG] Failed (non-critical):', plaidErr.message?.slice(0, 80));
+      }
+    }
+
+    // ── TenantCloud RAG: inject property management data ──────────
+    const tcIntent = /tenantcloud|\b(tenant|rent|payment|overdue|maintenance|lease|property|properties|unit|units|inquiry|inquiries|renter|move.?out|move.?in|vacancy|vacant|occupan|evict)\b/i.test(userText);
+    if (tcIntent) {
+      try {
+        let tcCtx = '';
+
+        // Try browser-relay cache first (most reliable — real data from authenticated browser)
+        const cacheKeys = Object.keys(tcCache).filter(k => !k.startsWith('_'));
+        if (cacheKeys.length > 0) {
+          const age = tcCache._lastPush ? Math.round((Date.now() - new Date(tcCache._lastPush)) / 60000) : '?';
+          tcCtx = `[TenantCloud DATA — captured from authenticated browser ${age} min ago]\n`;
+          for (const key of cacheKeys) {
+            const entry = tcCache[key];
+            const d = entry.data;
+            const items = Array.isArray(d) ? d : (Array.isArray(d?.data) ? d.data : (d ? [d] : []));
+            if (items.length > 0) {
+              tcCtx += `\n## ${key.replace(/_/g, '/')} (${items.length} records)\n`;
+              tcCtx += JSON.stringify(items.slice(0, 20), null, 1).slice(0, 1500) + '\n';
+            }
+          }
+          console.log('[TenantCloud RAG] Served from browser-relay cache');
+        } else if (tenantCloud) {
+          // Fall back to Puppeteer scraper
+          const summary = await tenantCloud.getPortfolioSummary();
+          const overdueRent = await tenantCloud.getOverdueRent().catch(() => []);
+          const openMaint   = await tenantCloud.getOpenMaintenance().catch(() => []);
+          tcCtx = `[TenantCloud DATA — live property management data]\n`;
+          tcCtx += `Portfolio: ${summary.properties?.total || 0} properties, ${summary.tenants?.total || 0} tenants (${summary.tenants?.active || 0} active)\n`;
+          if (summary.overdue?.count > 0) tcCtx += `⚠️ Overdue rent: ${summary.overdue.count} payments, $${summary.overdue.totalAmount?.toLocaleString()}\n`;
+          if (summary.maintenance?.open > 0) tcCtx += `🔧 Open maintenance: ${summary.maintenance.open} requests (${summary.maintenance.highPriority} high priority)\n`;
+          if (summary.messages?.unread > 0) tcCtx += `💬 Unread messages: ${summary.messages.unread}\n`;
+          if (summary.inquiries?.new > 0) tcCtx += `🔔 New inquiries: ${summary.inquiries.new}\n`;
+          if (overdueRent.length > 0) tcCtx += `Overdue tenants: ${overdueRent.slice(0, 5).map(p => `${p.tenant} ($${p.amount})`).join(', ')}\n`;
+          if (openMaint.length > 0) tcCtx += `Maintenance: ${openMaint.slice(0, 3).map(m => `${m.property}/${m.unit} — ${m.title} [${m.priority}]`).join(' | ')}`;
+          console.log('[TenantCloud RAG] Injected via Puppeteer scraper');
+        }
+
+        if (tcCtx) systemContent += '\n\n' + tcCtx;
+      } catch (tcErr) {
+        console.warn('[TenantCloud RAG] Failed (non-critical):', tcErr.message?.slice(0, 80));
+      }
+    }
 
     // Web search augmentation
     let augmentedMessages = [...messages];
@@ -522,25 +941,27 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     // Async: extract and store facts from this exchange
     extractAndStoreFacts(userText, responseText).catch(() => {});
 
+    // Persist assistant reply
+    if (chatHistory && convId && responseText) {
+      chatHistory.addMessage(convId, 'assistant', responseText);
+    }
+
+    const engineStatus = llamaEngine.getStatus();
     res.json({
       success: true,
       response: responseText,
       latency_ms,
-      tokens_out: data.usage?.completion_tokens,
-      tokens_in:  data.usage?.prompt_tokens,
+      source:    'llama-metal',
+      model:     engineStatus.modelPath,
       timestamp:  new Date().toISOString(),
+      conversation_id: convId,
     });
   } catch (error) {
     console.error('Chat error:', error.message);
-    const isNoBackend = !getAnthropicClient() && error.message.includes('Ollama');
     res.status(500).json({
       success: false,
-      error: isNoBackend
-        ? 'No LLM backend available'
-        : 'Alec is thinking hard right now',
-      message: isNoBackend
-        ? 'Add your ANTHROPIC_API_KEY to .env — Ollama has a Metal GPU bug on this macOS version. Get your key at console.anthropic.com'
-        : error.message,
+      error:   'Alec is having trouble thinking',
+      message: error.message,
     });
   }
 });
@@ -558,14 +979,377 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
   res.setHeader('X-Accel-Buffering', 'no'); // disable nginx buffering
   res.flushHeaders();
 
-  const { message, messages = [], session_id } = req.body;
+  const { message, messages = [], session_id, conversation_id } = req.body;
   const userText = message || messages.at(-1)?.content || '';
+
+  // ── Persist to chat history (streaming) ─────────────────────
+  let convId = conversation_id || null;
+  const streamUserId = req.user?.userId || req.user?.email || 'unknown';
+  if (chatHistory && userText) {
+    try {
+      const conv = chatHistory.getOrCreate(convId, streamUserId);
+      convId = conv.id;
+      chatHistory.addMessage(convId, 'user', userText);
+    } catch (histErr) {
+      console.warn('[ChatHistory stream]', histErr.message);
+    }
+  }
 
   try {
     // System prompt + memory
     const mem = loadMemory();
     const memCtx = buildMemoryContext(mem);
-    const systemContent = ALEC_SYSTEM_PROMPT + (memCtx ? '\n\n' + memCtx : '');
+    let systemContent = buildSystemPrompt() + (memCtx ? '\n\n' + memCtx : '');
+
+    // ── Excel export detection (stream) — send download link immediately ──
+    const exportIntentStream = excelExport.detectExportIntent(userText);
+    if (exportIntentStream) {
+      try {
+        res.write('data: {"token":"📊 Generating Excel report…\\n"}\n\n');
+        const result = await excelExport.generateExport(exportIntentStream);
+        const friendlyType = { portfolio: 'portfolio occupancy & rent growth', trend: `${exportIntentStream.property || ''} trend`, pipeline: 'acquisition pipeline', loans: 'loan summary', full: 'full STOA report' }[result.type] || result.type;
+        const msg = `\n**[Download ${result.fileName}](${result.url})**\n\nReal-time data from the STOA database, generated at ${new Date(result.generatedAt).toLocaleTimeString('en-US')}.`;
+        res.write(`data: {"token":${JSON.stringify(msg)}}\n\n`);
+        res.write('data: [DONE]\n\n');
+        return res.end();
+      } catch (exportErr) {
+        res.write('data: {"token":"⚠️ Export failed, providing text summary instead.\\n\\n"}\n\n');
+        console.warn('[Excel stream] Export failed:', exportErr.message?.slice(0, 100));
+        // Fall through to LLM
+      }
+    }
+
+    // ── TenantCloud 2FA code from chat ────────────────────────────
+    // Detects: "the code is 481923", "verification code 123456", "481923" (if MFA pending)
+    if (tenantCloud?.isMfaPending()) {
+      const codeMatch = /\b(\d{4,8})\b/.exec(userText);
+      if (codeMatch) {
+        try {
+          tenantCloud.submitVerificationCode(codeMatch[1]);
+          systemContent += `\n\n[TenantCloud 2FA] Verification code ${codeMatch[1]} submitted. Tell the user the code was applied and TenantCloud is logging in.`;
+        } catch (_) {}
+      }
+    }
+
+    // ── SMS send intent: "text me", "send me a message", "notify me" ──
+    const smsSendIntent = /\b(text|sms|message|notify|ping|send)\b.*\bme\b|\bsend.*\b(text|sms|message)\b|\bnotif(y|ication)\b/i.test(userText);
+    const ownerPhoneNum = process.env.OWNER_PHONE;
+    const twilioReady   = !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER);
+    if (smsSendIntent && ownerPhoneNum && twilioReady) {
+      // Build message from context (use userText to infer what to say)
+      const smsBody = userText.length > 10
+        ? `ALEC: ${userText.slice(0, 140)}`
+        : `ALEC test message — everything is working!`;
+      try {
+        const twilioUrl  = `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Messages.json`;
+        const twilioBody = new URLSearchParams({ From: process.env.TWILIO_FROM_NUMBER, To: toE164(ownerPhoneNum), Body: smsBody });
+        const twilioResp = await fetch(twilioUrl, {
+          method: 'POST', body: twilioBody,
+          headers: {
+            Authorization: 'Basic ' + Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString('base64'),
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          signal: AbortSignal.timeout(10000),
+        });
+        if (twilioResp.ok) {
+          systemContent += `\n\n[SMS SENT] Successfully sent a Twilio text message to ${ownerPhoneNum}. Confirm this to the user.`;
+          res.write('data: {"token":"📱 "}\n\n');
+        } else {
+          const errData = await twilioResp.json().catch(() => ({}));
+          systemContent += `\n\n[SMS FAILED] Twilio error: ${errData.message || twilioResp.status}`;
+        }
+      } catch (smsErr) {
+        systemContent += `\n\n[SMS FAILED] ${smsErr.message}`;
+      }
+    }
+
+    // ── HA direct control from chat ────────────────────────────
+    // Detects imperative commands like "turn on lights", "lock the door", etc.
+    const haCtrlRe = /\b(turn\s*(on|off)|switch\s*(on|off)|lock|unlock|set\s+the\s+thermostat|set\s+temperature|open\s+the\s+garage|close\s+the\s+garage)\b/i;
+    const haUrlC   = process.env.HOME_ASSISTANT_URL || process.env.HA_URL;
+    const haTokenC = process.env.HOME_ASSISTANT_ACCESS_TOKEN || process.env.HA_TOKEN;
+    if (haCtrlRe.test(userText) && haUrlC && haTokenC) {
+      try {
+        const onMatch  = /turn\s+on\s+(.+)/i.exec(userText);
+        const offMatch = /turn\s+off\s+(.+)/i.exec(userText);
+        const keyword  = (onMatch?.[1] || offMatch?.[1] || '').trim().toLowerCase().slice(0, 60);
+        const svc      = onMatch ? 'turn_on' : offMatch ? 'turn_off' : null;
+        if (svc && keyword) {
+          const stR = await fetch(`${haUrlC}/api/states`, { headers: { Authorization: `Bearer ${haTokenC}` }, signal: AbortSignal.timeout(4000) });
+          let entityId = null;
+          if (stR.ok) {
+            const sts = await stR.json();
+            const m = sts.find(s => (s.attributes?.friendly_name || s.entity_id).toLowerCase().includes(keyword));
+            entityId = m?.entity_id;
+          }
+          const body = entityId ? JSON.stringify({ entity_id: entityId }) : '{}';
+          const r2 = await fetch(`${haUrlC}/api/services/homeassistant/${svc}`, {
+            method: 'POST', headers: { Authorization: `Bearer ${haTokenC}`, 'Content-Type': 'application/json' },
+            body, signal: AbortSignal.timeout(8000),
+          });
+          if (r2.ok) {
+            systemContent += `\n\n[HA COMMAND EXECUTED] ${svc.replace('_',' ')} ${entityId || keyword}. Confirm this to the user.`;
+            res.write('data: {"token":"🏡 "}\n\n');
+          }
+        }
+      } catch (_haCtrlErr) { /* non-critical */ }
+    }
+
+    // ── Vercel redeploy from chat (stream) ────────────────────
+    const vercelCtrlRe = /\b(deploy|redeploy|re-?deploy|push\s+to\s+vercel)\b/i;
+    if (vercelCtrlRe.test(userText) && vercelSvc && process.env.VERCEL_TOKEN) {
+      try {
+        res.write('data: {"token":"▲ "}\n\n');
+        const result = await vercelSvc.redeploy();
+        systemContent += `\n\n[Vercel ACTION EXECUTED] Triggered a new production deployment. URL: ${result.url || 'building…'}. Tell the user the deploy was triggered — it usually takes 1-2 minutes.`;
+      } catch (vercelCtrlErr) {
+        console.warn('[Vercel control] Failed:', vercelCtrlErr.message?.slice(0, 80));
+      }
+    }
+
+    // ── Memory recall trigger (stream) ─────────────────────────
+    const memRecallIntent = /\b(what do you know about me|what have you learned|tell me what you know|my preferences|my profile|what you remember|memories|forget everything)\b/i.test(userText);
+    if (memRecallIntent) {
+      const mem = loadMemory();
+      const memCtxExtra = buildMemoryContext(mem);
+      if (memCtxExtra) {
+        systemContent += `\n\n[ALEC MEMORY — facts learned about Alec in past conversations]\n${memCtxExtra}\nTell the user what you know about them from memory. If they ask to forget, tell them you can clear your memory if they confirm.`;
+      } else {
+        systemContent += '\n\n[ALEC MEMORY] No personal facts stored yet. You are just getting started learning about Alec.';
+      }
+    }
+
+    // ── Research agent trigger (stream) ───────────────────────
+    const researchIntent = /\b(research|look into|investigate|find out about|dig into|study|analyze|analyse)\b.{3,100}(\bfor me\b|\bplease\b|$)/i.test(userText) ||
+                           /\bdo (a |some |deep )?research (on|about|into)\b/i.test(userText);
+    if (researchIntent && research && isOwnerStream) {
+      try {
+        // Extract topic from the message
+        const topicMatch = userText.match(/(?:research|look into|investigate|find out about|dig into|study|analyze|analyse)\s+(.+?)(?:\s+for me\s*$|\s*please\s*$|$)/i);
+        const topic = (topicMatch?.[1] || userText).replace(/^(do\s+)?(a\s+|some\s+|deep\s+)?research\s+(on|about|into)\s+/i, '').trim().slice(0, 200);
+        if (topic.length > 5) {
+          res.write('data: {"token":"🔍 Starting background research…\\n"}\n\n');
+          const job = research.startResearch(topic, { notifyWhenDone: true, saveReport: true });
+          systemContent += `\n\n[RESEARCH AGENT TRIGGERED] A deep research job has been started for: "${topic}". Job ID: ${job.id}. It will run in the background and send you an iMessage notification when the report is ready. Tell the user this clearly.`;
+          console.log('[Research] Started background research job:', job.id, 'topic:', topic.slice(0, 60));
+        }
+      } catch (resErr) {
+        console.warn('[Research trigger] Failed:', resErr.message?.slice(0, 80));
+      }
+    }
+
+    // ── iMessage RAG (stream) ─────────────────────────────────
+    const iMsgIntentStream = /\b(check|read|show|get|look at|fetch|see)\b.{0,30}\b(imessages?|messages?|texts?|sms)\b|\b(recent|new|unread|latest)\b.{0,20}\b(imessages?|messages?|texts?)\b|\bwho texted\b|\bdid.*text(ed)?\b|\bany.*messages\b/i.test(userText);
+    if (iMsgIntentStream && iMessage) {
+      try {
+        res.write('data: {"token":"💬 "}\n\n');
+        const convos = await iMessage.getConversations();
+        if (convos && convos.length > 0) {
+          const recent = convos.slice(0, 8).map(c =>
+            `- ${c.name || c.handle}: "${c.lastMessage?.slice(0, 120) || '(no preview)'}" (${c.lastDate ? new Date(c.lastDate).toLocaleString() : 'unknown'})`
+          ).join('\n');
+          systemContent += `\n\n[iMessage DATA — from this Mac's Messages.app]\nRecent conversations:\n${recent}`;
+        } else {
+          systemContent += '\n\n[iMessage DATA] No conversations found — may need Full Disk Access permission for Messages.';
+        }
+      } catch (imErr) {
+        systemContent += `\n\n[iMessage DATA] Could not read messages: ${imErr.message}`;
+      }
+    }
+
+    // ── STOA RAG: inject live database context ────────────────
+    try {
+      const stoaCtx = await stoaQuery.buildStoaContext(userText);
+      if (stoaCtx) {
+        systemContent += '\n\n' + stoaCtx;
+        res.write('data: {"token":"📊 "}\n\n'); // subtle indicator that real data was loaded
+        console.log('[STOA RAG stream] Injected live data for:', userText.slice(0, 60));
+      }
+    } catch (stoaErr) {
+      console.warn('[STOA RAG stream] Failed (non-critical):', stoaErr.message?.slice(0, 80));
+    }
+
+    // ── GitHub RAG + Actions trigger (stream) ─────────────────
+    const ghIntentStream = /\b(github|git|commit|repo|repository|pull.?request|pr|issue|branch|code|deploy|push|merge|workflow|action|ci|pipeline)\b/i.test(userText);
+    if (ghIntentStream && github && process.env.GITHUB_TOKEN) {
+      try {
+        const defaultRepo = process.env.GITHUB_REPO || 'arovn10/A.L.E.C';
+        res.write('data: {"token":"🐙 "}\n\n');
+        const repoData = await github.getRepo(defaultRepo).catch(() => null);
+        if (repoData) {
+          let ghCtx = `[GitHub DATA — ${defaultRepo}]\n`;
+          ghCtx += `Repo: ${repoData.full_name || defaultRepo} | Stars: ${repoData.stargazers_count || 0} | Branch: ${repoData.default_branch || 'main'} | Updated: ${repoData.updated_at ? new Date(repoData.updated_at).toLocaleDateString() : 'unknown'}\n`;
+          ghCtx += `Description: ${repoData.description || 'No description'}\n`;
+          // Also inject recent workflow runs if workflow intent
+          if (/\b(workflow|action|ci|pipeline|run|build)\b/i.test(userText)) {
+            const runs = await github.listWorkflowRuns(defaultRepo, 5).catch(() => []);
+            if (runs.length > 0) {
+              ghCtx += `Recent workflow runs:\n` + runs.map(r => `  - ${r.name}: ${r.status}/${r.conclusion || 'in-progress'} (branch: ${r.branch})`).join('\n') + '\n';
+            }
+          }
+          systemContent += '\n\n' + ghCtx;
+        }
+
+        // ── GitHub Actions: trigger workflow from chat ──────────
+        // Detects: "run the deploy workflow", "trigger CI", "start GitHub Actions"
+        const ghActionRe = /\b(run|trigger|start|kick\s*off|dispatch)\b.{0,40}\b(workflow|action|ci|pipeline|deploy\.yml|test\.yml)\b/i;
+        if (ghActionRe.test(userText)) {
+          const workflows = await github.listWorkflows(defaultRepo).catch(() => []);
+          if (workflows.length > 0) {
+            // Try to match by name or path keyword in user text
+            const nameLower = userText.toLowerCase();
+            const match = workflows.find(w =>
+              nameLower.includes(w.name.toLowerCase()) ||
+              nameLower.includes(w.path.split('/').pop().toLowerCase())
+            ) || workflows[0];
+            const ref = /\b(branch|on)\s+(\S+)/i.exec(userText)?.[2] || 'main';
+            await github.triggerWorkflow(match.id, ref, {}, defaultRepo);
+            systemContent += `\n\n[GitHub Actions TRIGGERED] Dispatched workflow "${match.name}" on branch "${ref}". Tell the user the workflow was triggered and they can monitor it on GitHub Actions.`;
+            console.log('[GitHub Actions] Triggered workflow:', match.name, 'ref:', ref);
+          }
+        }
+      } catch (ghErr) {
+        console.warn('[GitHub RAG stream] Failed (non-critical):', ghErr.message?.slice(0, 80));
+      }
+    }
+
+    // ── Home Assistant RAG (stream) ────────────────────────────
+    const haIntentStream = /\b(light|lights|thermostat|temperature|lock|door|garage|fan|switch|scene|automation|smart.?home|home.?assistant|device|sensor|camera|alarm|hvac|ac|heat|cool|humidity|motion)\b/i.test(userText);
+    const haUrlStr   = process.env.HOME_ASSISTANT_URL || process.env.HA_URL;
+    const haTokenStr = process.env.HOME_ASSISTANT_ACCESS_TOKEN || process.env.HA_TOKEN;
+    if (haIntentStream && haUrlStr && haTokenStr) {
+      try {
+        res.write('data: {"token":"🏡 "}\n\n');
+        const haResp = await fetch(`${haUrlStr}/api/states`, {
+          headers: { Authorization: `Bearer ${haTokenStr}`, 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(5000),
+        });
+        if (haResp.ok) {
+          const states = await haResp.json();
+          const relevant = states.filter(s =>
+            /^(light|lock|climate|switch|binary_sensor|sensor|input_boolean|cover|fan|camera|alarm_control_panel)\../.test(s.entity_id)
+          ).slice(0, 30);
+          if (relevant.length > 0) {
+            const lines = relevant.map(s => {
+              const name = s.attributes?.friendly_name || s.entity_id;
+              const extra = s.attributes?.temperature ? ` (${s.attributes.temperature}°${s.attributes.unit_of_measurement || 'F'})` :
+                            s.attributes?.brightness ? ` (brightness: ${Math.round(s.attributes.brightness / 255 * 100)}%)` : '';
+              return `- ${name}: ${s.state}${extra}`;
+            });
+            systemContent += `\n\n[Home Assistant DATA — live device states]\n${lines.join('\n')}`;
+          }
+        }
+      } catch (haErr) {
+        console.warn('[HA RAG stream] Failed (non-critical):', haErr.message?.slice(0, 80));
+      }
+    }
+
+    // ── AWS / Website RAG (stream) ─────────────────────────────
+    const awsIntentStream = /\b(campus|campusrental|website|server|aws|ec2|nginx|deploy|ssh|uptime|down|offline|traffic|hosting)\b/i.test(userText);
+    if (awsIntentStream && awsSvc) {
+      try {
+        res.write('data: {"token":"☁️ "}\n\n');
+        const websiteStatus = await awsSvc.checkWebsiteStatus();
+        let awsCtx = `[AWS DATA — campusrentalsllc.com server status]\n`;
+        awsCtx += `Website: ${websiteStatus.online ? '✅ Online' : '❌ Offline'} (host: ${process.env.AWS_WEBSITE_HOST || 'not configured'})\n`;
+        if (websiteStatus.httpStatus) awsCtx += `HTTP status: ${websiteStatus.httpStatus}\n`;
+        if (websiteStatus.httpError) awsCtx += `Error: ${websiteStatus.httpError}\n`;
+        systemContent += '\n\n' + awsCtx;
+      } catch (awsErr) {
+        console.warn('[AWS RAG stream] Failed (non-critical):', awsErr.message?.slice(0, 80));
+      }
+    }
+
+    // ── Plaid RAG (stream) ─────────────────────────────────────
+    const plaidIntentStream = /\b(investment|portfolio|holdings|brokerage|schwab|fidelity|acorns|stock|balance|account|net.?worth|finance|financial|money|wealth)\b/i.test(userText);
+    const isOwnerStream = streamUserId === 'alec-owner' || req.user?.tokenType === 'OWNER' || req.user?.role === 'owner';
+    if (plaidIntentStream && isOwnerStream && process.env.PLAID_CLIENT_ID) {
+      try {
+        const items = await plaidDbAll('SELECT item_id, institution_name, access_token_enc FROM plaid_items').catch(() => []);
+        if (items.length > 0) {
+          res.write('data: {"token":"💰 "}\n\n');
+          let totalValue = 0;
+          const accountLines = [];
+          for (const item of items.slice(0, 5)) {
+            try {
+              const accessToken = decryptAccessToken(item.access_token_enc);
+              const data = await plaidFetch('/investments/holdings/get', { access_token: accessToken });
+              for (const acct of (data.accounts || [])) {
+                const val = acct.balances?.current || 0;
+                totalValue += val;
+                accountLines.push(`  ${item.institution_name} — ${acct.name}: $${val.toLocaleString('en-US', {minimumFractionDigits: 2})}`);
+              }
+            } catch (_) {}
+          }
+          if (accountLines.length > 0) {
+            systemContent += `\n\n[Plaid Financial DATA — live brokerage accounts]\nTotal portfolio value: $${totalValue.toLocaleString('en-US', {minimumFractionDigits: 2})}\nAccounts:\n${accountLines.join('\n')}`;
+          }
+        }
+      } catch (plaidErr) {
+        console.warn('[Plaid RAG stream] Failed (non-critical):', plaidErr.message?.slice(0, 80));
+      }
+    }
+
+    // ── TenantCloud RAG (stream) ────────────────────────────────
+    const tcIntentStream = /tenantcloud|\b(tenant|rent|payment|overdue|maintenance|lease|property|properties|unit|units|inquiry|inquiries|renter|move.?out|move.?in|vacancy|vacant|occupan|evict)\b/i.test(userText);
+    if (tcIntentStream) {
+      try {
+        res.write('data: {"token":"🏠 "}\n\n');
+        let tcCtx = '';
+
+        // Try browser-relay cache first (most reliable — real data from authenticated browser)
+        const cacheKeys = Object.keys(tcCache).filter(k => !k.startsWith('_'));
+        if (cacheKeys.length > 0) {
+          const age = tcCache._lastPush ? Math.round((Date.now() - new Date(tcCache._lastPush)) / 60000) : '?';
+          tcCtx = `[TenantCloud DATA — captured from authenticated browser ${age} min ago]\n`;
+          for (const key of cacheKeys) {
+            const entry = tcCache[key];
+            const d = entry.data;
+            const items = Array.isArray(d) ? d : (Array.isArray(d?.data) ? d.data : (d ? [d] : []));
+            if (items.length > 0) {
+              tcCtx += `\n## ${key.replace(/_/g, '/')} (${items.length} records)\n`;
+              tcCtx += JSON.stringify(items.slice(0, 20), null, 1).slice(0, 1500) + '\n';
+            }
+          }
+          console.log('[TenantCloud RAG stream] Served from browser-relay cache');
+        } else if (tenantCloud) {
+          // Fall back to Puppeteer scraper
+          const summary = await tenantCloud.getPortfolioSummary();
+          const overdueRent = await tenantCloud.getOverdueRent().catch(() => []);
+          const openMaint   = await tenantCloud.getOpenMaintenance().catch(() => []);
+          tcCtx = `[TenantCloud DATA — live property management data]\n`;
+          tcCtx += `Portfolio: ${summary.properties?.total || 0} properties, ${summary.tenants?.total || 0} tenants (${summary.tenants?.active || 0} active)\n`;
+          if (summary.overdue?.count > 0) tcCtx += `⚠️ Overdue rent: ${summary.overdue.count} payments, $${summary.overdue.totalAmount?.toLocaleString()}\n`;
+          if (summary.maintenance?.open > 0) tcCtx += `🔧 Open maintenance: ${summary.maintenance.open} requests (${summary.maintenance.highPriority} high priority)\n`;
+          if (summary.messages?.unread > 0) tcCtx += `💬 Unread messages: ${summary.messages.unread}\n`;
+          if (summary.inquiries?.new > 0) tcCtx += `🔔 New inquiries: ${summary.inquiries.new}\n`;
+          if (overdueRent.length > 0) tcCtx += `Overdue tenants: ${overdueRent.slice(0, 5).map(p => `${p.tenant} ($${p.amount})`).join(', ')}\n`;
+          if (openMaint.length > 0) tcCtx += `Maintenance: ${openMaint.slice(0, 3).map(m => `${m.property}/${m.unit} — ${m.title} [${m.priority}]`).join(' | ')}`;
+          console.log('[TenantCloud RAG stream] Injected via Puppeteer scraper');
+        }
+
+        if (tcCtx) systemContent += '\n\n' + tcCtx;
+      } catch (tcErr) {
+        console.warn('[TenantCloud RAG stream] Failed (non-critical):', tcErr.message?.slice(0, 80));
+      }
+    }
+
+    // ── Vercel RAG (stream) ───────────────────────────────────
+    const vercelIntentStream = /\bvercel\b|\b(deployment|deploy|production|preview|build|frontend|hosting)\b/i.test(userText);
+    if (vercelIntentStream && vercelSvc && process.env.VERCEL_TOKEN) {
+      try {
+        res.write('data: {"token":"▲ "}\n\n');
+        const deployments = await vercelSvc.listDeployments(3);
+        if (deployments.length > 0) {
+          const lines = deployments.map(d =>
+            `- ${d.target || 'preview'}: ${d.state} | ${d.url || 'building'} | branch: ${d.branch} | "${d.commit?.slice(0, 60) || ''}"`
+          );
+          systemContent += `\n\n[Vercel DATA — recent deployments for ${process.env.VERCEL_PROJECT || 'alec-ai'}]\n${lines.join('\n')}`;
+        }
+      } catch (vercelErr) {
+        console.warn('[Vercel RAG stream] Failed (non-critical):', vercelErr.message?.slice(0, 80));
+      }
+    }
 
     // Web search augmentation
     let augmentedMessages = [...messages];
@@ -583,56 +1367,29 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
     }
 
     const llmMessages = [{ role: 'system', content: systemContent }, ...augmentedMessages];
-    const llmResult   = await callLLM(llmMessages, { stream: true });
     let fullResponse  = '';
 
-    if (llmResult.type === 'claude') {
-      // ── Anthropic SDK streaming ────────────────────────────────
-      for await (const event of llmResult.sdkStream) {
-        if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
-          const token = event.delta.text || '';
-          if (token) {
-            fullResponse += token;
-            res.write(`data: ${JSON.stringify({ token })}\n\n`);
-          }
-        }
-      }
-    } else {
-      // ── Ollama SSE streaming ───────────────────────────────────
-      const reader  = llmResult.resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const lines = buf.split('\n');
-        buf = lines.pop();
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          const payload = line.slice(6).trim();
-          if (payload === '[DONE]') continue;
-          try {
-            const parsed = JSON.parse(payload);
-            const token = parsed.choices?.[0]?.delta?.content;
-            if (token) {
-              fullResponse += token;
-              res.write(`data: ${JSON.stringify({ token })}\n\n`);
-            }
-          } catch (_) {}
-        }
+    // ── node-llama-cpp streaming (Metal GPU, no external server) ──
+    for await (const token of callLLMStream(llmMessages)) {
+      if (token) {
+        fullResponse += token;
+        res.write(`data: ${JSON.stringify({ token })}\n\n`);
       }
     }
 
-    // Signal completion with metadata
-    res.write(`data: ${JSON.stringify({ done: true, latency_ms: Date.now() })}\n\n`);
+    // Save assistant response to history
+    if (chatHistory && convId && fullResponse) {
+      try { chatHistory.addMessage(convId, 'assistant', fullResponse); } catch (_) {}
+    }
+
+    // Signal completion with metadata (including conversation_id so frontend can persist it)
+    res.write(`data: ${JSON.stringify({ done: true, latency_ms: Date.now(), conversation_id: convId })}\n\n`);
     res.write('data: [DONE]\n\n');
     res.end();
 
     // Async: extract facts, log interaction
     extractAndStoreFacts(userText, fullResponse).catch(() => {});
-    try { await adaptiveLearning.logInteraction({ userId: 'stream', message: userText, timestamp: Date.now() }); } catch(_){}
+    try { await adaptiveLearning.logInteraction({ userId: streamUserId, message: userText, timestamp: Date.now() }); } catch(_){}
 
   } catch (err) {
     console.error('Stream error:', err.message);
@@ -710,6 +1467,64 @@ app.post('/api/memory/fact', authenticateToken, (req, res) => {
 app.delete('/api/memory', authenticateToken, (req, res) => {
   saveMemory({ facts: [], preferences: [], summaries: [], promptVersion: 1 });
   res.json({ success: true, message: 'Memory cleared.' });
+});
+
+// ════════════════════════════════════════════════════════════════
+//  DESKTOP CONTROL SKILLS
+// ════════════════════════════════════════════════════════════════
+
+/** GET /api/skills — list available desktop skills */
+app.get('/api/skills', authenticateToken, (req, res) => {
+  res.json({ skills: desktopControl.listSkills() });
+});
+
+/** POST /api/skills/run — execute a skill */
+app.post('/api/skills/run', authenticateToken, async (req, res) => {
+  const { skill, args = {} } = req.body;
+  if (!skill) return res.status(400).json({ error: 'skill name required' });
+  const result = await desktopControl.executeSkill(skill, args);
+  res.json(result);
+});
+
+/** POST /api/skills/screenshot — convenience endpoint */
+app.post('/api/skills/screenshot', authenticateToken, async (req, res) => {
+  const result = await desktopControl.executeSkill('screenshot', {});
+  if (result.success) {
+    res.json({ success: true, path: result.result });
+  } else {
+    res.status(500).json(result);
+  }
+});
+
+// Augment the chat endpoint to detect and run skills
+// This runs before the LLM call in /api/chat and /api/chat/stream
+async function maybeRunDesktopSkill(userText) {
+  const intent = desktopControl.detectSkillIntent(userText);
+  if (!intent) return null;
+  const result = await desktopControl.executeSkill(intent.skill, intent.args);
+  if (!result.success) return null;
+  return { skill: intent.skill, result: result.result };
+}
+
+// ════════════════════════════════════════════════════════════════
+//  MODEL MANAGEMENT (HuggingFace / local GGUF)
+// ════════════════════════════════════════════════════════════════
+
+/** GET /api/models — list all available GGUF models */
+app.get('/api/models', authenticateToken, (req, res) => {
+  res.json({ models: llamaEngine.listModels(), current: llamaEngine.getStatus() });
+});
+
+/** POST /api/models/download — download a model from HuggingFace */
+app.post('/api/models/download', authenticateToken, requireFullCapabilities, async (req, res) => {
+  const { repoId, fileName } = req.body;
+  if (!repoId || !fileName) return res.status(400).json({ error: 'repoId and fileName required' });
+  try {
+    const modelPath = await llamaEngine.downloadFromHuggingFace(repoId, fileName);
+    res.json({ success: true, modelPath });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // ════════════════════════════════════════════════════════════════
@@ -1014,6 +1829,113 @@ app.post('/api/tasks/:id/cancel', authenticateToken, async (req, res) => {
 // ════════════════════════════════════════════════════════════════
 
 /**
+ * GET /api/stoa/ping
+ * Quick connectivity test for the live Azure SQL STOA database.
+ */
+app.get('/api/stoa/ping', authenticateToken, async (req, res) => {
+  const result = await stoaQuery.ping();
+  res.json(result);
+});
+
+/**
+ * POST /api/stoa/export
+ * Generate a STOA Excel workbook and return a download URL.
+ * Body: { type, property, months }
+ *   type: 'portfolio' | 'trend' | 'pipeline' | 'loans' | 'full'
+ */
+app.post('/api/stoa/export', authenticateToken, async (req, res) => {
+  try {
+    const { type = 'portfolio', property = null, months = 6 } = req.body || {};
+    console.log('[STOA Export] Generating:', { type, property, months });
+    const result = await excelExport.generateExport({ type, property, months });
+    res.json({
+      success: true,
+      url: result.url,
+      fileName: result.fileName,
+      type: result.type,
+      property: result.property,
+      generatedAt: result.generatedAt,
+    });
+  } catch (err) {
+    console.error('[STOA Export] Error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/stoa/trend?property=...&months=6
+ * Returns weekly MMR history for a property.
+ */
+app.get('/api/stoa/trend', authenticateToken, async (req, res) => {
+  try {
+    const { property, months = '6' } = req.query;
+    if (!property) return res.status(400).json({ success: false, error: 'property param required' });
+    const rows = await stoaQuery.getMMRHistory(property, parseInt(months));
+    res.json({ success: true, count: rows.length, property, months: parseInt(months), data: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/stoa/rent-growth?property=...
+ * Returns pre-computed rent growth percentages.
+ */
+app.get('/api/stoa/rent-growth', authenticateToken, async (req, res) => {
+  try {
+    const { property } = req.query;
+    const rows = property
+      ? await stoaQuery.getRentGrowthHistory(property)
+      : await stoaQuery.getPortfolioRentGrowth();
+    res.json({ success: true, count: rows.length, data: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/stoa/occupancy?property=...
+ * Returns live occupancy/leasing data for one or all properties.
+ */
+app.get('/api/stoa/occupancy', authenticateToken, async (req, res) => {
+  try {
+    const property = req.query.property || null;
+    const rows = await stoaQuery.getMMRData(property);
+    res.json({ success: true, count: rows.length, data: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/stoa/portfolio
+ * Returns portfolio-level KPIs across all active properties.
+ */
+app.get('/api/stoa/portfolio', authenticateToken, async (req, res) => {
+  try {
+    const [summary] = await stoaQuery.getPortfolioSummary();
+    const properties = await stoaQuery.getMMRData();
+    res.json({ success: true, summary, properties });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/stoa/projects?search=...
+ * Search projects by name or city.
+ */
+app.get('/api/stoa/projects', authenticateToken, async (req, res) => {
+  try {
+    const search = req.query.search || '';
+    const projects = await stoaQuery.findProjects(search);
+    res.json({ success: true, count: projects.length, data: projects });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
  * GET /api/stoa/status
  * Returns Stoa DB connection status.
  */
@@ -1270,6 +2192,61 @@ app.get('/api/self-evolution/stats', authenticateToken, (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════
+//  SELF-IMPROVEMENT  (/api/self-improve/*)
+//  Owner-only — runs tests, proposes LLM changes, only commits if tests pass.
+//  Directive: always improve accuracy, UX, and data correctness for Alec.
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * POST /api/self-improve/run
+ * Run one improvement cycle (propose → apply → test → commit or revert).
+ * Body: { directive_id? } — omit to auto-pick highest priority
+ */
+app.post('/api/self-improve/run', authenticateToken, requireFullCapabilities, async (req, res) => {
+  try {
+    const { directive_id } = req.body || {};
+    const feedback = selfImprovement.getRecentNegativeFeedback();
+    console.log('[SelfImprove] Starting cycle, directive:', directive_id || 'auto');
+    const result = await selfImprovement.runImprovementCycle(directive_id || null, feedback);
+    res.json({ success: result.success, ...result });
+  } catch (err) {
+    console.error('[SelfImprove] Error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/self-improve/test
+ * Run only the test suite, no code changes.
+ * Returns { passed, failed, total, criticalFailed, results }
+ */
+app.post('/api/self-improve/test', authenticateToken, requireFullCapabilities, async (req, res) => {
+  try {
+    const results = await selfImprovement.runTests();
+    res.json({ success: true, ...results });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/self-improve/history
+ * Returns the last 20 improvement log entries.
+ */
+app.get('/api/self-improve/history', authenticateToken, requireFullCapabilities, async (req, res) => {
+  const history = selfImprovement.getImprovementHistory(Number(req.query.limit) || 20);
+  res.json({ success: true, history });
+});
+
+/**
+ * GET /api/self-improve/directives
+ * Returns the improvement directives list.
+ */
+app.get('/api/self-improve/directives', authenticateToken, (req, res) => {
+  res.json({ success: true, directives: selfImprovement.IMPROVEMENT_DIRECTIVES });
+});
+
+// ════════════════════════════════════════════════════════════════
 //  CROSS-DEVICE SYNC  (/api/sync/*)
 // ════════════════════════════════════════════════════════════════
 
@@ -1334,18 +2311,69 @@ app.delete('/api/sync/remove-device/:deviceId', authenticateToken, async (req, r
 
 /**
  * POST /api/smarthome/control
- * Body: { device, action, parameters? }
+ * Body: { entity_id?, domain?, service, service_data? }
+ * Routes to real Home Assistant API if configured, falls back to stub.
  */
 app.post('/api/smarthome/control', authenticateToken, async (req, res) => {
   if (!req.user.scope.includes('smart_home')) {
     return res.status(403).json({ error: 'Smart home access denied' });
   }
+  const haUrl   = process.env.HOME_ASSISTANT_URL || process.env.HA_URL;
+  const haToken = process.env.HOME_ASSISTANT_ACCESS_TOKEN || process.env.HA_TOKEN;
+
+  // If HA is configured, use real API
+  if (haUrl && haToken) {
+    try {
+      const { domain, service, service_data = {}, entity_id } = req.body;
+      if (!domain || !service) return res.status(400).json({ error: 'domain and service are required' });
+      const body = entity_id ? { ...service_data, entity_id } : service_data;
+      const haResp = await fetch(`${haUrl}/api/services/${domain}/${service}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${haToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!haResp.ok) {
+        const err = await haResp.text().catch(() => haResp.status.toString());
+        return res.status(502).json({ error: 'Home Assistant error', detail: err });
+      }
+      const data = await haResp.json().catch(() => ({}));
+      return res.json({ success: true, result: data, via: 'home-assistant' });
+    } catch (err) {
+      return res.status(500).json({ error: 'Smart home control failed', message: err.message });
+    }
+  }
+
+  // Fallback to stub
   try {
     const { device, action, parameters } = req.body;
     const result = await smartHomeConnector.executeCommand(device, action, parameters);
-    res.json({ success: true, result });
+    res.json({ success: true, result, via: 'stub' });
   } catch (error) {
     res.status(500).json({ error: 'Smart home control failed', message: error.message });
+  }
+});
+
+/**
+ * GET /api/smarthome/states
+ * Returns all HA entity states.
+ */
+app.get('/api/smarthome/states', authenticateToken, async (req, res) => {
+  const haUrl   = process.env.HOME_ASSISTANT_URL || process.env.HA_URL;
+  const haToken = process.env.HOME_ASSISTANT_ACCESS_TOKEN || process.env.HA_TOKEN;
+  if (!haUrl || !haToken) return res.json({ configured: false, states: [] });
+  try {
+    const haResp = await fetch(`${haUrl}/api/states`, {
+      headers: { Authorization: `Bearer ${haToken}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!haResp.ok) throw new Error(`HA returned ${haResp.status}`);
+    const states = await haResp.json();
+    const domain = req.query.domain;
+    const filtered = domain ? states.filter(s => s.entity_id.startsWith(domain + '.')) : states;
+    res.json({ success: true, count: filtered.length, states: filtered });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -2065,8 +3093,1235 @@ app.get('/api/admin/status', (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════
+//  CHAT HISTORY  (/api/history/*)
+//  Per-account persistent conversation history (ChatGPT-style).
+// ════════════════════════════════════════════════════════════════
+
+app.get('/api/history/conversations', authenticateToken, (req, res) => {
+  if (!chatHistory) return res.json({ conversations: [] });
+  const convs = chatHistory.listConversations(req.user.userId);
+  res.json({ success: true, conversations: convs });
+});
+
+app.post('/api/history/conversations', authenticateToken, (req, res) => {
+  if (!chatHistory) return res.json({ id: null });
+  const conv = chatHistory.createConversation(req.user.userId, req.body.title);
+  res.json({ success: true, conversation: conv });
+});
+
+app.get('/api/history/conversations/:id/messages', authenticateToken, (req, res) => {
+  if (!chatHistory) return res.json({ messages: [] });
+  const conv = chatHistory.getConversation(req.params.id, req.user.userId);
+  if (!conv) return res.status(404).json({ error: 'Conversation not found' });
+  const messages = chatHistory.getMessages(req.params.id, parseInt(req.query.limit) || 100);
+  res.json({ success: true, conversation: conv, messages });
+});
+
+app.patch('/api/history/conversations/:id', authenticateToken, (req, res) => {
+  if (!chatHistory) return res.json({ success: false });
+  const { title } = req.body;
+  if (title) chatHistory.updateTitle(req.params.id, req.user.userId, title);
+  res.json({ success: true });
+});
+
+app.delete('/api/history/conversations/:id', authenticateToken, (req, res) => {
+  if (!chatHistory) return res.json({ success: false });
+  const deleted = chatHistory.deleteConversation(req.params.id, req.user.userId);
+  res.json({ success: deleted });
+});
+
+// ════════════════════════════════════════════════════════════════
+//  SKILLS REGISTRY  (/api/connectors/*)
+//  Central credential management for all external services.
+//  Replaces the old Python-proxy /api/skills/* endpoints.
+// ════════════════════════════════════════════════════════════════
+
+// ── Catalog: enrich with per-user configured status ──────────────
+app.get('/api/connectors/catalog', authenticateToken, (req, res) => {
+  if (!skillsReg) return res.json({ success: true, catalog: { skills: [], byCategory: {} } });
+  try {
+    const userId  = req.user?.userId || req.user?.email || '_legacy';
+    const catalog = skillsReg.getCatalog();
+
+    const enrich = (skill) => {
+      let configured = false;
+      if (skill.fields.length === 0 && !skill.multiInstance) {
+        configured = true; // no creds needed
+      } else if (skill.multiInstance) {
+        // configured if at least one instance exists
+        const instances = skillsReg.getInstances(userId, skill.id);
+        configured = instances.length > 0;
+      } else {
+        // check env OR per-user config
+        const statusArr = skillsReg.getCredentialStatus(userId, skill.id);
+        const required  = statusArr.filter(f => f.required);
+        configured = required.length === 0 || required.some(f => f.configured);
+      }
+      return { ...skill, configured };
+    };
+
+    const enriched = {
+      skills:     catalog.skills.map(enrich),
+      byCategory: Object.fromEntries(
+        Object.entries(catalog.byCategory).map(([cat, skills]) => [cat, skills.map(enrich)])
+      ),
+    };
+
+    res.json({ success: true, catalog: enriched });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Save credentials (per-user) ───────────────────────────────────
+app.post('/api/connectors/:skillId/credentials', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
+  try {
+    const userId = req.user?.userId || req.user?.email || '_legacy';
+    const result = await skillsReg.saveCredentials(userId, req.params.skillId, req.body);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Status check ──────────────────────────────────────────────────
+app.get('/api/connectors/:skillId/status', authenticateToken, async (req, res) => {
+  if (!skillsReg) return res.json({ configured: false, connected: false });
+  try {
+    const status = await skillsReg.getSkillStatus(req.params.skillId);
+    const connected = !!(
+      status.connected || status.authenticated || status.configured || status.running ||
+      status.ownerPhoneConfigured || (status.propertyCount != null && status.propertyCount >= 0) ||
+      (status.serviceCount != null && status.serviceCount >= 0) ||
+      (status.scheduledTasks != null && status.scheduledTasks >= 0) ||
+      (status.available && !status.error)
+    );
+    res.json({ success: true, connected, ...status });
+  } catch (err) {
+    res.json({ success: false, connected: false, error: err.message });
+  }
+});
+
+// ── Get credential status (masked — which fields are filled) ──────
+app.get('/api/connectors/:skillId/credentials', authenticateToken, requireFullCapabilities, (req, res) => {
+  if (!skillsReg) return res.json({ fields: {} });
+  try {
+    const userId = req.user?.userId || req.user?.email || '_legacy';
+    const statusArr = skillsReg.getCredentialStatus(userId, req.params.skillId);
+    const fields = {};
+    if (Array.isArray(statusArr)) {
+      statusArr.forEach(f => { fields[f.key] = f.configured; });
+    }
+    res.json({ success: true, fields });
+  } catch (err) {
+    res.json({ success: false, fields: {}, error: err.message });
+  }
+});
+
+// ── Reveal decrypted credentials (authorized peek) ────────────────
+app.post('/api/connectors/:skillId/reveal', authenticateToken, requireFullCapabilities, (req, res) => {
+  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
+  try {
+    const userId = req.user?.userId || req.user?.email || '_legacy';
+    const values = skillsReg.revealCredentials(userId, req.params.skillId);
+    res.json({ success: true, values });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Multi-instance management (Microsoft 365, etc.) ───────────────
+app.get('/api/connectors/:skillId/instances', authenticateToken, requireFullCapabilities, (req, res) => {
+  if (!skillsReg) return res.json({ success: true, instances: [] });
+  try {
+    const userId    = req.user?.userId || req.user?.email || '_legacy';
+    const instances = skillsReg.getInstances(userId, req.params.skillId);
+    res.json({ success: true, instances });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/connectors/:skillId/instances', authenticateToken, requireFullCapabilities, (req, res) => {
+  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
+  try {
+    const userId = req.user?.userId || req.user?.email || '_legacy';
+    const { name, instId, ...creds } = req.body;
+    if (!name) return res.status(400).json({ error: 'name is required' });
+    const result = skillsReg.addInstance(userId, req.params.skillId, name, creds, instId || null);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete('/api/connectors/:skillId/instances/:instanceId', authenticateToken, requireFullCapabilities, (req, res) => {
+  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
+  try {
+    const userId = req.user?.userId || req.user?.email || '_legacy';
+    skillsReg.deleteInstance(userId, req.params.skillId, req.params.instanceId);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/connectors/:skillId/instances/:instanceId/reveal', authenticateToken, requireFullCapabilities, (req, res) => {
+  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
+  try {
+    const userId = req.user?.userId || req.user?.email || '_legacy';
+    const values = skillsReg.revealInstance(userId, req.params.skillId, req.params.instanceId);
+    res.json({ success: true, values });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Custom skills ──────────────────────────────────────────────────
+app.post('/api/connectors/custom', authenticateToken, requireFullCapabilities, (req, res) => {
+  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
+  try {
+    skillsReg.addCustomSkill(req.body);
+    res.json({ success: true, message: 'Custom skill added' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete('/api/connectors/custom/:skillId', authenticateToken, requireFullCapabilities, (req, res) => {
+  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
+  try {
+    skillsReg.removeCustomSkill(req.params.skillId);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Phone verification for notification number ────────────────────
+// OTP store: { phone: { code, expiresAt, attempts } }
+const _phoneOTPs = new Map();
+
+app.post('/api/connectors/sms/send-verification', authenticateToken, async (req, res) => {
+  try {
+    const { phone } = req.body;
+    if (!phone) return res.status(400).json({ error: 'phone required' });
+
+    const code = String(Math.floor(100000 + Math.random() * 900000)); // 6-digit
+    const expiresAt = Date.now() + 5 * 60 * 1000; // 5 min
+    _phoneOTPs.set(phone, { code, expiresAt, attempts: 0 });
+
+    // Try Twilio if configured, otherwise iMessage/fallback
+    const twilioSid    = process.env.TWILIO_ACCOUNT_SID;
+    const twilioToken  = process.env.TWILIO_AUTH_TOKEN;
+    const twilioFrom   = process.env.TWILIO_FROM_NUMBER;
+    const message      = `Your ALEC verification code is: ${code}. Expires in 5 minutes.`;
+
+    if (twilioSid && twilioToken && twilioFrom) {
+      const url  = `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`;
+      const body = new URLSearchParams({ From: twilioFrom, To: toE164(phone), Body: message });
+      const resp = await fetch(url, {
+        method: 'POST', body,
+        headers: { Authorization: 'Basic ' + Buffer.from(`${twilioSid}:${twilioToken}`).toString('base64'), 'Content-Type': 'application/x-www-form-urlencoded' },
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        return res.status(500).json({ error: 'SMS failed: ' + (err.message || resp.status) });
+      }
+    } else if (iMessage) {
+      // Fallback to native iMessage
+      await iMessage.send(phone, message);
+    } else {
+      return res.status(503).json({ error: 'No SMS service configured. Add Twilio credentials to the Skills panel.' });
+    }
+
+    res.json({ success: true, message: `Verification code sent to ${phone}` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/connectors/sms/verify', authenticateToken, async (req, res) => {
+  try {
+    const { phone, code } = req.body;
+    if (!phone || !code) return res.status(400).json({ error: 'phone and code required' });
+
+    const entry = _phoneOTPs.get(phone);
+    if (!entry) return res.status(400).json({ error: 'No verification pending for this number. Request a new code.' });
+    if (Date.now() > entry.expiresAt) {
+      _phoneOTPs.delete(phone);
+      return res.status(400).json({ error: 'Code expired. Request a new one.' });
+    }
+    entry.attempts++;
+    if (entry.attempts > 5) {
+      _phoneOTPs.delete(phone);
+      return res.status(400).json({ error: 'Too many attempts. Request a new code.' });
+    }
+    if (entry.code !== String(code).trim()) {
+      return res.status(400).json({ error: `Incorrect code (${5 - entry.attempts} attempts remaining).` });
+    }
+
+    // Verified! Save phone as OWNER_PHONE
+    _phoneOTPs.delete(phone);
+    process.env.OWNER_PHONE = phone;
+    const envPath = require('path').join(__dirname, '../.env');
+    let envContent = '';
+    try { envContent = require('fs').readFileSync(envPath, 'utf8'); } catch (_) {}
+    const regex = /^OWNER_PHONE=.*$/m;
+    const line  = `OWNER_PHONE=${phone}`;
+    if (regex.test(envContent)) envContent = envContent.replace(regex, line);
+    else envContent += `\n${line}`;
+    try { require('fs').writeFileSync(envPath, envContent, 'utf8'); } catch (_) {}
+
+    res.json({ success: true, message: 'Phone verified and saved as notification number.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════
+//  NOTIFICATIONS  (/api/notifications/*)
+//  Unified SMS/iMessage sending endpoint. Prefers Twilio if configured.
+// ════════════════════════════════════════════════════════════════
+
+app.post('/api/notifications/send-sms', authenticateToken, requireFullCapabilities, async (req, res) => {
+  try {
+    const { to, message } = req.body;
+    const recipient = to || process.env.OWNER_PHONE;
+    if (!recipient) return res.status(400).json({ error: 'No recipient. Set OWNER_PHONE or pass {to}.' });
+    if (!message)   return res.status(400).json({ error: 'message required' });
+
+    // Prefer Twilio
+    const sid   = process.env.TWILIO_ACCOUNT_SID;
+    const token = process.env.TWILIO_AUTH_TOKEN;
+    const from  = process.env.TWILIO_FROM_NUMBER;
+    if (sid && token && from) {
+      const url  = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`;
+      const body = new URLSearchParams({ From: from, To: toE164(recipient), Body: message });
+      const r    = await fetch(url, {
+        method: 'POST', body,
+        headers: { Authorization: 'Basic ' + Buffer.from(`${sid}:${token}`).toString('base64'), 'Content-Type': 'application/x-www-form-urlencoded' },
+        signal: AbortSignal.timeout(12000),
+      });
+      const data = await r.json();
+      if (!r.ok) return res.status(500).json({ error: 'Twilio error: ' + (data.message || r.status) });
+      return res.json({ success: true, provider: 'twilio', sid: data.sid, to: recipient });
+    }
+
+    // Fallback: native iMessage
+    if (iMessage) {
+      await iMessage.send(recipient, message);
+      return res.json({ success: true, provider: 'imessage', to: recipient });
+    }
+
+    return res.status(503).json({ error: 'No SMS service configured. Add Twilio in Skills panel.' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════
+//  iMESSAGE  (/api/imessage/*)
+// ════════════════════════════════════════════════════════════════
+
+app.post('/api/imessage/send', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!iMessage) return res.status(503).json({ error: 'iMessage service not available' });
+  try {
+    const { to, message } = req.body;
+    if (!to || !message) return res.status(400).json({ error: 'to and message required' });
+    const result = await iMessage.send(to, message);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/imessage/conversations', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!iMessage) return res.status(503).json({ error: 'iMessage service not available' });
+  try {
+    const convos = await iMessage.getConversations();
+    res.json({ success: true, conversations: convos });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/imessage/messages', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!iMessage) return res.status(503).json({ error: 'iMessage service not available' });
+  try {
+    const { contact, limit = 20 } = req.query;
+    const msgs = await iMessage.getRecent(contact, parseInt(limit));
+    res.json({ success: true, messages: msgs });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/imessage/unread', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!iMessage) return res.status(503).json({ error: 'iMessage service not available' });
+  try {
+    const msgs = await iMessage.getUnread();
+    res.json({ success: true, messages: msgs });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/imessage/status', authenticateToken, (req, res) => {
+  res.json({
+    available: !!iMessage,
+    ownerPhone: process.env.OWNER_PHONE ? 'configured' : 'not set',
+    hint: process.env.OWNER_PHONE ? null : 'Add OWNER_PHONE to .env (e.g. +14155551234)',
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+//  TASK SCHEDULER  (/api/scheduler/*)
+// ════════════════════════════════════════════════════════════════
+
+app.get('/api/scheduler/tasks', authenticateToken, requireFullCapabilities, (req, res) => {
+  if (!scheduler) return res.json({ tasks: [] });
+  try {
+    res.json({ success: true, tasks: scheduler.listTasks() });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/scheduler/create', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!scheduler) return res.status(503).json({ error: 'Scheduler not available' });
+  try {
+    const { id, expression, description } = req.body;
+    if (!id || !expression) return res.status(400).json({ error: 'id and expression required' });
+    // Register as a dummy task (actual fn will be set by user logic)
+    const task = scheduler.schedule(id, expression, async () => {
+      console.log(`[Scheduler] Task ${id} triggered`);
+    }, { description });
+    res.json({ success: true, task: { id, expression, description } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete('/api/scheduler/tasks/:id', authenticateToken, requireFullCapabilities, (req, res) => {
+  if (!scheduler) return res.status(503).json({ error: 'Scheduler not available' });
+  try {
+    scheduler.cancel(req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════
+//  GITHUB  (/api/github/*)
+// ════════════════════════════════════════════════════════════════
+
+app.get('/api/github/repos', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!github) return res.status(503).json({ error: 'GitHub service not available' });
+  try {
+    const repos = await github.listRepos();
+    res.json({ success: true, repos });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/github/repos/:owner/:repo/issues', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!github) return res.status(503).json({ error: 'GitHub service not available' });
+  try {
+    const { owner, repo } = req.params;
+    const issues = await github.listIssues(`${owner}/${repo}`, req.query);
+    res.json({ success: true, issues });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/github/repos/:owner/:repo/issues', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!github) return res.status(503).json({ error: 'GitHub service not available' });
+  try {
+    const { owner, repo } = req.params;
+    const issue = await github.createIssue(`${owner}/${repo}`, req.body);
+    res.json({ success: true, issue });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/github/repos/:owner/:repo/commits', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!github) return res.status(503).json({ error: 'GitHub service not available' });
+  try {
+    const { owner, repo } = req.params;
+    const commits = await github.getCommits(`${owner}/${repo}`, parseInt(req.query.limit) || 10);
+    res.json({ success: true, commits });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/github/status', authenticateToken, async (req, res) => {
+  const configured = !!process.env.GITHUB_TOKEN;
+  res.json({ configured, hint: configured ? null : 'Add GITHUB_TOKEN to .env' });
+});
+
+// ════════════════════════════════════════════════════════════════
+//  VS CODE CONTROLLER  (/api/vscode/*)
+// ════════════════════════════════════════════════════════════════
+
+app.post('/api/vscode/open', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!vsCode) return res.status(503).json({ error: 'VS Code controller not available' });
+  try {
+    const { path: filePath, folder } = req.body;
+    const result = folder
+      ? await vsCode.openFolder(folder)
+      : await vsCode.openFile(filePath);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/vscode/terminal', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!vsCode) return res.status(503).json({ error: 'VS Code controller not available' });
+  try {
+    const { command } = req.body;
+    if (!command) return res.status(400).json({ error: 'command required' });
+    const result = await vsCode.runInTerminal(command);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/vscode/create-project', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!vsCode) return res.status(503).json({ error: 'VS Code controller not available' });
+  try {
+    const { name, type = 'node', location } = req.body;
+    if (!name) return res.status(400).json({ error: 'name required' });
+    const result = type === 'python'
+      ? await vsCode.createPythonProject(name, location)
+      : await vsCode.createNodeProject(name, location);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════
+//  RESEARCH AGENT  (/api/research/*)
+// ════════════════════════════════════════════════════════════════
+
+app.post('/api/research/start', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!research) return res.status(503).json({ error: 'Research agent not available' });
+  try {
+    const { topic, notifyWhenDone = true, saveReport = true } = req.body;
+    if (!topic) return res.status(400).json({ error: 'topic required' });
+    const job = research.startResearch(topic, { notifyWhenDone, saveReport });
+    res.json({ success: true, taskId: job.id, topic, message: 'Research started in background. You\'ll be notified via iMessage when done.' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/research/quick', authenticateToken, async (req, res) => {
+  if (!research) return res.status(503).json({ error: 'Research agent not available' });
+  try {
+    const { topic } = req.body;
+    if (!topic) return res.status(400).json({ error: 'topic required' });
+    const result = await research.quickResearch(topic, 3);
+    res.json({ success: true, report: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/research/reports', authenticateToken, (req, res) => {
+  if (!research) return res.json({ reports: [] });
+  try {
+    const reports = research.listReports();
+    res.json({ success: true, reports });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/research/reports/:filename', authenticateToken, (req, res) => {
+  if (!research) return res.status(503).json({ error: 'Research agent not available' });
+  try {
+    const content = research.getReport(req.params.filename);
+    res.json({ success: true, content });
+  } catch (err) {
+    res.status(404).json({ success: false, error: err.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════
+//  TENANTCLOUD  (/api/tenantcloud/*)
+// ════════════════════════════════════════════════════════════════
+
+app.get('/api/tenantcloud/status', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.json({ configured: false });
+  try { res.json(await tenantCloud.status()); }
+  catch (err) { res.json({ configured: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/summary', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, ...(await tenantCloud.getPortfolioSummary()) }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/tenants', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, tenants: await tenantCloud.listTenants() }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/maintenance', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try {
+    const open = await tenantCloud.getOpenMaintenance();
+    res.json({ success: true, maintenance: open, count: open.length });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/payments', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try {
+    const [overdue, all] = await Promise.all([tenantCloud.getOverdueRent(), tenantCloud.listPayments()]);
+    res.json({ success: true, overdue, all });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/leases', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try {
+    const { expiring } = req.query;
+    const leases = expiring
+      ? await tenantCloud.getExpiringLeases(parseInt(expiring) || 60)
+      : await tenantCloud.listLeases();
+    res.json({ success: true, leases });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/messages', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try {
+    const msgs = req.query.unread === 'true'
+      ? await tenantCloud.getUnreadMessages()
+      : await tenantCloud.listMessages();
+    res.json({ success: true, messages: msgs });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/inquiries', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, inquiries: await tenantCloud.listInquiries() }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/rent-analysis', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, ...(await tenantCloud.analyzeRentPatterns()) }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+// ════════════════════════════════════════════════════════════════
+//  AWS  (/api/aws/*)
+// ════════════════════════════════════════════════════════════════
+
+app.get('/api/aws/status', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!awsSvc) return res.json({ configured: false });
+  try { res.json(await awsSvc.status()); }
+  catch (err) { res.json({ configured: false, error: err.message }); }
+});
+
+app.get('/api/aws/instances', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!awsSvc) return res.status(503).json({ error: 'AWS not configured' });
+  try { res.json({ success: true, instances: await awsSvc.listInstances() }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.post('/api/aws/instances/:id/:action', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!awsSvc) return res.status(503).json({ error: 'AWS not configured' });
+  try {
+    const { id, action } = req.params;
+    const fns = { start: awsSvc.startInstance, stop: awsSvc.stopInstance, reboot: awsSvc.rebootInstance };
+    if (!fns[action]) return res.status(400).json({ error: 'action must be start|stop|reboot' });
+    const result = await fns[action](id);
+    res.json({ success: true, result });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/aws/website', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!awsSvc) return res.status(503).json({ error: 'AWS not configured' });
+  try { res.json({ success: true, ...(await awsSvc.checkWebsiteStatus()) }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.post('/api/aws/ssh', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!awsSvc) return res.status(503).json({ error: 'AWS not configured' });
+  try {
+    const { command } = req.body;
+    if (!command) return res.status(400).json({ error: 'command required' });
+    const result = await awsSvc.sshCommand(command);
+    res.json({ success: true, ...result });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.post('/api/aws/website/restart', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!awsSvc) return res.status(503).json({ error: 'AWS not configured' });
+  try {
+    const result = await awsSvc.restartWebServer(req.body.serverType || 'nginx');
+    res.json({ success: true, ...result });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/aws/logs', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!awsSvc) return res.status(503).json({ error: 'AWS not configured' });
+  try {
+    const result = await awsSvc.getServerLogs(req.query.file, parseInt(req.query.lines) || 50);
+    res.json({ success: true, ...result });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/aws/metrics', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!awsSvc) return res.status(503).json({ error: 'AWS not configured' });
+  try {
+    const result = await awsSvc.getServerMetrics();
+    res.json({ success: true, ...result });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+// ════════════════════════════════════════════════════════════════
+//  RENDER.COM  (/api/render/*)
+// ════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════
+//  VERCEL ENDPOINTS  (/api/vercel/*)
+// ════════════════════════════════════════════════════════════════
+
+app.get('/api/vercel/status', authenticateToken, async (req, res) => {
+  if (!vercelSvc) return res.json({ configured: false });
+  try { res.json(await vercelSvc.status()); }
+  catch (err) { res.json({ configured: false, error: err.message }); }
+});
+
+app.get('/api/vercel/deployments', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!vercelSvc) return res.status(503).json({ error: 'Vercel not configured — add VERCEL_TOKEN to .env' });
+  try { res.json({ success: true, deployments: await vercelSvc.listDeployments(parseInt(req.query.limit) || 10) }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.post('/api/vercel/redeploy', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!vercelSvc) return res.status(503).json({ error: 'Vercel not configured' });
+  try {
+    const result = await vercelSvc.redeploy(req.body.deploymentId || null, req.body.project || null);
+    res.json({ success: true, ...result });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+// ════════════════════════════════════════════════════════════════
+//  MICROSOFT GRAPH  (/api/msgraph/*)
+// ════════════════════════════════════════════════════════════════
+
+app.get('/api/msgraph/status', authenticateToken, async (req, res) => {
+  if (!msGraph) return res.json({ configured: false });
+  try { res.json(await msGraph.status()); }
+  catch (err) { res.json({ configured: false, error: err.message }); }
+});
+
+app.get('/api/msgraph/onedrive', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!msGraph) return res.status(503).json({ error: 'Microsoft Graph not configured' });
+  try {
+    const files = await msGraph.listOneDriveFiles(req.query.folder || '');
+    res.json({ success: true, files });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/msgraph/sharepoint/search', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!msGraph) return res.status(503).json({ error: 'Microsoft Graph not configured' });
+  try {
+    const results = await msGraph.searchSharePoint(req.query.q || '');
+    res.json({ success: true, results });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/msgraph/emails', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!msGraph) return res.status(503).json({ error: 'Microsoft Graph not configured' });
+  try {
+    const emails = await msGraph.getRecentEmails(parseInt(req.query.limit) || 20);
+    res.json({ success: true, emails });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/msgraph/calendar', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!msGraph) return res.status(503).json({ error: 'Microsoft Graph not configured' });
+  try {
+    const events = await msGraph.getUpcomingEvents(parseInt(req.query.days) || 7);
+    res.json({ success: true, events });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+// ════════════════════════════════════════════════════════════════
+//  MEMORY & FACTS  (/api/memory/*)
+// ════════════════════════════════════════════════════════════════
+
+app.get('/api/memory', authenticateToken, (req, res) => {
+  try {
+    const mem = loadMemory();
+    res.json({ success: true, facts: mem.facts || [], preferences: mem.preferences || [], summaries: mem.summaries || [], promptVersion: mem.promptVersion || 1 });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/memory/fact', authenticateToken, requireFullCapabilities, (req, res) => {
+  try {
+    const { fact } = req.body;
+    if (!fact || typeof fact !== 'string') return res.status(400).json({ error: 'fact string required' });
+    const mem = loadMemory();
+    mem.facts = [...(mem.facts || []), fact.slice(0, 200)].slice(-50);
+    saveMemory(mem);
+    res.json({ success: true, totalFacts: mem.facts.length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/memory', authenticateToken, requireFullCapabilities, (req, res) => {
+  try {
+    saveMemory({ facts: [], preferences: [], summaries: [], promptVersion: 1 });
+    res.json({ success: true, message: 'Memory cleared' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ════════════════════════════════════════════════════════════════
+//  VOICE TRANSCRIPTS  (/api/voice/*)
+// ════════════════════════════════════════════════════════════════
+
+app.get('/api/voice/transcripts', authenticateToken, (req, res) => {
+  if (!chatHistory) return res.json({ transcripts: [] });
+  const userId = req.user?.userId || req.user?.email || 'alec-owner';
+  const limit  = parseInt(req.query.limit) || 100;
+  try {
+    const transcripts = chatHistory.getVoiceTranscripts(userId, limit);
+    res.json({ success: true, transcripts, count: transcripts.length });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════
+//  TENANTCLOUD ENDPOINTS  (/api/tenantcloud/*)
+// ════════════════════════════════════════════════════════════════
+
+app.get('/api/tenantcloud/status', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.json({ configured: false });
+  try { res.json({ ...(await tenantCloud.status()), mfaPending: tenantCloud.isMfaPending() }); }
+  catch (err) { res.json({ configured: false, error: err.message }); }
+});
+
+/**
+ * POST /api/tenantcloud/manual-login
+ * Opens a visible Chrome window on this Mac so the owner can log in manually.
+ * Once logged in, cookies are saved and headless scraping takes over.
+ * Owner-only — runs on the server Mac, not remotely.
+ */
+app.post('/api/tenantcloud/manual-login', authenticateToken, requireOwner, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not available' });
+  try {
+    res.json({ success: true, message: 'Opening Chrome on the server Mac — log in to TenantCloud in the window that appears. You have 5 minutes.' });
+    // Run async — don't block the response
+    tenantCloud.startManualLogin().then(result => {
+      console.log('[TenantCloud manual login]', result.message);
+      if (iMessage) iMessage.notifyOwner(result.success ? '🏠 TenantCloud logged in and ready!' : '⚠️ TenantCloud login timed out', 'TenantCloud').catch(() => {});
+    }).catch(err => console.error('[TenantCloud manual login error]', err.message));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** POST /api/tenantcloud/verify-code  { code: "123456" } */
+app.post('/api/tenantcloud/verify-code', authenticateToken, (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not available' });
+  const { code } = req.body;
+  if (!code) return res.status(400).json({ error: 'code is required' });
+  try {
+    tenantCloud.submitVerificationCode(code);
+    res.json({ success: true, message: 'Code submitted — logging in...' });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/tenantcloud/summary', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, ...(await tenantCloud.getPortfolioSummary()) }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/properties', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, properties: await tenantCloud.listProperties() }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/properties/:id', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, property: await tenantCloud.getProperty(req.params.id) }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/properties/:id/units', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, units: await tenantCloud.listUnits(req.params.id) }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/tenants', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, tenants: await tenantCloud.listTenants(req.query) }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/tenants/:id', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, tenant: await tenantCloud.getTenant(req.params.id) }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/leases', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try {
+    const leases = await tenantCloud.listLeases(req.query);
+    res.json({ success: true, leases });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/leases/expiring', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try {
+    const leases = await tenantCloud.getExpiringLeases(parseInt(req.query.days) || 60);
+    res.json({ success: true, leases, daysAhead: parseInt(req.query.days) || 60 });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/payments', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, payments: await tenantCloud.listPayments(req.query) }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/payments/overdue', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, payments: await tenantCloud.getOverdueRent() }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/maintenance', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, requests: await tenantCloud.listMaintenance(req.query) }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/maintenance/open', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, requests: await tenantCloud.getOpenMaintenance() }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/messages', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, messages: await tenantCloud.listMessages(req.query) }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/messages/unread', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, messages: await tenantCloud.getUnreadMessages() }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/inquiries', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, inquiries: await tenantCloud.listInquiries(req.query) }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/tenantcloud/analytics/rent', authenticateToken, async (req, res) => {
+  if (!tenantCloud) return res.status(503).json({ error: 'TenantCloud not configured' });
+  try { res.json({ success: true, ...(await tenantCloud.analyzeRentPatterns()) }); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+// ════════════════════════════════════════════════════════════════
 //  START SERVER
 // ════════════════════════════════════════════════════════════════
+
+// Register system tasks on startup (daily summaries, weekly lease alerts, cleanup)
+if (scheduler) {
+  try {
+    scheduler.registerSystemTasks();
+    console.log('📅 System tasks registered (TenantCloud alerts, export cleanup)');
+  } catch (err) {
+    console.warn('⚠️  Task scheduler registration failed:', err.message);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+//  TWILIO WEBHOOKS  (incoming voice calls + SMS)
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * POST /api/twilio/voice
+ * Twilio calls this when someone calls your Twilio number.
+ * Responds with TwiML — greets the caller and records a voicemail,
+ * or redirects to a <Say> message from ALEC.
+ */
+app.post('/api/twilio/voice', express.urlencoded({ extended: false }), async (req, res) => {
+  const callerName = req.body.CallerName || req.body.From || 'Unknown caller';
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna">Hello, you've reached A.L.E.C., Alec Rovner's personal AI assistant. Alec is unavailable right now. Please leave a message after the beep and I'll make sure he gets it.</Say>
+  <Record maxLength="120" transcribe="true" transcribeCallback="/api/twilio/transcription" playBeep="true"/>
+  <Say voice="Polly.Joanna">Thank you for your message. Goodbye.</Say>
+</Response>`;
+  res.set('Content-Type', 'text/xml');
+  res.send(twiml);
+  console.log(`[Twilio Voice] Incoming call from ${callerName}`);
+
+  // Notify owner via iMessage
+  if (iMessage) {
+    iMessage.notifyOwner(`📞 Incoming call from ${callerName} — recording voicemail`, 'Twilio').catch(() => {});
+  }
+});
+
+/**
+ * POST /api/twilio/transcription
+ * Twilio sends voicemail transcription here when ready.
+ */
+app.post('/api/twilio/transcription', express.urlencoded({ extended: false }), async (req, res) => {
+  const text   = req.body.TranscriptionText || '(no transcription)';
+  const from   = req.body.From || 'Unknown';
+  const recUrl = req.body.RecordingUrl || '';
+  console.log(`[Twilio Transcription] From ${from}: ${text}`);
+
+  if (iMessage) {
+    iMessage.notifyOwner(`📞 Voicemail from ${from}:\n"${text}"${recUrl ? `\nRecording: ${recUrl}` : ''}`, 'Twilio Voicemail').catch(() => {});
+  }
+  res.sendStatus(204);
+});
+
+/**
+ * POST /api/twilio/sms
+ * Twilio calls this when someone texts your Twilio number.
+ * Passes the message to ALEC's LLM and replies via SMS.
+ */
+app.post('/api/twilio/sms', express.urlencoded({ extended: false }), async (req, res) => {
+  const from = req.body.From || '';
+  const body = (req.body.Body || '').trim();
+  console.log(`[Twilio SMS] Incoming from ${from}: ${body}`);
+
+  // Notify owner
+  if (iMessage) {
+    iMessage.notifyOwner(`💬 SMS from ${from}: "${body}"`, 'Twilio SMS').catch(() => {});
+  }
+
+  let reply = 'ALEC received your message.';
+  try {
+    // Run message through LLM for a response
+    const sysPrompt = buildSystemPrompt() + '\n\nYou are responding via SMS. Keep your reply under 160 characters. Be direct and helpful.';
+    reply = await callLLMText([
+      { role: 'system', content: sysPrompt },
+      { role: 'user',   content: body },
+    ], true);
+    // Truncate to SMS limit
+    if (reply.length > 155) reply = reply.slice(0, 152) + '…';
+  } catch (llmErr) {
+    console.warn('[Twilio SMS] LLM error:', llmErr.message);
+  }
+
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Message>${reply.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</Message>
+</Response>`;
+  res.set('Content-Type', 'text/xml');
+  res.send(twiml);
+});
+
+// ════════════════════════════════════════════════════════════════
+//  TENANTCLOUD BROWSER RELAY  (/api/tenantcloud/data-push)
+//
+//  The browser interceptor script (injected via Chrome DevTools) calls
+//  this endpoint whenever api.tenantcloud.com returns JSON data.
+//  No JWT needed — protected by TC_RELAY_SECRET (shared secret).
+//  Data is cached to data/tc-cache.json and served by the RAG system.
+// ════════════════════════════════════════════════════════════════
+
+const TC_CACHE_FILE = path.join(__dirname, '../data/tc-cache.json');
+const TC_RELAY_SECRET = process.env.TC_RELAY_SECRET || 'alec-tc-relay-2025';
+
+// In-memory cache — survives restarts via TC_CACHE_FILE
+let tcCache = (() => {
+  try { if (fs.existsSync(TC_CACHE_FILE)) return JSON.parse(fs.readFileSync(TC_CACHE_FILE, 'utf8')); }
+  catch (_) {}
+  return {};
+})();
+
+function saveTcCache() {
+  try { fs.writeFileSync(TC_CACHE_FILE, JSON.stringify(tcCache, null, 2)); } catch (_) {}
+}
+
+/**
+ * POST /api/tenantcloud/data-push?secret=xxx
+ * Body: { endpoint, data, capturedAt }
+ * Called by the browser interceptor — no JWT, protected by shared secret.
+ */
+app.post('/api/tenantcloud/data-push', express.json({ limit: '2mb' }), (req, res) => {
+  const { secret } = req.query;
+  if (secret !== TC_RELAY_SECRET) return res.status(403).json({ error: 'invalid secret' });
+
+  const { endpoint, data, capturedAt } = req.body;
+  if (!endpoint || !data) return res.status(400).json({ error: 'endpoint and data required' });
+
+  // Normalize endpoint to a simple key
+  const key = endpoint
+    .replace(/https?:\/\/[^/]+/, '')  // strip domain
+    .replace(/\?.*/, '')               // strip query string
+    .replace(/\/+/g, '_')
+    .replace(/^_/, '');
+
+  tcCache[key] = { data, capturedAt: capturedAt || new Date().toISOString(), endpoint };
+  tcCache._lastPush = new Date().toISOString();
+  saveTcCache();
+
+  console.log(`[TC Browser Relay] Cached ${key} (${JSON.stringify(data).length} bytes)`);
+  res.json({ ok: true, key });
+});
+
+/** GET /api/tenantcloud/cache — inspect cached data (owner only) */
+app.get('/api/tenantcloud/cache', authenticateToken, (req, res) => {
+  const summary = {};
+  for (const [k, v] of Object.entries(tcCache)) {
+    if (k.startsWith('_')) { summary[k] = v; continue; }
+    const d = v.data;
+    summary[k] = {
+      capturedAt: v.capturedAt,
+      items: Array.isArray(d) ? d.length : (d?.data ? (Array.isArray(d.data) ? d.data.length : 1) : 1),
+    };
+  }
+  res.json({ ok: true, keys: Object.keys(tcCache).filter(k => !k.startsWith('_')), summary });
+});
+
+/**
+ * POST /api/tenantcloud/inject-sync
+ * Server-side: opens the TenantCloud bookmarklet script in the user's
+ * Chrome via AppleScript (injects a <script> tag into the active tab).
+ * Requires Chrome to have TenantCloud open. Owner only.
+ */
+app.post('/api/tenantcloud/inject-sync', authenticateToken, requireOwner, async (req, res) => {
+  const { exec } = require('child_process');
+  const scriptUrl = `http://localhost:${PORT}/api/tenantcloud/bookmarklet.js?_=${Date.now()}`;
+  // AppleScript: run JS in the frontmost Chrome tab
+  const appleScript = `
+    tell application "Google Chrome"
+      set theTab to active tab of front window
+      set theUrl to URL of theTab
+      if theUrl contains "tenantcloud.com" then
+        execute theTab javascript "var s=document.createElement('script');s.src='${scriptUrl}';document.head.appendChild(s);"
+        return "injected"
+      else
+        return "not-tenantcloud:" & theUrl
+      end if
+    end tell
+  `.trim();
+
+  exec(`osascript -e '${appleScript.replace(/'/g, "'\\''")}'`, (err, stdout, stderr) => {
+    const output = (stdout || '').trim();
+    if (err) {
+      return res.json({ ok: false, message: 'AppleScript error — make sure TenantCloud is open in Chrome: ' + (err.message || '').slice(0, 100) });
+    }
+    if (output.startsWith('not-tenantcloud:')) {
+      return res.json({ ok: false, message: 'Chrome frontmost tab is not TenantCloud. Navigate to app.tenantcloud.com first, then click Sync Now again.' });
+    }
+    res.json({ ok: true, message: 'Sync script injected into Chrome TenantCloud tab.' });
+  });
+});
+
+/**
+ * GET /api/tenantcloud/bookmarklet.js
+ * Returns the interceptor script. The bookmarklet calls this endpoint,
+ * evals the result, which then immediately pushes all TC data to ALEC.
+ * No auth — this script is the auth mechanism itself.
+ */
+app.get('/api/tenantcloud/bookmarklet.js', (req, res) => {
+  const port = PORT;
+  const secret = TC_RELAY_SECRET;
+  const knownEndpoints = [
+    { url: 'https://api.tenantcloud.com/landlord/tenants',  params: '?limit=100&include=lease,unit,building' },
+    { url: 'https://api.tenantcloud.com/landlord/property', params: '?limit=50' },
+    { url: 'https://api.tenantcloud.com/leases',            params: '?limit=100&include=building,unit,tenant' },
+    { url: 'https://api.tenantcloud.com/transactions',      params: '?limit=100&order=-created_at' },
+    { url: 'https://api.tenantcloud.com/units',             params: '?limit=100' },
+    { url: 'https://api.tenantcloud.com/landlord/profile',  params: '' },
+    { url: 'https://api.tenantcloud.com/properties',        params: '?limit=50' },
+  ];
+
+  const script = `
+(async function alecTcSync() {
+  const ALEC = 'http://localhost:${port}/api/tenantcloud/data-push?secret=${secret}';
+  const HDR = { 'x-requested-with': 'XMLHttpRequest', accept: 'application/json', credentials: 'include' };
+
+  // Install persistent interceptors so future navigation also captures data
+  if (!window.__alecRelayInstalled) {
+    window.__alecRelayInstalled = true;
+    const origFetch = window.fetch;
+    window.fetch = async function(input, init) {
+      const url = typeof input === 'string' ? input : (input && input.url) || '';
+      const resp = await origFetch.apply(this, arguments);
+      if (url.includes('api.tenantcloud.com') && url !== ALEC) {
+        resp.clone().json().then(j => {
+          fetch(ALEC, { method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ endpoint: url, data: j, capturedAt: new Date().toISOString() }) });
+        }).catch(()=>{});
+      }
+      return resp;
+    };
+    console.log('[ALEC] Interceptor installed for future calls');
+  }
+
+  // Immediately pull all known endpoints
+  const endpoints = ${JSON.stringify(knownEndpoints)};
+  let pushed = 0, failed = 0;
+  for (const { url, params } of endpoints) {
+    try {
+      const r = await fetch(url + params, { headers: HDR, credentials: 'include' });
+      if (r.ok) {
+        const j = await r.json();
+        await fetch(ALEC, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ endpoint: url, data: j, capturedAt: new Date().toISOString() }) });
+        pushed++;
+      } else {
+        failed++;
+        console.warn('[ALEC] TC endpoint returned', r.status, url);
+      }
+    } catch(e) { failed++; console.warn('[ALEC]', e.message, url); }
+  }
+
+  const msg = '✅ ALEC synced ' + pushed + ' TenantCloud endpoints' + (failed ? ' (' + failed + ' failed — are you logged in?)' : '');
+  console.log(msg);
+  // Brief visual confirmation
+  const toast = document.createElement('div');
+  toast.textContent = msg;
+  toast.style.cssText = 'position:fixed;top:20px;right:20px;background:#1a6b2b;color:#fff;padding:14px 20px;border-radius:8px;font-size:14px;z-index:999999;box-shadow:0 4px 12px rgba(0,0,0,0.3)';
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 5000);
+  return msg;
+})();
+`.trim();
+
+  res.set('Content-Type', 'application/javascript');
+  res.send(script);
+});
 
 app.listen(PORT, HOST, () => {
   const lanIps = getLanAddresses();

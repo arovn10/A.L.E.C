@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>A.L.E.C. Control Center</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root { --bg:#0f172a; --surface:#1e293b; --border:#334155; --accent:#06b6d4; --green:#10b981; --yellow:#f59e0b; --red:#ef4444; --text:#e2e8f0; --muted:#94a3b8; }
+  body { background:var(--bg); color:var(--text); font-family:"SF Pro Display","Helvetica Neue",Arial,sans-serif; height:100vh; display:flex; flex-direction:column; overflow:hidden; -webkit-user-select:none; user-select:none; }
+  .titlebar { height:52px; -webkit-app-region:drag; display:flex; align-items:center; padding:0 20px; border-bottom:1px solid var(--border); flex-shrink:0; background:linear-gradient(180deg,#1a2540 0%,var(--bg) 100%); }
+  .titlebar-logo { font-size:15px; font-weight:700; color:var(--accent); letter-spacing:.12em; margin:0 auto; }
+  .statusbar { display:flex; align-items:center; gap:12px; padding:14px 20px; background:var(--surface); border-bottom:1px solid var(--border); flex-shrink:0; }
+  .status-dot { width:10px; height:10px; border-radius:50%; background:var(--red); transition:background .3s; }
+  .status-dot.running  { background:var(--green);  box-shadow:0 0 8px var(--green);  }
+  .status-dot.starting { background:var(--yellow); box-shadow:0 0 8px var(--yellow); animation:pulse 1s infinite; }
+  .status-dot.stopped  { background:var(--red); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+  .status-label { font-size:13px; font-weight:600; }
+  .status-model { font-size:11px; color:var(--muted); }
+  .status-latency { font-size:11px; color:var(--muted); margin-left:auto; }
+  .controls { display:flex; gap:8px; padding:12px 20px; border-bottom:1px solid var(--border); flex-shrink:0; flex-wrap:wrap; }
+  .btn { padding:7px 16px; border-radius:8px; border:1px solid var(--border); background:var(--surface); color:var(--text); font-size:13px; font-weight:500; cursor:pointer; transition:all .15s; -webkit-app-region:no-drag; }
+  .btn:hover { background:#2d3f5c; border-color:var(--accent); }
+  .btn:active { transform:scale(.97); }
+  .btn:disabled { opacity:.4; cursor:not-allowed; transform:none; }
+  .btn.primary { background:var(--accent); border-color:var(--accent); color:#0f172a; font-weight:700; }
+  .btn.primary:hover { background:#0891b2; }
+  .btn.danger { border-color:var(--red); color:var(--red); }
+  .btn.danger:hover { background:rgba(239,68,68,.12); }
+  .metrics { display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--border); border-bottom:1px solid var(--border); flex-shrink:0; }
+  .metric { background:var(--bg); padding:12px 16px; text-align:center; }
+  .metric-val { font-size:22px; font-weight:700; color:var(--accent); }
+  .metric-lbl { font-size:10px; color:var(--muted); margin-top:2px; text-transform:uppercase; letter-spacing:.08em; }
+  .log-header { display:flex; align-items:center; padding:8px 20px; border-bottom:1px solid var(--border); flex-shrink:0; }
+  .log-header h3 { font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.1em; }
+  .log-toggle { margin-left:auto; display:flex; gap:4px; }
+  .log-toggle button { padding:3px 10px; border-radius:5px; border:1px solid var(--border); background:transparent; color:var(--muted); font-size:11px; cursor:pointer; -webkit-app-region:no-drag; }
+  .log-toggle button.active { background:var(--border); color:var(--text); }
+  #log-container { flex:1; overflow-y:auto; padding:8px 0; font-family:"SF Mono","Fira Code",Monaco,monospace; font-size:11.5px; line-height:1.5; }
+  #log-container::-webkit-scrollbar { width:4px; }
+  #log-container::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
+  .log-line { padding:1px 20px; white-space:pre-wrap; word-break:break-all; }
+  .log-ts { color:var(--muted); margin-right:8px; }
+  .log-line.info  { color:#cbd5e1; }
+  .log-line.warn  { color:var(--yellow); }
+  .log-line.error { color:var(--red); }
+  #models-panel { display:none; flex:1; overflow-y:auto; padding:16px 20px; }
+  #models-panel.visible { display:block; }
+  #log-container.hidden { display:none; }
+  .model-card { display:flex; align-items:center; gap:12px; padding:12px 16px; border:1px solid var(--border); border-radius:10px; margin-bottom:8px; background:var(--surface); }
+  .model-name { font-size:13px; font-weight:600; }
+  .model-size { font-size:11px; color:var(--muted); }
+  .model-active { margin-left:auto; font-size:11px; color:var(--green); font-weight:600; }
+</style>
+</head>
+<body>
+
+<div class="titlebar">
+  <span class="titlebar-logo">⬡ A.L.E.C.</span>
+</div>
+
+<div class="statusbar">
+  <div class="status-dot stopped" id="status-dot"></div>
+  <span class="status-label" id="status-label">Stopped</span>
+  <span class="status-model" id="status-model"></span>
+  <span class="status-latency" id="status-latency"></span>
+</div>
+
+<div class="controls">
+  <button class="btn primary" id="btn-start"   onclick="doStart()">▶ Start</button>
+  <button class="btn danger"  id="btn-stop"    onclick="doStop()"    disabled>⏹ Stop</button>
+  <button class="btn"         id="btn-restart" onclick="doRestart()" disabled>🔄 Restart</button>
+  <button class="btn"         onclick="window.alec.openBrowser()">🌐 Open</button>
+  <button class="btn"         id="btn-update"  onclick="doUpdate()">⬆ Update</button>
+</div>
+
+<div class="metrics">
+  <div class="metric"><div class="metric-val" id="m-uptime">—</div><div class="metric-lbl">Uptime</div></div>
+  <div class="metric"><div class="metric-val" id="m-mem">—</div><div class="metric-lbl">Memory</div></div>
+  <div class="metric"><div class="metric-val" id="m-sessions">—</div><div class="metric-lbl">Sessions</div></div>
+  <div class="metric"><div class="metric-val" id="m-model">—</div><div class="metric-lbl">Model</div></div>
+</div>
+
+<div class="log-header">
+  <h3>Server Logs</h3>
+  <div class="log-toggle">
+    <button id="tab-logs"   class="active" onclick="showTab('logs')">Logs</button>
+    <button id="tab-models"               onclick="showTab('models')">Models</button>
+  </div>
+</div>
+
+<div id="log-container"></div>
+<div id="models-panel"></div>
+
+<script>
+  // ── Init ─────────────────────────────────────────────────────────
+  let startTime = null, uptimeTimer = null, autoScroll = true;
+  const logEl = document.getElementById('log-container');
+
+  window.alec.status().then(setStatus);
+  window.alec.onStatus(setStatus);
+  window.alec.onHealth(updateHealth);
+  window.alec.onLog(appendLog);
+  window.alec.onLogBatch(batch => batch.forEach(appendLog));
+  window.alec.version().then(v => { document.title = 'A.L.E.C. v' + v; });
+
+  logEl.addEventListener('scroll', () => {
+    autoScroll = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 40;
+  });
+
+  // ── Status ────────────────────────────────────────────────────────
+  function setStatus(s) {
+    const dot   = document.getElementById('status-dot');
+    const label = document.getElementById('status-label');
+    dot.className = 'status-dot ' + s;
+    label.textContent = { running:'Running', stopped:'Stopped', starting:'Starting…', error:'Error' }[s] || s;
+    const running = s === 'running', stopped = s === 'stopped' || s === 'error';
+    document.getElementById('btn-start').disabled   = !stopped;
+    document.getElementById('btn-stop').disabled    = !running;
+    document.getElementById('btn-restart').disabled = !running;
+    if (running && !startTime) { startTime = Date.now(); uptimeTimer = setInterval(tickUptime, 1000); }
+    if (!running) { startTime = null; clearInterval(uptimeTimer); document.getElementById('m-uptime').textContent = '—'; }
+  }
+
+  function updateHealth(data) {
+    if (data.llm) {
+      const m = (data.llm.modelPath || data.llm.model || '').replace(/\..+$/, '');
+      document.getElementById('status-model').textContent = m;
+      document.getElementById('m-model').textContent = m.slice(0, 9) || '—';
+    }
+    if (data.voice) document.getElementById('m-sessions').textContent = data.voice.activeSessions ?? '—';
+    if (data.memory) document.getElementById('m-mem').textContent = Math.round(data.memory.heapUsed / 1024 / 1024) + 'M';
+  }
+
+  function tickUptime() {
+    if (!startTime) return;
+    const s = Math.floor((Date.now() - startTime) / 1000);
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    document.getElementById('m-uptime').textContent = h > 0 ? h + 'h' + m + 'm' : m > 0 ? m + 'm' + sec + 's' : sec + 's';
+  }
+
+  // ── Controls ──────────────────────────────────────────────────────
+  async function doStart()   { setStatus('starting'); await window.alec.start(); }
+  async function doStop()    { await window.alec.stop(); }
+  async function doRestart() { await window.alec.restart(); }
+
+  async function doUpdate() {
+    const btn = document.getElementById('btn-update');
+    btn.disabled = true;
+    btn.textContent = '⬆ Updating…';
+    const r = await window.alec.update();
+    btn.textContent = r.success ? '✅ Done' : '✖ Failed';
+    btn.disabled = false;
+    setTimeout(() => { btn.textContent = '⬆ Update'; }, 4000);
+  }
+
+  // ── Logs ──────────────────────────────────────────────────────────
+  function appendLog(entry) {
+    const div = document.createElement('div');
+    div.className = 'log-line ' + (entry.level || 'info');
+    const ts = document.createElement('span');
+    ts.className = 'log-ts';
+    ts.textContent = entry.ts;
+    div.appendChild(ts);
+    div.appendChild(document.createTextNode(entry.text || ''));
+    logEl.appendChild(div);
+    while (logEl.children.length > 500) logEl.removeChild(logEl.firstChild);
+    if (autoScroll) logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  // ── Tabs ──────────────────────────────────────────────────────────
+  function showTab(tab) {
+    const isLog = tab === 'logs';
+    logEl.classList.toggle('hidden', !isLog);
+    document.getElementById('models-panel').classList.toggle('visible', !isLog);
+    document.getElementById('tab-logs').classList.toggle('active', isLog);
+    document.getElementById('tab-models').classList.toggle('active', !isLog);
+    if (!isLog) loadModels();
+  }
+
+  async function loadModels() {
+    const panel = document.getElementById('models-panel');
+    panel.textContent = 'Loading models…';
+    const models = await window.alec.listModels();
+    panel.textContent = '';
+    if (!models.length) {
+      panel.textContent = 'No GGUF models found in ~/.lmstudio/models';
+      return;
+    }
+    models.forEach(m => {
+      const card = document.createElement('div');
+      card.className = 'model-card';
+      const info = document.createElement('div');
+      const name = document.createElement('div');
+      name.className = 'model-name';
+      name.textContent = m.name.replace('.gguf', '');
+      const size = document.createElement('div');
+      size.className = 'model-size';
+      size.textContent = m.sizeGB + ' GB  ·  ' + m.path;
+      info.appendChild(name);
+      info.appendChild(size);
+      card.appendChild(info);
+      if (m.name.includes('Nemotron-3-Nano-4B')) {
+        const badge = document.createElement('span');
+        badge.className = 'model-active';
+        badge.textContent = '✓ Active';
+        card.appendChild(badge);
+      }
+      panel.appendChild(card);
+    });
+  }
+</script>
+</body>
+</html>
