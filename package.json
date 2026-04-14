@@ -11,7 +11,7 @@
     "download-model": "bash scripts/download-model.sh",
     "start:full": "bash scripts/start-alec.sh",
     "build": "echo 'No build step required'",
-    "test": "jest",
+    "test": "jest --forceExit",
     "lint": "node -c backend/server.js && node -c services/neuralEngine.js && node -c frontend/app.js"
   },
   "keywords": [
