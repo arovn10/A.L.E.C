@@ -1830,6 +1830,26 @@ def drive_cycle():
     return {"success": True, "task_id": task_id}
 
 
+# ── RAG Embedding ─────────────────────────────────────────────────────────────
+class EmbedRequest(BaseModel):
+    text: str
+
+@app.post("/embed")
+async def embed_text(req: EmbedRequest):
+    """Return nomic-embed-text-v1.5 vector for RAG retrieval.
+
+    Returns:
+        {"vector": [float, ...], "dim": 768}
+    """
+    try:
+        from ragPipeline import get_embedding
+        vector = get_embedding(req.text)
+        return {"vector": vector, "dim": len(vector)}
+    except Exception as e:
+        logger.error(f"[embed] error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ══════════════════════════════════════════════════════════════════
 #  RUN
 # ══════════════════════════════════════════════════════════════════
