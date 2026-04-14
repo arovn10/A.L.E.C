@@ -70,6 +70,13 @@ const awsSvc       = (() => { try { return require('../services/awsService.js');
 const research     = (() => { try { return require('../services/researchAgent.js');   } catch { return null; } })();
 const skillsReg    = (() => { try { return require('../services/skillsRegistry.js');  } catch { return null; } })();
 
+// ── Data Connector Registry ──────────────────────────────────────────────────
+const { registry: connectorRegistry } = require('../dataConnectors/index');
+connectorRegistry.register(require('../dataConnectors/azureSqlConnector'));
+connectorRegistry.register(require('../dataConnectors/tenantCloudConnector'));
+connectorRegistry.register(require('../dataConnectors/githubConnector'));
+console.log('[Connectors] Registered:', connectorRegistry.list().join(', '));
+
 // Warm up the embedded engine on startup
 llamaEngine.warmUp();
 
