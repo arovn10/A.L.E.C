@@ -4518,6 +4518,7 @@ app.get('/api/tenantcloud/bookmarklet.js', (req, res) => {
 
 // ── PDF + Report Routes ──────────────────────────────────────────────────────
 fs.mkdirSync(path.join(__dirname, '..', 'data', 'exports'), { recursive: true });
+fs.mkdirSync(path.join(__dirname, '..', 'tmp', 'reports'), { recursive: true });
 
 const pdfRoutes    = require('../routes/pdfRoutes');
 const reportRoutes = require('../routes/reportRoutes');
@@ -4525,12 +4526,26 @@ const reportRoutes = require('../routes/reportRoutes');
 app.use('/api', authenticateToken, pdfRoutes);
 app.use('/api', authenticateToken, reportRoutes);
 
-app.get('/api/download/:filename', authenticateToken, (req, res) => {
-  const filePath = path.join(__dirname, '..', 'data', 'exports', req.params.filename);
+app.get('/api/download/:filename', (req, res) => {
+  // path.basename strips any path traversal attempts (e.g. ../../etc/passwd → passwd)
+  const safe = path.basename(req.params.filename);
+  const filePath = path.join(__dirname, '../tmp/reports', safe);
   if (!fs.existsSync(filePath)) {
-    return res.status(404).json({ success: false, error: 'File not found' });
+    return res.status(404).json({ error: 'Report not found' });
   }
   res.download(filePath);
+});
+
+// ── Manual STOA Brain sync trigger (distinct from GitHub push webhook) ────────
+app.post('/api/webhooks/github/sync', async (_req, res) => {
+  try {
+    const result = stoaBrainSync
+      ? await stoaBrainSync.fullSync()
+      : { indexed: 0, skipped: 0, error: 'STOA Brain not initialized' };
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ════════════════════════════════════════════════════════════════

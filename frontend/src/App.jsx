@@ -1,17 +1,19 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
-
-// Page stubs — replaced in Tasks 3–9
-function Chat() { return <div className="p-8 text-white">Chat Panel (Task 4)</div>; }
-function Dashboard() { return <div className="p-8 text-white">Dashboard (Task 8)</div>; }
-function Finance() { return <div className="p-8 text-white">Finance Panel (Task 5)</div>; }
-function Review() { return <div className="p-8 text-white">Review Panel (Task 6)</div>; }
-function PdfUpload() { return <div className="p-8 text-white">PDF Upload (Task 7)</div>; }
-function Settings() { return <div className="p-8 text-white">Settings (Task 9)</div>; }
+import Sidebar from './components/layout/Sidebar';
+import TopBar from './components/layout/TopBar';
+import Chat from './pages/Chat';
+import Dashboard from './pages/Dashboard';
+import Finance from './pages/Finance';
+import Review from './pages/Review';
+import PdfUpload from './pages/PdfUpload';
+import Settings from './pages/Settings';
 
 export default function App() {
   return (
     <div className="flex h-screen bg-alec-900 text-white overflow-hidden">
+      <Sidebar />
       <div className="flex flex-col flex-1 min-w-0">
+        <TopBar />
         <main className="flex-1 overflow-auto">
           <Routes>
             <Route path="/" element={<Navigate to="/chat" replace />} />
