@@ -77,6 +77,13 @@ const QualityScorer  = require('../services/qualityScorer');
 const FineTuneQueue  = require('../services/fineTuneQueue');
 const reviewRoutes   = require('../routes/reviewRoutes');
 
+// ── SQLite migration — ensure fine-tune/review tables exist ─────────────────
+try {
+  require('../scripts/setupAlecDb').runMigration();
+} catch (dbInitErr) {
+  console.warn('[DB] Migration warning:', dbInitErr.message);
+}
+
 // ── Data Connector Registry ──────────────────────────────────────────────────
 const { registry: connectorRegistry } = require('../dataConnectors/index');
 try {
