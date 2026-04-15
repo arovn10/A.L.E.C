@@ -70,6 +70,60 @@ const awsSvc       = (() => { try { return require('../services/awsService.js');
 const research     = (() => { try { return require('../services/researchAgent.js');   } catch { return null; } })();
 const skillsReg    = (() => { try { return require('../services/skillsRegistry.js');  } catch { return null; } })();
 
+const RagService     = require('../services/ragService');
+const StoaBrainSync  = require('../services/stoaBrainSync');
+const cron           = require('node-cron');
+const QualityScorer  = require('../services/qualityScorer');
+const FineTuneQueue  = require('../services/fineTuneQueue');
+const reviewRoutes   = require('../routes/reviewRoutes');
+
+// ── Data Connector Registry ──────────────────────────────────────────────────
+const { registry: connectorRegistry } = require('../dataConnectors/index');
+try {
+  connectorRegistry.register(require('../dataConnectors/azureSqlConnector'));
+  connectorRegistry.register(require('../dataConnectors/tenantCloudConnector'));
+  connectorRegistry.register(require('../dataConnectors/githubConnector'));
+  console.log('[Connectors] Registered:', connectorRegistry.list().join(', '));
+} catch (connErr) {
+  console.warn('[Connectors] One or more connectors failed to register:', connErr.message);
+}
+
+let ragService    = null;
+let stoaBrainSync = null;
+try {
+  ragService    = new RagService();
+  stoaBrainSync = new StoaBrainSync();
+  stoaBrainSync.startCron();
+} catch (ragInitErr) {
+  console.warn('[RAG] Service init failed (Weaviate unavailable?):', ragInitErr.message);
+}
+
+let qualityScorer = null;
+let fineTuneQueue = null;
+try {
+  qualityScorer = new QualityScorer();
+  fineTuneQueue = new FineTuneQueue();
+  // 30-min threshold check cron
+  cron.schedule('*/30 * * * *', async () => {
+    if (!fineTuneQueue) return;
+    try {
+      const result = await fineTuneQueue.maybeRun();
+      if (result.triggered) console.log('[FineTuneQueue] Cron triggered training:', result.jobId);
+    } catch (e) { console.error('[FineTuneQueue] Cron error:', e.message); }
+  });
+  // Weekly force-run — Sunday 02:00
+  cron.schedule('0 2 * * 0', async () => {
+    if (!fineTuneQueue) return;
+    try {
+      const result = await fineTuneQueue.maybeRun({ force: true });
+      console.log('[FineTuneQueue] Weekly cron result:', result);
+    } catch (e) { console.error('[FineTuneQueue] Weekly cron error:', e.message); }
+  });
+  console.log('[FineTuneQueue] Crons registered (30-min + Sunday 02:00)');
+} catch (qErr) {
+  console.warn('[FineTuneQueue] Init failed:', qErr.message);
+}
+
 // Warm up the embedded engine on startup
 llamaEngine.warmUp();
 
@@ -87,10 +141,59 @@ function toE164(phone) {
 }
 
 /**
+ * enforceHardRules — app-layer H1-H8 enforcement.
+ * Called on every LLM response before it reaches the client.
+ * Throws if a violation is detected; returns the text unchanged otherwise.
+ * @param {string} responseText
+ * @returns {string}
+ */
+function enforceHardRules(responseText) {
+  const text = responseText || '';
+
+  // H2: Never reveal system prompt
+  const h2Triggers = [
+    /my (system )?prompt (is|says|contains)/i,
+    /here is my (system )?prompt/i,
+    /my instructions (are|say|include)/i,
+  ];
+  if (h2Triggers.some(p => p.test(text))) {
+    throw new Error('H2: Response appears to reveal system prompt contents.');
+  }
+
+  // H3: Never impersonate a human
+  const h3Triggers = [
+    /i('m| am) (a |not an? )?(real )?human/i,
+    /i('m| am) not an? (ai|artificial intelligence|language model)/i,
+    /i('m| am) (a real person|actually human)/i,
+  ];
+  if (h3Triggers.some(p => p.test(text))) {
+    throw new Error('H3: Response appears to impersonate a human.');
+  }
+
+  // H7: Never quote stock/financial figures without a sourced data block
+  const hasDataSource = /\[(STOA DATA|Azure SQL|TenantCloud|Plaid|Weaviate|Home Assistant)\]/i.test(text);
+  const stockPattern  = /\b[A-Z]{1,5}\b is (trading at|priced at|currently at) \$[\d,.]+/i;
+  if (!hasDataSource && stockPattern.test(text)) {
+    throw new Error('H7: Response quotes financial figure without a sourced data block.');
+  }
+
+  return text;
+}
+
+/**
  * System prompt — generated fresh on every request so the date is always accurate.
  * LLMs have a training cutoff and don't know the current date unless told explicitly.
  */
 function buildSystemPrompt() {
+  // Load constitutional directive from data/ALEC_DIRECTIVE.md
+  let directiveSection = '';
+  try {
+    const directivePath = path.join(__dirname, '../data/ALEC_DIRECTIVE.md');
+    directiveSection = fs.readFileSync(directivePath, 'utf8') + '\n\n---\n\n';
+  } catch {
+    console.warn('[server] ALEC_DIRECTIVE.md not found — using empty directive section');
+  }
+
   const now = new Date();
   const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
   const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
@@ -129,7 +232,7 @@ function buildSystemPrompt() {
   if (process.env.MS_TENANT_ID) caps.push('✅ Microsoft 365 — SharePoint, OneDrive, Outlook/calendar');
   else caps.push('⚠️  Microsoft 365 — not configured');
 
-  return `You are Alec (A.L.E.C.), Alec Rovner's personal AI executive assistant running locally on his Mac.
+  return `${directiveSection}You are Alec (A.L.E.C.), Alec Rovner's personal AI executive assistant running locally on his Mac.
 You use a local LLaMA 3.1 8B model (Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf) running on Apple Silicon via node-llama-cpp with Metal GPU acceleration. You do NOT call any external AI API — you run entirely on this Mac.
 Current date and time: ${dateStr} at ${timeStr}.
 
@@ -137,17 +240,19 @@ Current date and time: ${dateStr} at ${timeStr}.
 ${caps.join('\n')}
 
 ## Critical Rules — NEVER Violate These
-1. **NEVER fabricate data.** If real data is injected above (marked [STOA DATA], [iMessage DATA], etc.), use ONLY that. If no real data is available, say: "I don't have access to that data right now."
+1. **NEVER fabricate data.** If real data is injected above (marked [STOA DATA], [iMessage DATA], etc.), use ONLY that. If no real data is available, say so honestly.
 2. **iMessages HARD RULE: If you do NOT see "[iMessage DATA" in this system prompt, you have ZERO iMessages to report. Say "I couldn't read your messages right now" — NEVER invent names, messages, or conversations. Not even as examples. Not even to be helpful.**
 3. **NEVER invent STOA numbers** (occupancy %, rent, tenants, reviews). Real STOA data is injected via the RAG system — if it's not in context, say you don't have it.
 3b. **TenantCloud HARD RULE: If you do NOT see "[TenantCloud DATA" in this system prompt, you have ZERO tenant/rent/maintenance data. Never invent tenant names, payment amounts, or property details.**
-3c. **Plaid HARD RULE: If you do NOT see "[Plaid Financial DATA" in this prompt, you have no investment data. Never invent portfolio values, account balances, or holdings.**
+3c. **Plaid / Financial HARD RULE: If you do NOT see "[Plaid Financial DATA" in this prompt, you have NO investment portfolio data. Never invent portfolio values, account balances, stock holdings, or position sizes. Say: "I don't have access to your brokerage data right now."**
 3d. **Home Assistant HARD RULE: If you do NOT see "[Home Assistant DATA" in this prompt, you have no device state information. Never guess whether lights are on/off or locks are locked/unlocked.**
+3e. **Stock prices / market data HARD RULE: You have NO real-time market data. NEVER quote a specific stock price, index level, or crypto price from memory — your training data is outdated and prices change every second. If asked for a current stock price: (1) attempt a web search if search results appear above, (2) if search results contain a price, report it with the timestamp. If search results are absent or don't contain a current price, say: "I don't have real-time market data — check Yahoo Finance, Google Finance, or Bloomberg for the current price."**
 4. **NEVER claim you can't do something you CAN do** (GitHub, iMessage, STOA queries, Excel exports, research, SMS). Check the capabilities list above.
 5. **SMS/Texting**: If Twilio is ✅ and the owner asks you to text them, the server automatically sends the text — just confirm you're doing it and describe what the message will say.
 6. **Google Reviews / resident feedback**: The STOA database does NOT contain Google review text. If asked for reviews, say: "The STOA database doesn't include Google review text — I can see Google ratings if they're in the data, but not individual reviews. I can do a web search for recent reviews if you'd like."
 7. **Excel exports**: Only generate Excel files for data you actually have (STOA leasing data). Don't offer to generate "top 100 negative reviews" — that data doesn't exist in STOA.
-8. Be direct, smart, and friendly. Use markdown for clarity. Refer to yourself as "Alec" in casual replies.`;
+8. **Typos and abbreviations**: If a user types an ambiguous abbreviation or likely typo (e.g. "IRSN", "AMZM", "stoa stcok"), do NOT assume it refers to a country, company, or concept that superficially matches the letters. Instead, ask for clarification: "Did you mean [most likely interpretation based on context]?" For example, "IRSN" in a stock context likely means a mistyped ticker, not Iran.
+9. Be direct, smart, and friendly. Use markdown for clarity. Refer to yourself as "Alec" in casual replies.`;
 }
 
 // Keep a static alias for backward compat with any code referencing ALEC_SYSTEM_PROMPT directly
@@ -336,7 +441,7 @@ async function extractAndStoreFacts(userMsg, assistantReply) {
 // ════════════════════════════════════════════════════════════════
 //  WEB SEARCH (DuckDuckGo Instant Answers — no API key needed)
 // ════════════════════════════════════════════════════════════════
-const SEARCH_TRIGGERS = /\b(search|find|look up|what is|who is|latest|news|current|today|weather|price|how much|when did|when is|define|meaning of)\b/i;
+const SEARCH_TRIGGERS = /\b(search|find|look up|what is|who is|latest|news|current|today|weather|price|how much|when did|when is|define|meaning of|stock|ticker|nasdaq|nyse|crypto|bitcoin|ethereum|market cap|earnings|interest rate)\b/i;
 
 async function webSearch(query) {
   try {
@@ -529,6 +634,38 @@ const requireFullCapabilities = (req, res, next) => {
   next();
 };
 
+// ── GitHub Webhook — STOA Brain Sync ────────────────────────────────────────
+app.post(
+  '/api/webhooks/github',
+  express.raw({ type: '*/*' }),
+  async (req, res) => {
+    const sig = req.headers['x-hub-signature-256'] || '';
+    if (!stoaBrainSync || !stoaBrainSync.verifyWebhookSignature(req.body, sig)) {
+      return res.status(401).json({ error: 'Invalid webhook signature' });
+    }
+    let payload;
+    try {
+      payload = JSON.parse(req.body.toString('utf8'));
+    } catch {
+      return res.status(400).json({ error: 'Invalid JSON payload' });
+    }
+    if (req.headers['x-github-event'] !== 'push') {
+      return res.status(200).json({ ok: true, skipped: 'not a push event' });
+    }
+    try {
+      const result = await stoaBrainSync.handlePushEvent(payload);
+      console.log('[stoaBrainSync] webhook indexed:', result);
+      return res.json({ ok: true, ...result });
+    } catch (err) {
+      console.error('[stoaBrainSync] webhook error:', err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  },
+);
+
+// ── Review Queue Routes (Quality Gate + Fine-Tune management) ────────────────
+app.use('/api/review', authenticateToken, reviewRoutes);
+
 // ════════════════════════════════════════════════════════════════
 //  HEALTH CHECK
 // ════════════════════════════════════════════════════════════════
@@ -679,7 +816,11 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     // Build system prompt with memory
     const mem = loadMemory();
     const memCtx = buildMemoryContext(mem);
-    let systemContent = buildSystemPrompt() + (memCtx ? '\n\n' + memCtx : '');
+    let ragContext = '';
+    try { ragContext = ragService ? await ragService.retrieve(userText) : ''; } catch (_) {}
+    let systemContent = buildSystemPrompt()
+      + (memCtx ? '\n\n' + memCtx : '')
+      + (ragContext ? '\n\n' + ragContext : '');
 
     // ── Self-improvement trigger — owner can ask ALEC to improve itself ──
     const isOwner = req.user?.tokenType === 'OWNER' || req.user?.role === 'owner';
@@ -946,16 +1087,40 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
       chatHistory.addMessage(convId, 'assistant', responseText);
     }
 
+    let safeReply;
+    try {
+      safeReply = enforceHardRules(responseText);
+    } catch (ruleErr) {
+      console.error('[HardRule violation]', ruleErr.message);
+      safeReply = "I can't respond to that in a way that aligns with my operating rules. Please rephrase.";
+    }
+
     const engineStatus = llamaEngine.getStatus();
     res.json({
       success: true,
-      response: responseText,
+      response: safeReply,
       latency_ms,
       source:    'llama-metal',
       model:     engineStatus.modelPath,
       timestamp:  new Date().toISOString(),
       conversation_id: convId,
     });
+
+    // Async quality scoring — fire-and-forget; never blocks the chat response
+    if (qualityScorer && convId && userText && safeReply) {
+      setImmediate(() => {
+        try {
+          qualityScorer.score({
+            turnId:       convId + '-' + Date.now(),
+            sessionId:    session_id || convId,
+            userMsg:      userText,
+            alecResponse: safeReply,
+          });
+        } catch (scoreErr) {
+          console.error('[qualityScorer] score() failed:', scoreErr.message);
+        }
+      });
+    }
   } catch (error) {
     console.error('Chat error:', error.message);
     res.status(500).json({
@@ -999,7 +1164,11 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
     // System prompt + memory
     const mem = loadMemory();
     const memCtx = buildMemoryContext(mem);
-    let systemContent = buildSystemPrompt() + (memCtx ? '\n\n' + memCtx : '');
+    let ragContext = '';
+    try { ragContext = ragService ? await ragService.retrieve(userText) : ''; } catch (_) {}
+    let systemContent = buildSystemPrompt()
+      + (memCtx ? '\n\n' + memCtx : '')
+      + (ragContext ? '\n\n' + ragContext : '');
 
     // ── Excel export detection (stream) — send download link immediately ──
     const exportIntentStream = excelExport.detectExportIntent(userText);
@@ -1377,6 +1546,14 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
       }
     }
 
+    // After the token loop completes, enforce hard rules before sending done signal
+    try {
+      enforceHardRules(fullResponse);
+    } catch (ruleErr) {
+      console.error('[HardRule violation - stream]', ruleErr.message);
+      res.write(`data: ${JSON.stringify({ hardRuleViolation: true, rule: ruleErr.message })}\n\n`);
+    }
+
     // Save assistant response to history
     if (chatHistory && convId && fullResponse) {
       try { chatHistory.addMessage(convId, 'assistant', fullResponse); } catch (_) {}
@@ -1386,6 +1563,22 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
     res.write(`data: ${JSON.stringify({ done: true, latency_ms: Date.now(), conversation_id: convId })}\n\n`);
     res.write('data: [DONE]\n\n');
     res.end();
+
+    // Async quality scoring for stream responses
+    if (qualityScorer && fullResponse && userText) {
+      setImmediate(() => {
+        try {
+          qualityScorer.score({
+            turnId:       (convId || 'stream') + '-' + Date.now(),
+            sessionId:    session_id || convId,
+            userMsg:      userText,
+            alecResponse: fullResponse,
+          });
+        } catch (scoreErr) {
+          console.error('[qualityScorer stream] score() failed:', scoreErr.message);
+        }
+      });
+    }
 
     // Async: extract facts, log interaction
     extractAndStoreFacts(userText, fullResponse).catch(() => {});
@@ -4323,7 +4516,39 @@ app.get('/api/tenantcloud/bookmarklet.js', (req, res) => {
   res.send(script);
 });
 
-app.listen(PORT, HOST, () => {
+// ── PDF + Report Routes ──────────────────────────────────────────────────────
+fs.mkdirSync(path.join(__dirname, '..', 'data', 'exports'), { recursive: true });
+fs.mkdirSync(path.join(__dirname, '..', 'tmp', 'reports'), { recursive: true });
+
+const pdfRoutes    = require('../routes/pdfRoutes');
+const reportRoutes = require('../routes/reportRoutes');
+
+app.use('/api', authenticateToken, pdfRoutes);
+app.use('/api', authenticateToken, reportRoutes);
+
+app.get('/api/download/:filename', (req, res) => {
+  // path.basename strips any path traversal attempts (e.g. ../../etc/passwd → passwd)
+  const safe = path.basename(req.params.filename);
+  const filePath = path.join(__dirname, '../tmp/reports', safe);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Report not found' });
+  }
+  res.download(filePath);
+});
+
+// ── Manual STOA Brain sync trigger (distinct from GitHub push webhook) ────────
+app.post('/api/webhooks/github/sync', async (_req, res) => {
+  try {
+    const result = stoaBrainSync
+      ? await stoaBrainSync.fullSync()
+      : { indexed: 0, skipped: 0, error: 'STOA Brain not initialized' };
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+if (require.main === module) app.listen(PORT, HOST, () => {
   const lanIps = getLanAddresses();
   const lanList = lanIps.length > 0
     ? lanIps.map(ip => `http://${ip}:${PORT}`).join('\n║   ')
@@ -4354,4 +4579,4 @@ app.listen(PORT, HOST, () => {
 `);
 });
 
-module.exports = app;
+module.exports = Object.assign(app, { enforceHardRules });
