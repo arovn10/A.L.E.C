@@ -4533,6 +4533,16 @@ app.get('/api/download/:filename', authenticateToken, (req, res) => {
   res.download(filePath);
 });
 
+// ════════════════════════════════════════════════════════════════
+//  PRODUCTION STATIC SERVING — React SPA from frontend/dist
+//  Must come AFTER all API routes so /api/* is matched first.
+// ════════════════════════════════════════════════════════════════
+if (process.env.NODE_ENV === 'production') {
+  const distPath = path.join(__dirname, '../frontend/dist');
+  app.use(express.static(distPath));
+  app.get('*', (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
+}
+
 if (require.main === module) app.listen(PORT, HOST, () => {
   const lanIps = getLanAddresses();
   const lanList = lanIps.length > 0
