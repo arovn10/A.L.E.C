@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import PlaidLinkSection from '../components/settings/PlaidLinkSection';
+import { apiFetch } from '../api/client';
 
 // Inline hook: reads/writes a boolean from localStorage, syncing on mount.
 function useLocalStorageToggle(key, defaultValue) {
@@ -63,6 +64,73 @@ function ToggleRow({ label, value, onToggle }) {
   );
 }
 
+// ── Connector health widget ────────────────────────────────
+function ConnectorStatus() {
+  const [connectors, setConnectors] = useState([
+    { key: 'azureSql',    label: 'Azure SQL (Banking DB)', status: 'checking', latencyMs: null },
+    { key: 'backend',     label: 'ALEC Backend',           status: 'checking', latencyMs: null },
+  ]);
+
+  const check = useCallback(async () => {
+    setConnectors((prev) => prev.map((c) => ({ ...c, status: 'checking' })));
+    const t0 = Date.now();
+
+    // Backend reachability
+    const backendOk = await fetch('/api/health').then((r) => r.ok).catch(() => false);
+    const backendMs = Date.now() - t0;
+
+    // Azure SQL ping via finance endpoint
+    const sqlResult = await apiFetch('/finance/ping').catch(() => ({ ok: false }));
+
+    setConnectors([
+      {
+        key: 'backend',
+        label: 'ALEC Backend',
+        status: backendOk ? 'ok' : 'error',
+        latencyMs: backendMs,
+      },
+      {
+        key: 'azureSql',
+        label: 'Azure SQL (Banking DB)',
+        status: sqlResult.ok ? 'ok' : 'error',
+        latencyMs: sqlResult.latencyMs ?? null,
+        error: sqlResult.error,
+      },
+    ]);
+  }, []);
+
+  useEffect(() => { check(); }, [check]);
+
+  const dot = (status) => {
+    if (status === 'checking') return 'bg-yellow-400 animate-pulse';
+    if (status === 'ok')       return 'bg-green-400';
+    return 'bg-red-500';
+  };
+
+  return (
+    <div className="space-y-2">
+      {connectors.map((c) => (
+        <div key={c.key} className="flex items-center justify-between py-2 border-b border-gray-700 last:border-0">
+          <div className="flex items-center gap-2">
+            <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${dot(c.status)}`} />
+            <span className="text-sm text-gray-200">{c.label}</span>
+            {c.error && <span className="text-xs text-red-400 ml-1">({c.error})</span>}
+          </div>
+          <span className="text-xs text-gray-500">
+            {c.status === 'checking' ? '…' : c.latencyMs != null ? `${c.latencyMs}ms` : c.status}
+          </span>
+        </div>
+      ))}
+      <button
+        onClick={check}
+        className="mt-2 text-xs text-gray-400 hover:text-white transition-colors"
+      >
+        ↻ Recheck
+      </button>
+    </div>
+  );
+}
+
 export default function Settings() {
   const [darkMode, toggleDarkMode] = useLocalStorageToggle('alec-dark', true);
   const [streaming, toggleStreaming] = useLocalStorageToggle('alec-streaming', true);
@@ -82,7 +150,15 @@ export default function Settings() {
         </div>
       </section>
 
-      {/* Section 2: Bank Account (Plaid) */}
+      {/* Section 2: Connector Status */}
+      <section>
+        <h1 className="text-xl font-bold text-white mb-4">Connector Status</h1>
+        <div className="rounded-xl bg-alec-800 border border-gray-700 px-5 py-4">
+          <ConnectorStatus />
+        </div>
+      </section>
+
+      {/* Section 3: Bank Account (Plaid) */}
       <section>
         <h1 className="text-xl font-bold text-white mb-4">Bank Account (Plaid)</h1>
         <div className="rounded-xl bg-alec-800 border border-gray-700 px-5 py-5">
@@ -96,7 +172,7 @@ export default function Settings() {
         <div className="rounded-xl bg-alec-800 border border-gray-700 px-5 py-5 text-sm text-gray-300 space-y-1">
           <p>Adaptive Learning Executive Coordinator</p>
           <p>Built by Alec Rovner | Stoa Group</p>
-          <p>Plans A-E complete</p>
+          <p>21 active loans · 20 portfolio properties · 5,713 units · $789M exposure</p>
         </div>
       </section>
     </div>

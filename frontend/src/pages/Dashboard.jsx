@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import StatCard from '../components/dashboard/StatCard';
-import { getLoans, getDSCR, getLTV, downloadReport } from '../api/reports';
+import { getLoans, getDSCR, getLTV, getProjects, downloadReport } from '../api/reports';
 import { getQueue } from '../api/review';
 
 function formatMillions(total) {
@@ -21,7 +22,8 @@ function formatDecimal(avg) {
 
 function avg(arr, key) {
   if (!arr || arr.length === 0) return null;
-  const vals = arr.map((r) => Number(r[key])).filter((v) => !isNaN(v));
+  // Filter nulls BEFORE Number() — Number(null)===0 would skew averages
+  const vals = arr.map((r) => r[key]).filter((v) => v != null).map(Number).filter((v) => !isNaN(v));
   if (vals.length === 0) return null;
   return vals.reduce((a, b) => a + b, 0) / vals.length;
 }
@@ -39,6 +41,9 @@ export default function Dashboard() {
     avgDscr: null,
     avgLtv: null,
     maturingSoon: null,
+    activeProperties: null,
+    totalUnits: null,
+    pipelineDeals: null,
   });
   const [activity, setActivity] = useState([]);
   const [syncing, setSyncing] = useState(false);
@@ -49,10 +54,11 @@ export default function Dashboard() {
     async function load() {
       setLoading(true);
       try {
-        const [loans, dscr, ltv, queue] = await Promise.all([
+        const [loans, dscr, ltv, projects, queue] = await Promise.all([
           getLoans().catch(() => []),
           getDSCR().catch(() => []),
           getLTV().catch(() => []),
+          getProjects().catch(() => []),
           getQueue().catch(() => []),
         ]);
 
@@ -69,8 +75,24 @@ export default function Dashboard() {
           ? loans.filter((l) => Number(l.daysToMaturity) < 90).length
           : null;
 
-        setStats({ totalExposure, avgDscr, avgLtv, maturingSoon });
-        setActivity(Array.isArray(queue) ? queue.slice(0, 5) : []);
+        const PORTFOLIO_STAGES = ['Under Construction', 'Lease-Up', 'Stabilized'];
+        const PIPELINE_STAGES  = ['Under Contract', 'LOI', 'Under Review'];
+        const activeProperties = Array.isArray(projects)
+          ? projects.filter((p) => PORTFOLIO_STAGES.includes(p.stage)).length
+          : null;
+        const totalUnits = Array.isArray(projects)
+          ? projects
+              .filter((p) => PORTFOLIO_STAGES.includes(p.stage))
+              .reduce((s, p) => s + (p.units ?? 0), 0)
+          : null;
+        const pipelineDeals = Array.isArray(projects)
+          ? projects.filter((p) => PIPELINE_STAGES.includes(p.stage)).length
+          : null;
+
+        setStats({ totalExposure, avgDscr, avgLtv, maturingSoon, activeProperties, totalUnits, pipelineDeals });
+        // getQueue returns { items: [...] } — extract the array
+        const queueItems = Array.isArray(queue) ? queue : (queue?.items ?? []);
+        setActivity(queueItems.slice(0, 5));
       } catch {
         // individual fetches already caught; stats stay null → show "--"
       } finally {
@@ -100,7 +122,7 @@ export default function Dashboard() {
     <div className="p-6 space-y-8 max-w-5xl mx-auto">
       <h1 className="text-xl font-semibold text-white">Dashboard</h1>
 
-      {/* Stat cards */}
+      {/* Stat cards — row 1: financing */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <StatCard
           label="Total Loan Exposure"
@@ -125,10 +147,41 @@ export default function Dashboard() {
         />
       </div>
 
+      {/* Stat cards — row 2: portfolio */}
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+        <StatCard
+          label="Active Properties"
+          value={loading ? null : (stats.activeProperties ?? '--')}
+          loading={loading}
+        />
+        <StatCard
+          label="Total Units"
+          value={loading ? null : (stats.totalUnits != null ? stats.totalUnits.toLocaleString() : '--')}
+          loading={loading}
+        />
+        <StatCard
+          label="Pipeline Deals"
+          value={loading ? null : (stats.pipelineDeals ?? '--')}
+          loading={loading}
+        />
+      </div>
+
       {/* Quick actions */}
       <div>
         <h2 className="text-sm uppercase tracking-widest text-gray-400 mb-3">Quick Actions</h2>
         <div className="flex gap-3 flex-wrap">
+          <Link
+            to="/deals"
+            className="px-4 py-2 rounded-lg bg-alec-700 hover:bg-alec-accent/80 text-white text-sm transition-colors"
+          >
+            View Portfolio
+          </Link>
+          <Link
+            to="/finance"
+            className="px-4 py-2 rounded-lg bg-alec-700 hover:bg-alec-accent/80 text-white text-sm transition-colors"
+          >
+            Finance Details
+          </Link>
           <button
             onClick={() => downloadReport('loans')}
             className="px-4 py-2 rounded-lg bg-alec-700 hover:bg-alec-accent/80 text-white text-sm transition-colors"

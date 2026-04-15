@@ -1,12 +1,13 @@
 import { NavLink } from 'react-router-dom';
 
 const NAV_ITEMS = [
-  { path: '/chat', label: 'Chat', icon: '💬' },
+  { path: '/chat',      label: 'Chat',      icon: '💬' },
   { path: '/dashboard', label: 'Dashboard', icon: '📊' },
-  { path: '/finance', label: 'Finance', icon: '🏦' },
-  { path: '/review', label: 'Review', icon: '✅' },
-  { path: '/pdf', label: 'PDF', icon: '📄' },
-  { path: '/settings', label: 'Settings', icon: '⚙️' },
+  { path: '/finance',   label: 'Finance',   icon: '🏦' },
+  { path: '/deals',     label: 'Portfolio', icon: '🏗️' },
+  { path: '/review',    label: 'Review',    icon: '✅' },
+  { path: '/pdf',       label: 'PDF',       icon: '📄' },
+  { path: '/settings',  label: 'Settings',  icon: '⚙️' },
 ];
 
 export default function Sidebar() {

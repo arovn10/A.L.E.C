@@ -2,12 +2,13 @@ import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 
 const ROUTE_TITLES = {
-  '/chat': 'Chat',
+  '/chat':      'Chat',
   '/dashboard': 'Dashboard',
-  '/finance': 'Finance',
-  '/review': 'Review',
-  '/pdf': 'PDF Upload',
-  '/settings': 'Settings',
+  '/finance':   'Finance',
+  '/deals':     'Portfolio & Pipeline',
+  '/review':    'Review Queue',
+  '/pdf':       'PDF Upload',
+  '/settings':  'Settings',
 };
 
 function useDarkMode() {

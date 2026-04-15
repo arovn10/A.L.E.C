@@ -5,8 +5,8 @@ export const useReviewStore = create((set) => ({
   queue: [],
   status: null,
   load: async () => {
-    const [queue, status] = await Promise.all([getQueue(), getFineTuneStatus()]);
-    set({ queue, status });
+    const [queueResult, status] = await Promise.all([getQueue(), getFineTuneStatus()]);
+    set({ queue: queueResult.items ?? [], status });
   },
   handleApprove: async (id) => {
     await approve(id);

@@ -1,12 +1,23 @@
 const LTV_THRESHOLD = 75;
+const LTC_THRESHOLD = 80;
 
 const fmt = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+
+function RatioBadge({ value, threshold }) {
+  if (value == null) return <span className="text-gray-500">—</span>;
+  const isHigh = value > threshold;
+  return (
+    <span className={`font-semibold ${isHigh ? 'text-red-400' : 'text-green-400'}`}>
+      {value.toFixed(1)}%
+    </span>
+  );
+}
 
 export default function LTVTable({ data = [] }) {
   if (data.length === 0) {
     return (
       <div className="flex items-center justify-center h-48 rounded-lg border border-gray-700 bg-gray-800 text-gray-400">
-        No LTV data available
+        No LTV / LTC data available
       </div>
     );
   }
@@ -17,15 +28,17 @@ export default function LTVTable({ data = [] }) {
         <thead>
           <tr className="bg-gray-800 text-gray-400 uppercase text-xs">
             <th className="px-3 py-2">Property</th>
-            <th className="px-3 py-2">LTV%</th>
-            <th className="px-3 py-2">Appraised Value</th>
-            <th className="px-3 py-2">Loan Balance</th>
-            <th className="px-3 py-2">Date</th>
+            <th className="px-3 py-2">Lender</th>
+            <th className="px-3 py-2 text-right">LTV%</th>
+            <th className="px-3 py-2 text-right">LTC%</th>
+            <th className="px-3 py-2 text-right">Appraised Value</th>
+            <th className="px-3 py-2 text-right">Loan Balance</th>
           </tr>
         </thead>
         <tbody>
           {data.map((row, i) => {
-            const isRed = (row.ltv ?? 0) > LTV_THRESHOLD;
+            const isRed = (row.ltv != null && row.ltv > LTV_THRESHOLD) ||
+                          (row.ltc != null && row.ltc > LTC_THRESHOLD);
             return (
               <tr
                 key={i}
@@ -34,13 +47,18 @@ export default function LTVTable({ data = [] }) {
                 }`}
               >
                 <td className="px-3 py-2 text-gray-200">{row.property ?? '—'}</td>
-                <td className={`px-3 py-2 font-semibold ${isRed ? 'text-red-400' : 'text-green-400'}`}>
-                  {row.ltv != null ? `${row.ltv.toFixed(1)}%` : '—'}
+                <td className="px-3 py-2 text-gray-400 text-xs">{row.lender ?? '—'}</td>
+                <td className="px-3 py-2 text-right">
+                  <RatioBadge value={row.ltv} threshold={LTV_THRESHOLD} />
                 </td>
-                <td className="px-3 py-2 text-gray-200">{row.appraisedValue != null ? fmt.format(row.appraisedValue) : '—'}</td>
-                <td className="px-3 py-2 text-gray-200">{row.loanBalance != null ? fmt.format(row.loanBalance) : '—'}</td>
-                <td className="px-3 py-2 text-gray-400">
-                  {row.date ? new Date(row.date).toLocaleDateString() : '—'}
+                <td className="px-3 py-2 text-right">
+                  <RatioBadge value={row.ltc} threshold={LTC_THRESHOLD} />
+                </td>
+                <td className="px-3 py-2 text-right text-gray-200">
+                  {row.appraisedValue != null ? fmt.format(row.appraisedValue) : '—'}
+                </td>
+                <td className="px-3 py-2 text-right text-gray-200">
+                  {row.loanBalance != null ? fmt.format(row.loanBalance) : '—'}
                 </td>
               </tr>
             );

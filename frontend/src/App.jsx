@@ -4,6 +4,7 @@ import TopBar from './components/layout/TopBar';
 import Chat from './pages/Chat';
 import Dashboard from './pages/Dashboard';
 import Finance from './pages/Finance';
+import Deals from './pages/Deals';
 import Review from './pages/Review';
 import PdfUpload from './pages/PdfUpload';
 import Settings from './pages/Settings';
@@ -20,6 +21,7 @@ export default function App() {
             <Route path="/chat" element={<Chat />} />
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/finance" element={<Finance />} />
+            <Route path="/deals" element={<Deals />} />
             <Route path="/review" element={<Review />} />
             <Route path="/pdf" element={<PdfUpload />} />
             <Route path="/settings" element={<Settings />} />
