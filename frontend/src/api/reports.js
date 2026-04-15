@@ -124,7 +124,16 @@ export const getEquity = () =>
   );
 
 // ──────────────────────────────────────────────────────────
-// Report download — triggers Excel generation
 // ──────────────────────────────────────────────────────────
-export const downloadReport = (name) =>
-  window.open(`/api/download/${encodeURIComponent(name)}`, '_blank');
+// Report download — generates Excel via /api/stoa/export then opens the file URL
+// ──────────────────────────────────────────────────────────
+export async function downloadReport(type) {
+  // 1. Ask backend to generate the Excel workbook
+  const result = await apiFetch('/stoa/export', {
+    method: 'POST',
+    body: JSON.stringify({ type }),
+  });
+  // 2. result.url is like /exports/stoa-export-loans-1234567890.xlsx
+  if (!result?.url) throw new Error('No download URL returned');
+  window.open(result.url, '_blank');
+}

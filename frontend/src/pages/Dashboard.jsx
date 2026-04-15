@@ -47,6 +47,7 @@ export default function Dashboard() {
   });
   const [activity, setActivity] = useState([]);
   const [syncing, setSyncing] = useState(false);
+  const [reportRunning, setReportRunning] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -183,10 +184,22 @@ export default function Dashboard() {
             Finance Details
           </Link>
           <button
-            onClick={() => downloadReport('loans')}
-            className="px-4 py-2 rounded-lg bg-alec-700 hover:bg-alec-accent/80 text-white text-sm transition-colors"
+            onClick={async () => {
+              setReportRunning(true);
+              const toastId = toast.loading('Generating Loans report…');
+              try {
+                await downloadReport('loans');
+                toast.success('Report ready', { id: toastId });
+              } catch (err) {
+                toast.error(`Report failed: ${err.message}`, { id: toastId });
+              } finally {
+                setReportRunning(false);
+              }
+            }}
+            disabled={reportRunning}
+            className="px-4 py-2 rounded-lg bg-alec-700 hover:bg-alec-accent/80 text-white text-sm transition-colors disabled:opacity-50"
           >
-            Run Loans Report
+            {reportRunning ? 'Generating…' : 'Run Loans Report'}
           </button>
           <button
             onClick={handleSync}
