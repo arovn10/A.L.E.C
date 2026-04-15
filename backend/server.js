@@ -586,6 +586,19 @@ async function proxyToNeural(path, options = {}) {
  *   FULL_CAPABILITIES → everything: training, files, admin, smart home
  */
 const authenticateToken = (req, res, next) => {
+  // Localhost auto-authentication — personal tool, no login required for local requests
+  const clientIp = req.ip || req.connection?.remoteAddress || '';
+  if (clientIp === '127.0.0.1' || clientIp === '::1' || clientIp === '::ffff:127.0.0.1') {
+    req.user = {
+      userId: 'alec-local',
+      email: 'arovner@stoagroup.com',
+      tokenType: 'OWNER',
+      scope: ['owner', 'full_access', 'neural_training', 'smart_home', 'stoa_data', 'user_management', 'connectors'],
+      isLocal: true,
+    };
+    return next();
+  }
+
   // Domo embed auto-authentication — no login required
   if (isDomo(req)) {
     req.user = {
@@ -1063,7 +1076,8 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     }
 
     // Web search augmentation
-    let augmentedMessages = [...messages];
+    // If messages[] is empty but a standalone `message` string was provided, build the array
+    let augmentedMessages = messages.length > 0 ? [...messages] : (userText ? [{ role: 'user', content: userText }] : []);
     if (SEARCH_TRIGGERS.test(userText)) {
       const searchResult = await webSearch(userText);
       if (searchResult && augmentedMessages.length > 0) {
@@ -1132,11 +1146,11 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
 });
 
 /**
- * POST /api/chat/stream
+ * GET /api/chat/stream (EventSource) + POST /api/chat/stream (fetch)
  * SSE streaming endpoint — tokens arrive one-by-one like Claude.
- * Browser reads via ReadableStream / EventSource.
+ * GET reads message/session_id from query params (EventSource only supports GET).
  */
-app.post('/api/chat/stream', authenticateToken, async (req, res) => {
+async function handleChatStream(req, res) {
   // SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -1144,7 +1158,9 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
   res.setHeader('X-Accel-Buffering', 'no'); // disable nginx buffering
   res.flushHeaders();
 
-  const { message, messages = [], session_id, conversation_id } = req.body;
+  // Support both GET (query params) and POST (body)
+  const source = req.method === 'GET' ? req.query : (req.body || {});
+  const { message, messages = [], session_id, conversation_id } = source;
   const userText = message || messages.at(-1)?.content || '';
 
   // ── Persist to chat history (streaming) ─────────────────────
@@ -1521,7 +1537,8 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
     }
 
     // Web search augmentation
-    let augmentedMessages = [...messages];
+    // If messages[] is empty but a standalone `message` string was provided, build the array
+    let augmentedMessages = messages.length > 0 ? [...messages] : (userText ? [{ role: 'user', content: userText }] : []);
     if (SEARCH_TRIGGERS.test(userText)) {
       res.write('data: {"token":"🔍 Searching the web…\\n"}\n\n');
       const searchResult = await webSearch(userText);
@@ -1590,7 +1607,11 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
     res.write('data: [DONE]\n\n');
     res.end();
   }
-});
+}
+
+// Register stream handler for both GET (EventSource) and POST (fetch)
+app.get('/api/chat/stream', authenticateToken, handleChatStream);
+app.post('/api/chat/stream', authenticateToken, handleChatStream);
 
 // ════════════════════════════════════════════════════════════════
 //  FEEDBACK ENDPOINTS
@@ -4520,11 +4541,13 @@ app.get('/api/tenantcloud/bookmarklet.js', (req, res) => {
 fs.mkdirSync(path.join(__dirname, '..', 'data', 'exports'), { recursive: true });
 fs.mkdirSync(path.join(__dirname, '..', 'tmp', 'reports'), { recursive: true });
 
-const pdfRoutes    = require('../routes/pdfRoutes');
-const reportRoutes = require('../routes/reportRoutes');
+const pdfRoutes         = require('../routes/pdfRoutes');
+const reportRoutes      = require('../routes/reportRoutes');
+const financeDataRoutes = require('../routes/financeDataRoutes');
 
 app.use('/api', authenticateToken, pdfRoutes);
 app.use('/api', authenticateToken, reportRoutes);
+app.use('/api', authenticateToken, financeDataRoutes);
 
 app.get('/api/download/:filename', (req, res) => {
   // path.basename strips any path traversal attempts (e.g. ../../etc/passwd → passwd)
