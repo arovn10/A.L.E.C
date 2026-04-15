@@ -1,6 +1,6 @@
 export async function uploadPdf(file) {
   const form = new FormData();
-  form.append('pdf', file);
+  form.append('file', file);
   const res = await fetch('/api/pdf/upload', { method: 'POST', body: form });
   if (!res.ok) throw new Error('Upload failed');
   return res.json();

@@ -441,7 +441,7 @@ async function extractAndStoreFacts(userMsg, assistantReply) {
 // ════════════════════════════════════════════════════════════════
 //  WEB SEARCH (DuckDuckGo Instant Answers — no API key needed)
 // ════════════════════════════════════════════════════════════════
-const SEARCH_TRIGGERS = /\b(search|find|look up|what is|who is|latest|news|current|today|weather|price|how much|when did|when is|define|meaning of|stock|ticker|nasdaq|nyse|crypto|bitcoin|ethereum|market cap|earnings|interest rate)\b/i;
+const SEARCH_TRIGGERS = /\b(search for|look up|latest news|breaking news|current events|today's weather|weather forecast|stock price|ticker symbol|nasdaq|nyse|crypto price|bitcoin price|ethereum price|market cap|earnings report|interest rate forecast|fed rate)\b/i;
 
 async function webSearch(query) {
   try {
