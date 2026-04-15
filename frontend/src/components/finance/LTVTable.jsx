@@ -25,7 +25,7 @@ export default function LTVTable({ data = [] }) {
         </thead>
         <tbody>
           {data.map((row, i) => {
-            const isRed = (row.ltv ?? 0) > LTV_THRESHOLD;
+            const isRed = row.ltv != null && row.ltv > LTV_THRESHOLD;
             return (
               <tr
                 key={i}

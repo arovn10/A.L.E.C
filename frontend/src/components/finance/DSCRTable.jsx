@@ -25,7 +25,7 @@ export default function DSCRTable({ data = [] }) {
         </thead>
         <tbody>
           {data.map((row, i) => {
-            const isRed = (row.dscr ?? 0) < DSCR_THRESHOLD;
+            const isRed = row.dscr != null && row.dscr < DSCR_THRESHOLD;
             return (
               <tr
                 key={i}
@@ -39,7 +39,9 @@ export default function DSCRTable({ data = [] }) {
                 </td>
                 <td className="px-3 py-2 text-gray-200">{row.noi != null ? fmt.format(row.noi) : '—'}</td>
                 <td className="px-3 py-2 text-gray-200">{row.debtService != null ? fmt.format(row.debtService) : '—'}</td>
-                <td className="px-3 py-2 text-gray-400">{row.period ?? '—'}</td>
+                <td className="px-3 py-2 text-gray-400">
+                  {row.period ? new Date(row.period).toLocaleDateString() : '—'}
+                </td>
               </tr>
             );
           })}

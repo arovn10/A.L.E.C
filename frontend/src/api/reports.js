@@ -1,5 +1,8 @@
 import { apiFetch } from './client';
 
+// mssql returns decimal/money/numeric columns as strings — coerce safely
+const num = (v) => (v == null ? null : Number(v));
+
 // ──────────────────────────────────────────────────────────
 // Loan data — maps API columns → LoansTable field names
 // ──────────────────────────────────────────────────────────
@@ -9,12 +12,12 @@ export const getLoans = () =>
       property:       row.ProjectName,
       lender:         row.LenderName,
       type:           row.LoanType,
-      amount:         row.OriginalAmount,
-      balance:        row.CurrentBalance,
-      rate:           row.InterestRate != null ? row.InterestRate / 100 : null,
+      amount:         num(row.OriginalAmount),
+      balance:        num(row.CurrentBalance),
+      rate:           row.InterestRate != null ? num(row.InterestRate) / 100 : null,
       maturity:       row.MaturityDate,
-      daysToMaturity: row.DaysToMaturity,
-      ltv:            row.LTC != null ? row.LTC * 100 : null,
+      daysToMaturity: num(row.DaysToMaturity),
+      ltv:            row.LTC != null ? num(row.LTC) * 100 : null,
       dscr:           null,
       covenantStatus: null,
       guarantor:      null,
@@ -28,10 +31,10 @@ export const getLoans = () =>
 export const getMaturityWall = () =>
   apiFetch('/finance/maturity').then((r) =>
     (r.rows ?? []).map((row) => ({
-      quarter:        `${row.Year} Q${row.Quarter}`,
-      balanceMillions: (row.TotalBalance ?? 0) / 1_000_000,
-      loanCount:      row.LoanCount,
-      daysToMaturity: 999, // chart coloring — no per-row days in this aggregated view
+      quarter:         `${row.Year} Q${row.Quarter}`,
+      balanceMillions: num(row.TotalBalance ?? 0) / 1_000_000,
+      loanCount:       num(row.LoanCount),
+      daysToMaturity:  999, // chart coloring — no per-row days in this aggregated view
     }))
   );
 
@@ -42,8 +45,8 @@ export const getLenderExposure = () =>
   apiFetch('/finance/lenders').then((r) =>
     (r.rows ?? []).map((row) => ({
       lender:  row.LenderName ?? 'Unknown',
-      balance: row.TotalExposure ?? 0,
-      loans:   row.LoanCount,
+      balance: num(row.TotalExposure) ?? 0,
+      loans:   num(row.LoanCount),
     }))
   );
 
@@ -54,8 +57,8 @@ export const getDSCR = () =>
   apiFetch('/finance/dscr').then((r) =>
     (r.rows ?? []).map((row) => ({
       property:    row.ProjectName,
-      dscr:        row.ProjectedDSCR,
-      required:    row.DSCRRequirement,
+      dscr:        num(row.ProjectedDSCR),
+      required:    num(row.DSCRRequirement),
       noi:         null,
       debtService: null,
       period:      row.DSCRTestDate,
@@ -70,10 +73,10 @@ export const getLTV = () =>
     (r.rows ?? []).map((row) => ({
       property:       row.ProjectName,
       lender:         row.LenderName,
-      ltv:            row.LTV != null ? row.LTV * 100 : null,
-      ltc:            row.LTC != null ? row.LTC * 100 : null,
-      appraisedValue: row.ValuationWhenComplete,
-      loanBalance:    row.CurrentBalance,
+      ltv:            row.LTV != null ? num(row.LTV) * 100 : null,
+      ltc:            row.LTC != null ? num(row.LTC) * 100 : null,
+      appraisedValue: num(row.ValuationWhenComplete),
+      loanBalance:    num(row.CurrentBalance),
       date:           null,
     }))
   );
@@ -83,15 +86,18 @@ export const getLTV = () =>
 // ──────────────────────────────────────────────────────────
 export const getEquity = () =>
   apiFetch('/finance/equity').then((r) =>
-    (r.rows ?? []).map((row) => ({
-      project:         row.ProjectName,
-      totalCommitment: row.TotalCommitment,
-      funded:          row.FundedAmount,
-      unfunded:        row.UnfundedAmount,
-      pctFunded:       row.TotalCommitment > 0
-        ? (row.FundedAmount / row.TotalCommitment) * 100
-        : 0,
-    }))
+    (r.rows ?? []).map((row) => {
+      const total = num(row.TotalCommitment) ?? 0;
+      const funded = num(row.FundedAmount) ?? 0;
+      const unfunded = num(row.UnfundedAmount) ?? 0;
+      return {
+        project:         row.ProjectName,
+        totalCommitment: total,
+        funded,
+        unfunded,
+        pctFunded:       total > 0 ? (funded / total) * 100 : 0,
+      };
+    })
   );
 
 // ──────────────────────────────────────────────────────────

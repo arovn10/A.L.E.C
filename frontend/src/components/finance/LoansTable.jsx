@@ -29,7 +29,7 @@ function formatCell(key, value) {
 }
 
 function isHighlighted(row) {
-  return row.daysToMaturity < 90 || row.covenantStatus === 'BREACH';
+  return (row.daysToMaturity != null && row.daysToMaturity < 90) || row.covenantStatus === 'BREACH';
 }
 
 export default function LoansTable({ data = [] }) {

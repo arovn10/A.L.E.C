@@ -21,7 +21,8 @@ function formatDecimal(avg) {
 
 function avg(arr, key) {
   if (!arr || arr.length === 0) return null;
-  const vals = arr.map((r) => Number(r[key])).filter((v) => !isNaN(v));
+  // Filter nulls BEFORE Number() — Number(null)===0 would skew averages
+  const vals = arr.map((r) => r[key]).filter((v) => v != null).map(Number).filter((v) => !isNaN(v));
   if (vals.length === 0) return null;
   return vals.reduce((a, b) => a + b, 0) / vals.length;
 }
