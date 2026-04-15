@@ -11,7 +11,7 @@ export const getLoans = () =>
       type:           row.LoanType,
       amount:         row.OriginalAmount,
       balance:        row.CurrentBalance,
-      rate:           row.InterestRate,
+      rate:           row.InterestRate != null ? row.InterestRate / 100 : null,
       maturity:       row.MaturityDate,
       daysToMaturity: row.DaysToMaturity,
       ltv:            row.LTC != null ? row.LTC * 100 : null,
