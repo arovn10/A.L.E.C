@@ -6,6 +6,8 @@
  */
 import { useQueryClient, useMutation } from '@tanstack/react-query';
 import * as api from '../../api/mcp.js';
+import Skeleton from '../../components/ui/Skeleton.jsx';
+import EmptyState from '../../components/ui/EmptyState.jsx';
 
 function StatusBadge({ status }) {
   const color =
@@ -22,7 +24,7 @@ export default function MCPList({ rows, loading, onSelect, onCreate }) {
   const start = useMutation({ mutationFn: api.startMcp, onSuccess: invalidate });
   const stop  = useMutation({ mutationFn: api.stopMcp,  onSuccess: invalidate });
 
-  if (loading) return <div className="animate-pulse text-gray-500 text-sm">Loading MCP servers…</div>;
+  if (loading) return <Skeleton rows={3} />;
 
   return (
     <div className="space-y-3">
@@ -33,7 +35,11 @@ export default function MCPList({ rows, loading, onSelect, onCreate }) {
         </button>
       </div>
       {rows.length === 0 ? (
-        <div className="text-gray-500 text-sm">No MCP servers in this scope.</div>
+        <EmptyState
+          text="No MCP servers in this scope."
+          actionLabel="+ Add server"
+          onAction={onCreate}
+        />
       ) : (
         <div className="rounded border border-alec-700 bg-alec-800">
           {rows.map((r) => (

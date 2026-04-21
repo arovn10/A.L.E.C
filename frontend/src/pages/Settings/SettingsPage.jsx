@@ -15,6 +15,7 @@ import ConnectorsTab from './ConnectorsTab.jsx';
 import MCPsTab from './MCPsTab.jsx';
 import OrgMembersTab from './OrgMembersTab.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { ToastProvider } from '../../components/ui/Toast.jsx';
 
 // Vite exposes env vars via import.meta.env.VITE_*; fall back to a runtime
 // flag (window.__ALEC_FLAGS) so the desktop shell can toggle too.
@@ -44,6 +45,7 @@ export default function SettingsPage() {
   const setTab = (id) => setParams({ tab: id });
 
   return (
+    <ToastProvider>
     <div className="flex h-full">
       <nav className="w-48 border-r border-alec-700 bg-alec-800 p-4 space-y-1">
         {tabs.map((t) => (
@@ -68,5 +70,6 @@ export default function SettingsPage() {
         {tab === 'members'    && v2 && <OrgMembersTab viewerEmail={viewerEmail} />}
       </main>
     </div>
+    </ToastProvider>
   );
 }

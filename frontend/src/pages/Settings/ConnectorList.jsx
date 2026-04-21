@@ -4,13 +4,23 @@
  * Per-definition card. Each card gets a "+ Connect" button and a row per
  * existing instance (rows clickable to open the drawer). Status badges
  * mirror connector_instance.status from the backend.
+ *
+ * S5.4: skeleton rows during load, per-category EmptyState when this
+ * entire category has zero catalog entries (no cards to show at all).
  */
+import Skeleton from '../../components/ui/Skeleton.jsx';
+import EmptyState from '../../components/ui/EmptyState.jsx';
+
 export default function ConnectorList({ catalog, instances, loading, onSelect }) {
   if (loading) {
-    return <div className="animate-pulse text-gray-500 text-sm">Loading connectors...</div>;
+    return <Skeleton rows={3} />;
   }
   if (!catalog.length) {
-    return <div className="text-gray-500 text-sm">No connectors in this category.</div>;
+    return (
+      <EmptyState
+        text="No connectors in this category."
+      />
+    );
   }
   return (
     <div className="space-y-4">
@@ -31,8 +41,12 @@ export default function ConnectorList({ catalog, instances, loading, onSelect })
               </button>
             </div>
             {rows.length === 0 ? (
-              <div className="px-4 py-3 text-xs text-gray-500">
-                No {def.name} connectors yet.
+              <div className="px-4 py-3">
+                <EmptyState
+                  icon={def.icon}
+                  text={`No ${def.name} connectors yet.`}
+                  onAction={() => onSelect({ new: true, definitionId: def.id })}
+                />
               </div>
             ) : (
               rows.map((r) => (

@@ -1325,10 +1325,10 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Create: `frontend/src/components/ui/Toast.jsx` (if not present)
 
 **Steps**
-- [ ] Replace plain "Loading..." with 3 skeleton rows (animate-pulse gray blocks).
-- [ ] Per-category empty state: `<EmptyState icon={def.icon} text={"No " + def.name + " connectors yet."} onAction={()=>openCreate(def.id)} />`.
-- [ ] Toast provider in `SettingsPage` — surface mutation errors with collapsible "Show details" revealing `error.response?.data`.
-- [ ] Commit: `feat(frontend): skeletons, empty states, toast error surface`
+- [x] Replace plain "Loading..." with 3 skeleton rows (animate-pulse gray blocks).
+- [x] Per-category empty state: `<EmptyState icon={def.icon} text={"No " + def.name + " connectors yet."} onAction={()=>openCreate(def.id)} />`.
+- [x] Toast provider in `SettingsPage` — surface mutation errors with collapsible "Show details" revealing `error.response?.data`.
+- [x] Commit: `feat(frontend): skeletons, empty states, toast error surface`
 
 ### Task S5.5 — S5 stage checkpoint
 
