@@ -55,7 +55,9 @@ async function runMigrations(db, dir) {
   db.exec('CREATE TABLE IF NOT EXISTS _migrations (id TEXT PRIMARY KEY, applied_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
   if (!fs.existsSync(dir)) return;
   const files = fs.readdirSync(dir)
-    .filter(f => (f.endsWith('.sql') || f.endsWith('.js') || f.endsWith('.mjs')) && !f.includes('_seed_') && !f.includes('_mapping'))
+    .filter(f => (f.endsWith('.sql') || f.endsWith('.js') || f.endsWith('.mjs'))
+      && !f.includes('_seed_') && !f.includes('_mapping')
+      && !f.includes('_alec_auth'))  // 001_alec_auth.sql is MSSQL; handled by ensureAuthSchema
     .sort();
   const applied = new Set(db.prepare('SELECT id FROM _migrations').all().map(r => r.id));
   const insert = db.prepare('INSERT INTO _migrations(id) VALUES (?)');
