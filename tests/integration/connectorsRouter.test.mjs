@@ -95,3 +95,74 @@ describe('/api/connectors — catalog + list', () => {
     expect(res.body[0].fields.GITHUB_TOKEN).not.toBe('plaintext');
   });
 });
+
+describe('POST /api/connectors', () => {
+  test('user-scope create returns 201 with redacted secret', async () => {
+    const db = await freshDb();
+    const res = await request(mkApp(db, 'alice@stoagroup.com'))
+      .post('/api/connectors')
+      .send({
+        definitionId: 'github', scope: 'user', scopeId: 'alice@stoagroup.com',
+        fields: { GITHUB_TOKEN: 'ghp_secret' }, displayName: 'Alice GH',
+      });
+    expect(res.status).toBe(201);
+    expect(res.body.id).toBeTruthy();
+    expect(res.body.fields.GITHUB_TOKEN).not.toBe('ghp_secret');
+  });
+
+  test('user-scope create for another user -> 403', async () => {
+    const db = await freshDb();
+    const res = await request(mkApp(db, 'alice@stoagroup.com'))
+      .post('/api/connectors')
+      .send({
+        definitionId: 'github', scope: 'user', scopeId: 'bob@abodingo.com',
+        fields: { GITHUB_TOKEN: 'x' },
+      });
+    expect(res.status).toBe(403);
+  });
+
+  test('ORG_ONLY connector at user scope -> 400', async () => {
+    const db = await freshDb();
+    const res = await request(mkApp(db, 'alice@stoagroup.com'))
+      .post('/api/connectors')
+      .send({
+        definitionId: 'tenantcloud', scope: 'user', scopeId: 'alice@stoagroup.com',
+        fields: { TENANTCLOUD_EMAIL: 'a@b', TENANTCLOUD_PASSWORD: 'p' },
+      });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('ORG_ONLY');
+  });
+
+  test('org-scope POST by plain member -> 403', async () => {
+    const db = await freshDb();
+    const res = await request(mkApp(db, 'bob@abodingo.com'))
+      .post('/api/connectors')
+      .send({
+        definitionId: 'github', scope: 'org', scopeId: 'abodingo',
+        fields: { GITHUB_TOKEN: 'x' },
+      });
+    expect(res.status).toBe(403);
+  });
+
+  test('org-scope POST by org admin -> 201', async () => {
+    const db = await freshDb();
+    const res = await request(mkApp(db, 'alice@stoagroup.com'))
+      .post('/api/connectors')
+      .send({
+        definitionId: 'github', scope: 'org', scopeId: 'stoagroup',
+        fields: { GITHUB_TOKEN: 'org-token' },
+      });
+    expect(res.status).toBe(201);
+    expect(res.body.scope_type).toBe('org');
+    expect(res.body.scope_id).toBe('stoagroup');
+  });
+
+  test('invalid body -> 400 INVALID', async () => {
+    const db = await freshDb();
+    const res = await request(mkApp(db, 'alice@stoagroup.com'))
+      .post('/api/connectors')
+      .send({ definitionId: 'github' }); // missing scope/scopeId/fields
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('INVALID');
+  });
+});
