@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pkg from '../../backend/auth/bootstrap.js';
+import { up as seedUp } from '../../backend/migrations/002_seed_migration.mjs';
 const { runMigrations } = pkg;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -19,6 +20,19 @@ describe('migration 002', () => {
     ]) {
       expect(tables).toContain(t);
     }
+  });
+
+  test('seed populates orgs, catalog, and arovner owner memberships', async () => {
+    const db = new Database(':memory:');
+    await runMigrations(db, MIGRATIONS_DIR);
+    await seedUp(db);
+    const orgs = db.prepare('SELECT id FROM organizations ORDER BY id').all().map(r => r.id);
+    expect(orgs).toEqual(['abodingo', 'campusrentals', 'stoagroup']);
+    const defs = db.prepare('SELECT id FROM connector_definitions').all().map(r => r.id);
+    expect(defs).toContain('github');
+    expect(defs.length).toBeGreaterThanOrEqual(9);
+    const mems = db.prepare("SELECT org_id FROM org_memberships WHERE user_id='arovner@stoagroup.com' ORDER BY org_id").all().map(r => r.org_id);
+    expect(mems).toEqual(['abodingo', 'campusrentals', 'stoagroup']);
   });
 
   test('seeds desktop_policy default row and three desktop_permissions rows', async () => {
