@@ -66,5 +66,10 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "jest": {
+    "testMatch": ["<rootDir>/tests/**/*.test.(js|mjs)", "<rootDir>/__tests__/**/*.test.(js|mjs)"],
+    "testPathIgnorePatterns": ["/node_modules/", "/.claude/"],
+    "moduleFileExtensions": ["js", "mjs", "json"]
   }
 }
