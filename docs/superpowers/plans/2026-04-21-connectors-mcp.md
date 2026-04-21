@@ -1440,8 +1440,8 @@ returned empty).
 - Create: `scripts/connector-vault-doctor.js`
 
 **Steps**
-- [ ] Walks SQL rows + vault; prints orphans and exits nonzero if any. Usable post-S6.
-- [ ] Commit: `feat(scripts): connector-vault-doctor orphan detector`
+- [x] Walks SQL rows + vault; prints orphans and exits nonzero if any. Usable post-S6.
+- [x] Commit: `feat(scripts): connector-vault-doctor orphan detector`
 
 ### Task S6.6 — S6 stage checkpoint
 
