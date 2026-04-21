@@ -12,6 +12,7 @@ import { useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import LegacySettings from '../Settings.jsx';
 import ConnectorsTab from './ConnectorsTab.jsx';
+import MCPsTab from './MCPsTab.jsx';
 
 // Vite exposes env vars via import.meta.env.VITE_*; fall back to a runtime
 // flag (window.__ALEC_FLAGS) so the desktop shell can toggle too.
@@ -58,7 +59,7 @@ export default function SettingsPage() {
         {tab === 'profile'    && <LegacySettings />}
         {tab === 'security'   && <div className="p-6 text-gray-300">Security settings coming soon.</div>}
         {tab === 'connectors' && v2 && <ConnectorsTab />}
-        {tab === 'mcps'       && v2 && <div className="p-6 text-gray-300">MCP management ships in S4.</div>}
+        {tab === 'mcps'       && v2 && <MCPsTab />}
       </main>
     </div>
   );
