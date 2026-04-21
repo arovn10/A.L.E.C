@@ -1362,7 +1362,7 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Modify: files surfaced by grepping for `skillsRegistry` across `.js` files (`dataConnectors/githubConnector.js`, `services/financeService.js`, `services/stoaQueryService.js`, `services/llamaEngine.js`, any others)
 
 **Steps**
-- [ ] For each file: identify which connector definition and scope they need. Replace with:
+- [x] For each file: identify which connector definition and scope they need. Replace with:
   ```js
   import { getFields } from '../backend/services/secretVault.js';
   import * as svc from '../backend/services/connectorService.js';
@@ -1370,8 +1370,21 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
   const inst = svc.listVisible(db, userId).find(i => i.definition_id === 'github');
   const { GITHUB_TOKEN } = inst ? getFields(inst.id) : {};
   ```
-- [ ] Update each file, run affected unit/integration tests, commit per file: `refactor(<file>): switch to connectorService from legacy skillsRegistry`.
-- [ ] Re-run `npm run migrate:verify` — expect clean.
+- [x] Update each file, run affected unit/integration tests, commit per file: `refactor(<file>): switch to connectorService from legacy skillsRegistry`.
+- [x] Re-run `npm run migrate:verify` — expect clean.
+
+**S6.2 divergence note:** grep of the repo shows that aside from
+`backend/server.js` (wired via the `skillsReg` require at line 71) and the
+`services/skillsRegistry.js` module itself, **no external caller** still
+uses `skillsRegistry.get(uid,key,field)` — the files named in the original
+plan (`dataConnectors/githubConnector.js`, `services/financeService.js`,
+`services/stoaQueryService.js`, `services/llamaEngine.js`) had already been
+refactored in earlier stages. The only remaining legacy surface is the
+`/api/connectors/:skillId/*` routes block inside `server.js`, which S6.4
+removes wholesale. Marking the sweep complete and deferring the in-file
+edit to S6.4. `npm run migrate:verify` currently flags the live vault's
+unmigrated `users`/`global` branches — expected; migration 003 (S6.3) is
+the opt-in fix.
 
 ### Task S6.3 — Migration 003: wipe legacy keys
 
