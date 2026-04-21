@@ -5,10 +5,13 @@
  * deleting a connector instance. For new connectors `selected` is
  * `{ new: true, definitionId }`; for existing ones it is the instance id.
  */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useQueryClient, useMutation, useQuery } from '@tanstack/react-query';
 import * as api from '../../api/connectors.js';
 import ConnectorFormField from './ConnectorFormField.jsx';
+
+// S5.2 — how long revealed plaintext stays visible before auto re-hide.
+const REVEAL_VISIBLE_MS = 60_000;
 
 export default function ConnectorDrawer({ selected, scope, orgId, userEmail, onClose }) {
   const qc = useQueryClient();
@@ -33,6 +36,13 @@ export default function ConnectorDrawer({ selected, scope, orgId, userEmail, onC
   const [fields, setFields] = useState({});
   const [displayName, setDisplayName] = useState('');
   const [notice, setNotice] = useState(null);
+  // S5.2 — reveal countdown. `revealUntil` is an epoch ms deadline; when
+  // set, a 1Hz tick updates `revealLeft` (remaining seconds) and at zero
+  // we snap fields back to the redacted copy. Stored redacted snapshot
+  // captures what the list had *before* the reveal mutation fired.
+  const [revealUntil, setRevealUntil] = useState(null);
+  const [revealLeft,  setRevealLeft]  = useState(0);
+  const redactedSnapshot = useRef(null);
 
   useEffect(() => {
     if (existing) {
@@ -73,9 +83,43 @@ export default function ConnectorDrawer({ selected, scope, orgId, userEmail, onC
 
   const reveal = useMutation({
     mutationFn: () => api.revealConnector(id),
-    onSuccess: (r) => { if (r?.fields) setFields(r.fields); setNotice({ kind: 'ok', text: 'Secrets revealed (audit logged).' }); },
+    onSuccess: (r) => {
+      if (r?.fields) {
+        // Snapshot the currently redacted values so we can snap back when
+        // the 60-second window expires without a second round-trip.
+        redactedSnapshot.current = { ...fields };
+        setFields(r.fields);
+        setRevealUntil(Date.now() + REVEAL_VISIBLE_MS);
+      }
+      setNotice({ kind: 'ok', text: 'Secrets revealed (audit logged).' });
+    },
     onError: (e) => setNotice({ kind: 'error', text: String(e.message) }),
   });
+
+  // Countdown tick. We read `revealUntil` fresh each tick rather than
+  // depending on it to avoid restarting the interval when the deadline is
+  // set; cleanup fires on unmount or when we clear the deadline.
+  useEffect(() => {
+    if (!revealUntil) { setRevealLeft(0); return; }
+    const update = () => {
+      const ms = Math.max(0, revealUntil - Date.now());
+      setRevealLeft(Math.ceil(ms / 1000));
+      if (ms <= 0) {
+        setRevealUntil(null);
+        if (redactedSnapshot.current) setFields(redactedSnapshot.current);
+        redactedSnapshot.current = null;
+      }
+    };
+    update();
+    const h = setInterval(update, 1000);
+    return () => clearInterval(h);
+  }, [revealUntil]);
+
+  const onRevealClick = () => {
+    if (revealUntil) return; // already revealed; ignore double-clicks
+    if (!confirm('Reveal plaintext credentials? This action is audit-logged.')) return;
+    reveal.mutate();
+  };
 
   const del = useMutation({
     mutationFn: () => api.deleteConnector(id),
@@ -132,11 +176,11 @@ export default function ConnectorDrawer({ selected, scope, orgId, userEmail, onC
               Test
             </button>
             <button
-              onClick={() => reveal.mutate()}
-              disabled={reveal.isPending}
-              className="rounded border border-alec-600 px-3 py-1 text-sm text-gray-200 hover:bg-alec-700"
+              onClick={onRevealClick}
+              disabled={reveal.isPending || !!revealUntil}
+              className="rounded border border-alec-600 px-3 py-1 text-sm text-gray-200 hover:bg-alec-700 disabled:opacity-50"
             >
-              Reveal
+              {revealUntil ? `Revealed (${revealLeft}s)` : reveal.isPending ? 'Revealing…' : 'Reveal'}
             </button>
             <button
               onClick={() => { if (confirm('Delete this connector? This cannot be undone.')) del.mutate(); }}

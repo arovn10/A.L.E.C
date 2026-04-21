@@ -1303,8 +1303,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Modify: `ConnectorDrawer.jsx`
 
 **Steps**
-- [ ] Wrap `reveal.mutate()` in a `confirm()` modal: "Reveal plaintext credentials? This is audit-logged." On success, start a 60-second countdown, then re-hide fields (reset to `••••••••`). Display a badge "Revealed (Ns remaining)".
-- [ ] Commit: `feat(frontend): reveal flow with confirmation + 60s auto-rehide`
+- [x] Wrap `reveal.mutate()` in a `confirm()` modal: "Reveal plaintext credentials? This is audit-logged." On success, start a 60-second countdown, then re-hide fields (reset to `••••••••`). Display a badge "Revealed (Ns remaining)".
+- [x] Commit: `feat(frontend): reveal flow with confirmation + 60s auto-rehide`
 
 ### Task S5.3 — "Move to org" action
 
