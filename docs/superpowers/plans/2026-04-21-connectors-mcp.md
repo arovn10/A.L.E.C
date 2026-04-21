@@ -1313,10 +1313,10 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Modify: `ConnectorDrawer.jsx` (new action button)
 
 **Steps**
-- [ ] Endpoint body: `{ scope:'user'|'org', scopeId }`. Validates current user has write on source + target; updates `scope_type`+`scope_id`; audit `connector.move`.
-- [ ] Test: alice moves her personal stoa to stoagroup org (as owner) -> visible to all org members.
-- [ ] UI: drawer adds "Move to..." button opening a select of orgs where user is admin/owner.
-- [ ] Commit: `feat(connectors): move-between-scopes endpoint and UI`
+- [x] Endpoint body: `{ scope:'user'|'org', scopeId }`. Validates current user has write on source + target; updates `scope_type`+`scope_id`; audit `connector.move`.
+- [x] Test: alice moves her personal stoa to stoagroup org (as owner) -> visible to all org members.
+- [x] UI: drawer adds "Move to..." button opening a select of orgs where user is admin/owner.
+- [x] Commit: `feat(connectors): move-between-scopes endpoint and UI`
 
 ### Task S5.4 — Skeletons, empty states, toast notifications
 

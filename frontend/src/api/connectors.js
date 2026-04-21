@@ -35,3 +35,7 @@ export const testConnector = (id) =>
 
 export const revealConnector = (id) =>
   apiFetch(`/connectors/${id}/reveal`, { method: 'POST' });
+
+// S5.3 — reassign a connector between user/org scopes. Body: {scope, scopeId}.
+export const moveConnector = (id, body) =>
+  apiFetch(`/connectors/${id}/move`, { method: 'POST', body: JSON.stringify(body) });

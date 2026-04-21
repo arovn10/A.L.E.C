@@ -8,6 +8,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useQueryClient, useMutation, useQuery } from '@tanstack/react-query';
 import * as api from '../../api/connectors.js';
+import { useOrg } from '../../context/OrgContext.jsx';
 import ConnectorFormField from './ConnectorFormField.jsx';
 
 // S5.2 — how long revealed plaintext stays visible before auto re-hide.
@@ -126,6 +127,23 @@ export default function ConnectorDrawer({ selected, scope, orgId, userEmail, onC
     onSuccess: () => { invalidateLists(); onClose(); },
   });
 
+  // S5.3 — "Move to…" targets. We don't know the caller's role per org from
+  // the OrgContext membership list, so we show every org they belong to;
+  // the server 403s if they lack admin/owner and we surface the error.
+  const { orgs } = useOrg();
+  const [showMove, setShowMove] = useState(false);
+  const [moveTarget, setMoveTarget] = useState('');
+  const move = useMutation({
+    mutationFn: ({ scope, scopeId }) => api.moveConnector(id, { scope, scopeId }),
+    onSuccess: () => {
+      setShowMove(false);
+      setNotice({ kind: 'ok', text: 'Moved.' });
+      invalidateLists();
+      qc.invalidateQueries({ queryKey: ['connector', id] });
+    },
+    onError: (e) => setNotice({ kind: 'error', text: String(e.message) }),
+  });
+
   if (!def) return null;
 
   return (
@@ -183,6 +201,12 @@ export default function ConnectorDrawer({ selected, scope, orgId, userEmail, onC
               {revealUntil ? `Revealed (${revealLeft}s)` : reveal.isPending ? 'Revealing…' : 'Reveal'}
             </button>
             <button
+              onClick={() => setShowMove((v) => !v)}
+              className="rounded border border-alec-600 px-3 py-1 text-sm text-gray-200 hover:bg-alec-700"
+            >
+              Move to…
+            </button>
+            <button
               onClick={() => { if (confirm('Delete this connector? This cannot be undone.')) del.mutate(); }}
               className="rounded border border-red-500/40 px-3 py-1 text-sm text-red-300 hover:bg-red-500/10"
             >
@@ -191,6 +215,47 @@ export default function ConnectorDrawer({ selected, scope, orgId, userEmail, onC
           </>
         )}
       </div>
+
+      {showMove && !isNew && (
+        <div className="mt-4 rounded border border-alec-700 bg-alec-800 p-3 space-y-2">
+          <label className="block text-sm">
+            <span className="font-medium text-gray-200">New scope</span>
+            <select
+              value={moveTarget}
+              onChange={(e) => setMoveTarget(e.target.value)}
+              className="mt-1 w-full rounded bg-alec-900 border border-alec-600 text-white text-sm px-2 py-1"
+            >
+              <option value="">— Select —</option>
+              <option value="user:me">Personal (user scope)</option>
+              {orgs.map((o) => (
+                <option key={o.id} value={`org:${o.id}`}>Org: {o.name || o.id}</option>
+              ))}
+            </select>
+          </label>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                if (!moveTarget) return;
+                const [scope, scopeId] = moveTarget.split(':');
+                move.mutate({
+                  scope,
+                  scopeId: scope === 'user' ? (existing?.created_by || existing?.scope_id) : scopeId,
+                });
+              }}
+              disabled={!moveTarget || move.isPending}
+              className="rounded bg-alec-accent px-3 py-1 text-sm text-white hover:opacity-90 disabled:opacity-50"
+            >
+              {move.isPending ? 'Moving…' : 'Confirm move'}
+            </button>
+            <button
+              onClick={() => setShowMove(false)}
+              className="text-xs text-gray-400 hover:text-white"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {save.error && (
         <div className="mt-3 text-xs text-red-400">Save failed: {String(save.error.message)}</div>

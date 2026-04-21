@@ -23,6 +23,14 @@ const PatchBody = z.object({
   enabled: z.boolean().optional(),
 });
 
+// S5.3 — reassign a connector between user/org scopes. Target scope must be
+// one the caller can write to (own user email or an org where they're
+// admin/owner); source scope is checked via connectorService.canWrite.
+const MoveBody = z.object({
+  scope: z.enum(['user', 'org']),
+  scopeId: z.string().min(1),
+});
+
 // In-memory token bucket for /reveal — 10 requests per rolling hour per user.
 // Intentionally process-local: S2 ships a single-node API; a shared store
 // can come later if we cluster.
@@ -128,6 +136,50 @@ export function connectorsRouter(getDb) {
       action: 'connector.reveal', targetType: 'connector', targetId: req.params.id,
     });
     res.json(svc.get(db, req.params.id, req.user.email, { reveal: true }));
+  });
+
+  r.post('/:id/move', (req, res) => {
+    const db = getDb();
+    const inst = db.prepare('SELECT * FROM connector_instances WHERE id=?').get(req.params.id);
+    if (!inst) return res.status(404).json({ error: 'NOT_FOUND' });
+    if (!svc.canWrite(db, req.user.email, inst)) {
+      return res.status(403).json({ error: 'FORBIDDEN' });
+    }
+    const parsed = MoveBody.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID', issues: parsed.error.issues });
+    const { scope, scopeId } = parsed.data;
+
+    // Target scope ACL — match the create-path rules exactly.
+    if (scope === 'user' && scopeId !== req.user.email) {
+      return res.status(403).json({ error: 'FORBIDDEN' });
+    }
+    if (scope === 'org') {
+      const m = db.prepare(
+        'SELECT role FROM org_memberships WHERE user_id=? AND org_id=?'
+      ).get(req.user.email, scopeId);
+      if (!m || !['admin', 'owner'].includes(m.role)) {
+        return res.status(403).json({ error: 'FORBIDDEN' });
+      }
+    }
+
+    db.prepare(
+      `UPDATE connector_instances
+         SET scope_type = ?, scope_id = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`
+    ).run(scope, scopeId, req.params.id);
+
+    svc.writeAudit(db, {
+      userId: req.user.email,
+      orgId: scope === 'org' ? scopeId : null,
+      action: 'connector.move',
+      targetType: 'connector',
+      targetId: req.params.id,
+      metadata: {
+        from: { scope_type: inst.scope_type, scope_id: inst.scope_id },
+        to:   { scope_type: scope,           scope_id: scopeId },
+      },
+    });
+    res.json(svc.get(db, req.params.id, req.user.email));
   });
 
   return r;
