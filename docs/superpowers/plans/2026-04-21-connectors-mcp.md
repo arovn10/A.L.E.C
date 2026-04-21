@@ -1393,8 +1393,8 @@ the opt-in fix.
 - Test: `tests/unit/migration003.test.js`
 
 **Steps**
-- [ ] Test: vault contains `{ users:{}, global:{}, _legacy:{}, custom:{}, instances:{...} }`; run `up(db)`; assert only `{ instances }` remains; backup file created.
-- [ ] Implement:
+- [x] Test: vault contains `{ users:{}, global:{}, _legacy:{}, custom:{}, instances:{...} }`; run `up(db)`; assert only `{ instances }` remains; backup file created.
+- [x] Implement:
   ```js
   import fs from 'node:fs';
   export async function up(db){
@@ -1413,8 +1413,8 @@ the opt-in fix.
       .run('system','vault.wipe','vault','-', JSON.stringify({ backup: bak }));
   }
   ```
-- [ ] Run — expect green
-- [ ] Commit: `feat(migrations): 003 legacy vault wipe (opt-in via env)`
+- [x] Run — expect green
+- [x] Commit: `feat(migrations): 003 legacy vault wipe (opt-in via env)`
 
 ### Task S6.4 — Remove old `/api/skills` routes
 
