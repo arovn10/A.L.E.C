@@ -33,6 +33,15 @@ describe('migration 002', () => {
     expect(defs.length).toBeGreaterThanOrEqual(9);
     const mems = db.prepare("SELECT org_id FROM org_memberships WHERE user_id='arovner@stoagroup.com' ORDER BY org_id").all().map(r => r.org_id);
     expect(mems).toEqual(['abodingo', 'campusrentals', 'stoagroup']);
+
+    // S4.4 — Desktop Control MCP pre-seeded (stopped, disabled).
+    const desktop = db.prepare("SELECT * FROM mcp_servers WHERE id='desktop-control'").get();
+    expect(desktop).toBeTruthy();
+    expect(desktop.transport).toBe('stdio');
+    expect(desktop.status).toBe('stopped');
+    expect(desktop.enabled).toBe(0);
+    expect(desktop.auto_start).toBe(0);
+    expect(JSON.parse(desktop.args_json)).toEqual(['backend/mcp-servers/desktop-control/index.js']);
   });
 
   test('seeds desktop_policy default row and three desktop_permissions rows', async () => {

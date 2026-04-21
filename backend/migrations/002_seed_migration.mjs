@@ -43,6 +43,16 @@ export async function up(db) {
   for (const org of ['stoagroup', 'abodingo', 'campusrentals']) {
     insertMem.run('arovner@stoagroup.com', org, 'owner');
   }
+
+  // S4.4 — Pre-seed the Desktop Control MCP row (stopped). S7 flips it on.
+  db.prepare(
+    `INSERT OR IGNORE INTO mcp_servers
+       (id, name, scope_type, scope_id, transport, command, args_json,
+        enabled, auto_start, status, created_by)
+     VALUES ('desktop-control', 'Desktop Control', 'user',
+             'arovner@stoagroup.com', 'stdio', 'node',
+             ?, 0, 0, 'stopped', 'system')`
+  ).run(JSON.stringify(['backend/mcp-servers/desktop-control/index.js']));
 }
 
 /**
