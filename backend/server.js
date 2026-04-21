@@ -617,10 +617,12 @@ try {
         const { orgsRouter }        = await import('./routes/orgs.mjs');
         const { connectorsRouter }  = await import('./routes/connectors.mjs');
         const { mcpRouter }         = await import('./routes/mcp.mjs');
+        const { desktopRouter }     = await import('./routes/desktop.mjs');
         app.use('/api/orgs',        authenticateToken, orgsRouter(() => alecDb));
         app.use('/api/connectors',  authenticateToken, connectorsRouter(() => alecDb));
         app.use('/api/mcp',         authenticateToken, mcpRouter(() => alecDb));
-        console.log('[connectors-v2] routes mounted at /api/orgs, /api/connectors, /api/mcp');
+        app.use('/api/desktop',     authenticateToken, desktopRouter(() => alecDb));
+        console.log('[connectors-v2] routes mounted at /api/orgs, /api/connectors, /api/mcp, /api/desktop');
       })
       .catch(e => console.warn('[connectors-v2] init failed:', e.message));
   }
