@@ -13,7 +13,7 @@ export const getLoans = () =>
       lender:         row.LenderName,
       type:           row.LoanType,
       amount:         num(row.OriginalAmount),
-      balance:        num(row.CurrentBalance),
+      balance:        num(row.OriginalAmount),
       rate:           row.InterestRate != null ? num(row.InterestRate) / 100 : null,
       maturity:       row.MaturityDate,
       daysToMaturity: num(row.DaysToMaturity),
@@ -99,6 +99,11 @@ export const getEquity = () =>
       };
     })
   );
+
+// ──────────────────────────────────────────────────────────
+// Projects list — used by Dashboard and Deals pages
+// ──────────────────────────────────────────────────────────
+export const getProjects = () => apiFetch('/reports/projects').catch(() => []);
 
 // ──────────────────────────────────────────────────────────
 // Report download — triggers Excel generation

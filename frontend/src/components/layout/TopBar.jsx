@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
+import TenantSwitcher from '../../pages/Settings/TenantSwitcher.jsx';
 
 const ROUTE_TITLES = {
   '/chat': 'Chat',
@@ -74,6 +75,7 @@ export default function TopBar() {
     <header className="h-12 flex items-center justify-between px-4 bg-alec-800 border-b border-alec-700 flex-shrink-0">
       <span className="font-semibold text-white text-sm">{title}</span>
       <div className="flex items-center gap-4">
+        <TenantSwitcher />
         <div className="flex items-center gap-1.5" title={healthy === null ? 'Checking…' : healthy ? 'Backend healthy' : 'Backend unreachable'}>
           <span
             className={[
