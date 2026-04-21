@@ -1422,8 +1422,17 @@ the opt-in fix.
 - Modify: `backend/server.js`, any `backend/routes/skills.js`
 
 **Steps**
-- [ ] Delete `/api/skills` mount + route file. Update `frontend/src/pages/Settings.jsx` to redirect to `/settings`. Run integration suite — any callers now fail and get caught.
-- [ ] Commit: `refactor(api): remove legacy /api/skills routes`
+- [x] Delete `/api/skills` mount + route file. Update `frontend/src/pages/Settings.jsx` to redirect to `/settings`. Run integration suite — any callers now fail and get caught.
+- [x] Commit: `refactor(api): remove legacy /api/skills routes`
+
+**S6.4 note:** The actual legacy surface was the `/api/connectors/:skillId/*`
+block inside `backend/server.js` (lines 3731-3898 pre-wipe) backed by
+`services/skillsRegistry.js` + the `skillsReg` require at L71. That block
+and the require are now deleted. The `/api/skills/*` desktop-control
+endpoints in server.js (L1917-1938) are left in place — they belong to
+Stage S7 (Desktop Control) and were never credential storage. No frontend
+callers of the deleted routes were found (grep for `/api/connectors/*/credentials`
+returned empty).
 
 ### Task S6.5 — `scripts/connector-vault-doctor.js`
 

@@ -68,7 +68,8 @@ const vercelSvc    = (() => { try { return require('../services/vercelService.js
 const tenantCloud  = (() => { try { return require('../services/tenantCloudService.js'); } catch { return null; } })();
 const awsSvc       = (() => { try { return require('../services/awsService.js');      } catch { return null; } })();
 const research     = (() => { try { return require('../services/researchAgent.js');   } catch { return null; } })();
-const skillsReg    = (() => { try { return require('../services/skillsRegistry.js');  } catch { return null; } })();
+// skillsReg removed in S6.4 — the legacy /api/connectors/:skillId/* block
+// is gone and the v2 surface lives in backend/routes/connectors.mjs.
 
 const RagService     = require('../services/ragService');
 const StoaBrainSync  = require('../services/stoaBrainSync');
@@ -3729,173 +3730,13 @@ app.delete('/api/history/conversations/:id', authenticateToken, (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════
-//  SKILLS REGISTRY  (/api/connectors/*)
-//  Central credential management for all external services.
-//  Replaces the old Python-proxy /api/skills/* endpoints.
+//  LEGACY SKILLS REGISTRY routes removed in S6.4.
+//  Credential management now lives at backend/routes/connectors.mjs
+//  (mounted at /api/connectors) and uses connector_instances + the
+//  UUID-keyed secretVault. The old /:skillId/credentials, /:skillId/
+//  reveal, /:skillId/instances and /custom routes that read through
+//  services/skillsRegistry.js have been deleted.
 // ════════════════════════════════════════════════════════════════
-
-// ── Catalog: enrich with per-user configured status ──────────────
-app.get('/api/connectors/catalog', authenticateToken, (req, res) => {
-  if (!skillsReg) return res.json({ success: true, catalog: { skills: [], byCategory: {} } });
-  try {
-    const userId  = req.user?.userId || req.user?.email || '_legacy';
-    const catalog = skillsReg.getCatalog();
-
-    const enrich = (skill) => {
-      let configured = false;
-      if (skill.fields.length === 0 && !skill.multiInstance) {
-        configured = true; // no creds needed
-      } else if (skill.multiInstance) {
-        // configured if at least one instance exists
-        const instances = skillsReg.getInstances(userId, skill.id);
-        configured = instances.length > 0;
-      } else {
-        // check env OR per-user config
-        const statusArr = skillsReg.getCredentialStatus(userId, skill.id);
-        const required  = statusArr.filter(f => f.required);
-        configured = required.length === 0 || required.some(f => f.configured);
-      }
-      return { ...skill, configured };
-    };
-
-    const enriched = {
-      skills:     catalog.skills.map(enrich),
-      byCategory: Object.fromEntries(
-        Object.entries(catalog.byCategory).map(([cat, skills]) => [cat, skills.map(enrich)])
-      ),
-    };
-
-    res.json({ success: true, catalog: enriched });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ── Save credentials (per-user) ───────────────────────────────────
-app.post('/api/connectors/:skillId/credentials', authenticateToken, requireFullCapabilities, async (req, res) => {
-  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
-  try {
-    const userId = req.user?.userId || req.user?.email || '_legacy';
-    const result = await skillsReg.saveCredentials(userId, req.params.skillId, req.body);
-    res.json({ success: true, ...result });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ── Status check ──────────────────────────────────────────────────
-app.get('/api/connectors/:skillId/status', authenticateToken, async (req, res) => {
-  if (!skillsReg) return res.json({ configured: false, connected: false });
-  try {
-    const status = await skillsReg.getSkillStatus(req.params.skillId);
-    const connected = !!(
-      status.connected || status.authenticated || status.configured || status.running ||
-      status.ownerPhoneConfigured || (status.propertyCount != null && status.propertyCount >= 0) ||
-      (status.serviceCount != null && status.serviceCount >= 0) ||
-      (status.scheduledTasks != null && status.scheduledTasks >= 0) ||
-      (status.available && !status.error)
-    );
-    res.json({ success: true, connected, ...status });
-  } catch (err) {
-    res.json({ success: false, connected: false, error: err.message });
-  }
-});
-
-// ── Get credential status (masked — which fields are filled) ──────
-app.get('/api/connectors/:skillId/credentials', authenticateToken, requireFullCapabilities, (req, res) => {
-  if (!skillsReg) return res.json({ fields: {} });
-  try {
-    const userId = req.user?.userId || req.user?.email || '_legacy';
-    const statusArr = skillsReg.getCredentialStatus(userId, req.params.skillId);
-    const fields = {};
-    if (Array.isArray(statusArr)) {
-      statusArr.forEach(f => { fields[f.key] = f.configured; });
-    }
-    res.json({ success: true, fields });
-  } catch (err) {
-    res.json({ success: false, fields: {}, error: err.message });
-  }
-});
-
-// ── Reveal decrypted credentials (authorized peek) ────────────────
-app.post('/api/connectors/:skillId/reveal', authenticateToken, requireFullCapabilities, (req, res) => {
-  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
-  try {
-    const userId = req.user?.userId || req.user?.email || '_legacy';
-    const values = skillsReg.revealCredentials(userId, req.params.skillId);
-    res.json({ success: true, values });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ── Multi-instance management (Microsoft 365, etc.) ───────────────
-app.get('/api/connectors/:skillId/instances', authenticateToken, requireFullCapabilities, (req, res) => {
-  if (!skillsReg) return res.json({ success: true, instances: [] });
-  try {
-    const userId    = req.user?.userId || req.user?.email || '_legacy';
-    const instances = skillsReg.getInstances(userId, req.params.skillId);
-    res.json({ success: true, instances });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.post('/api/connectors/:skillId/instances', authenticateToken, requireFullCapabilities, (req, res) => {
-  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
-  try {
-    const userId = req.user?.userId || req.user?.email || '_legacy';
-    const { name, instId, ...creds } = req.body;
-    if (!name) return res.status(400).json({ error: 'name is required' });
-    const result = skillsReg.addInstance(userId, req.params.skillId, name, creds, instId || null);
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.delete('/api/connectors/:skillId/instances/:instanceId', authenticateToken, requireFullCapabilities, (req, res) => {
-  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
-  try {
-    const userId = req.user?.userId || req.user?.email || '_legacy';
-    skillsReg.deleteInstance(userId, req.params.skillId, req.params.instanceId);
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.post('/api/connectors/:skillId/instances/:instanceId/reveal', authenticateToken, requireFullCapabilities, (req, res) => {
-  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
-  try {
-    const userId = req.user?.userId || req.user?.email || '_legacy';
-    const values = skillsReg.revealInstance(userId, req.params.skillId, req.params.instanceId);
-    res.json({ success: true, values });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ── Custom skills ──────────────────────────────────────────────────
-app.post('/api/connectors/custom', authenticateToken, requireFullCapabilities, (req, res) => {
-  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
-  try {
-    skillsReg.addCustomSkill(req.body);
-    res.json({ success: true, message: 'Custom skill added' });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.delete('/api/connectors/custom/:skillId', authenticateToken, requireFullCapabilities, (req, res) => {
-  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
-  try {
-    skillsReg.removeCustomSkill(req.params.skillId);
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
 
 // ── Phone verification for notification number ────────────────────
 // OTP store: { phone: { code, expiresAt, attempts } }
