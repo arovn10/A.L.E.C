@@ -166,3 +166,62 @@ describe('POST /api/connectors', () => {
     expect(res.body.error).toBe('INVALID');
   });
 });
+
+describe('GET/PATCH/DELETE /api/connectors/:id', () => {
+  async function seedInstance(db, email) {
+    return svcCreate(db, {
+      definitionId: 'github', scope: 'user', scopeId: email,
+      fields: { GITHUB_TOKEN: 'initial' }, createdBy: email,
+    });
+  }
+
+  test('GET /:id returns the redacted instance for its owner', async () => {
+    const db = await freshDb();
+    const inst = await seedInstance(db, 'alice@stoagroup.com');
+    const res = await request(mkApp(db, 'alice@stoagroup.com')).get(`/api/connectors/${inst.id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe(inst.id);
+    expect(res.body.fields.GITHUB_TOKEN).not.toBe('initial');
+  });
+
+  test('GET /:id returns 403 when the caller cannot see the instance', async () => {
+    const db = await freshDb();
+    const inst = await seedInstance(db, 'alice@stoagroup.com');
+    const res = await request(mkApp(db, 'bob@abodingo.com')).get(`/api/connectors/${inst.id}`);
+    expect(res.status).toBe(403);
+  });
+
+  test('GET /:id returns 404 for unknown id', async () => {
+    const db = await freshDb();
+    const res = await request(mkApp(db, 'alice@stoagroup.com')).get('/api/connectors/does-not-exist');
+    expect(res.status).toBe(404);
+  });
+
+  test('PATCH updates fields and displayName', async () => {
+    const db = await freshDb();
+    const inst = await seedInstance(db, 'alice@stoagroup.com');
+    const res = await request(mkApp(db, 'alice@stoagroup.com'))
+      .patch(`/api/connectors/${inst.id}`)
+      .send({ fields: { GITHUB_TOKEN: 'rotated' }, displayName: 'Alice primary' });
+    expect(res.status).toBe(200);
+    expect(res.body.display_name).toBe('Alice primary');
+  });
+
+  test('PATCH by non-writer -> 403', async () => {
+    const db = await freshDb();
+    const inst = await seedInstance(db, 'alice@stoagroup.com');
+    const res = await request(mkApp(db, 'bob@abodingo.com'))
+      .patch(`/api/connectors/${inst.id}`)
+      .send({ displayName: 'hijack' });
+    expect(res.status).toBe(403);
+  });
+
+  test('DELETE 204 then GET 404', async () => {
+    const db = await freshDb();
+    const inst = await seedInstance(db, 'alice@stoagroup.com');
+    const del = await request(mkApp(db, 'alice@stoagroup.com')).delete(`/api/connectors/${inst.id}`);
+    expect(del.status).toBe(204);
+    const after = await request(mkApp(db, 'alice@stoagroup.com')).get(`/api/connectors/${inst.id}`);
+    expect(after.status).toBe(404);
+  });
+});
