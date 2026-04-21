@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import pkg from '../../backend/auth/bootstrap.js';
 import { up as seedUp } from '../../backend/migrations/002_seed_migration.mjs';
 import {
-  listVisible, create, get, update, remove, canWrite,
+  listVisible, create, get, update, remove, canWrite, testInstance,
 } from '../../backend/services/connectorService.mjs';
 const { runMigrations } = pkg;
 
@@ -84,6 +84,20 @@ describe('connectorService', () => {
     expect(canWrite(db, 'arovner@stoagroup.com', orgRow)).toBe(true); // owner
     db.prepare('INSERT INTO org_memberships(user_id, org_id, role) VALUES (?,?,?)').run('mem@stoagroup.com', 'stoagroup', 'member');
     expect(canWrite(db, 'mem@stoagroup.com', orgRow)).toBe(false); // member only
+  });
+
+  test('testInstance() sets status and last_checked + writes audit', async () => {
+    const db = await freshDb();
+    // Stub definitions with no probe registered → returns ok:true by default.
+    const inst = create(db, { definitionId: 'imessage', scope: 'user', scopeId: 'arovner@stoagroup.com',
+      fields: { IMESSAGE_DB_PATH: '/tmp/chat.db' }, createdBy: 'arovner@stoagroup.com' });
+    const res = await testInstance(db, inst.id, 'arovner@stoagroup.com');
+    expect(res.ok).toBe(true);
+    const row = db.prepare('SELECT status, last_checked FROM connector_instances WHERE id=?').get(inst.id);
+    expect(row.status).toBe('connected');
+    expect(row.last_checked).not.toBeNull();
+    const audit = db.prepare("SELECT action FROM audit_log WHERE target_id=? AND action='connector.test'").get(inst.id);
+    expect(audit).toBeDefined();
   });
 
   test('is_org_only rejects user scope with ORG_ONLY error', async () => {

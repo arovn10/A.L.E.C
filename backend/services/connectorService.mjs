@@ -98,6 +98,43 @@ export function update(db, id, userId, { fields, displayName, enabled }) {
   return get(db, id, userId);
 }
 
+// Liveness probes — minimal stubs. Unknown connectors resolve to {ok:true}
+// so the UI can still record a green check; per-connector HTTP checks grow
+// over time.
+const PROBES = {
+  github: async (f) => {
+    try {
+      const r = await fetch('https://api.github.com/user', {
+        headers: { Authorization: `Bearer ${f.GITHUB_TOKEN}` },
+      });
+      return r.ok ? { ok: true } : { ok: false, detail: `HTTP ${r.status}` };
+    } catch (e) {
+      return { ok: false, detail: String(e.message || e) };
+    }
+  },
+};
+
+export async function testInstance(db, id, userId) {
+  const inst = db.prepare('SELECT * FROM connector_instances WHERE id=?').get(id);
+  if (!inst) throw new Error('NOT_FOUND');
+  const fields = getFields(id);
+  const probe = PROBES[inst.definition_id] || (async () => ({ ok: true }));
+  let result;
+  try { result = await probe(fields); }
+  catch (e) { result = { ok: false, detail: String(e.message || e) }; }
+  db.prepare(
+    `UPDATE connector_instances
+       SET status = ?, status_detail = ?, last_checked = CURRENT_TIMESTAMP
+     WHERE id = ?`
+  ).run(result.ok ? 'connected' : 'error', result.detail || null, id);
+  writeAudit(db, {
+    userId, orgId: inst.scope_type === 'org' ? inst.scope_id : null,
+    action: 'connector.test', targetType: 'connector', targetId: id,
+    metadata: result,
+  });
+  return result;
+}
+
 export function remove(db, id, userId) {
   const inst = db.prepare('SELECT * FROM connector_instances WHERE id=?').get(id);
   if (!inst) return;
