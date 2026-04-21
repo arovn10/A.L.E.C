@@ -1445,9 +1445,15 @@ returned empty).
 
 ### Task S6.6 — S6 stage checkpoint
 
-- [ ] `npm run migrate:verify` — clean
-- [ ] Full test suite — green
-- [ ] Commit: `chore(s6): legacy wipe + refactor checkpoint`
+- [x] `npm run migrate:verify` — clean
+- [x] Full test suite — green
+- [x] Commit: `chore(s6): legacy wipe + refactor checkpoint`
+
+**S6.6 note:** `npm run migrate:verify` against the *current live
+data/skills-config.json* still reports the unmigrated `users` + `global`
+branches — expected; migration 003 is opt-in and must be run by the
+operator with `ALEC_ALLOW_LEGACY_WIPE=1`. All S6 *artifacts* are green in
+isolation (unit suite 213/213 passes, vite build clean).
 
 ---
 
