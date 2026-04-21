@@ -77,13 +77,6 @@ const QualityScorer  = require('../services/qualityScorer');
 const FineTuneQueue  = require('../services/fineTuneQueue');
 const reviewRoutes   = require('../routes/reviewRoutes');
 
-// ── SQLite migration — ensure fine-tune/review tables exist ─────────────────
-try {
-  require('../scripts/setupAlecDb').runMigration();
-} catch (dbInitErr) {
-  console.warn('[DB] Migration warning:', dbInitErr.message);
-}
-
 // ── Data Connector Registry ──────────────────────────────────────────────────
 const { registry: connectorRegistry } = require('../dataConnectors/index');
 try {
@@ -188,6 +181,45 @@ function enforceHardRules(responseText) {
 }
 
 /**
+ * Post-process the LLM reply to prevent fabricated source attribution.
+ *
+ * The system prompt (rule #11) asks the model to append "— Source: STOA · … ·
+ * asOf=…" when it gives data answers. If STOA (or any other source) was NOT
+ * actually injected into the system prompt for this turn, the model sometimes
+ * still emits the footer with invented numbers — the user sees "Source: STOA"
+ * and trusts it. This guard:
+ *   1. Inspects the assembled systemPrompt for our injection markers.
+ *   2. Detects any "— Source: X · …" line in the model output.
+ *   3. If X's marker is absent from the system prompt, the line is stripped
+ *      and replaced with an honest "— Source: Model (no live data injected)".
+ *
+ * Marker table (must match the strings used at each inject site in this file):
+ *   STOA          → "## Live Leasing & Occupancy Data" / "[STOA DATA"
+ *   TenantCloud   → "[TenantCloud DATA"
+ *   Plaid         → "[Plaid Financial DATA"
+ *   Weaviate      → "[Weaviate DATA" / "[RAG DATA"
+ *   HomeAssistant → "[Home Assistant DATA"
+ *   GitHub        → "[GitHub DATA"
+ */
+function stripFalseSourceFooters(text, systemPrompt) {
+  if (!text) return text;
+  const injected = {
+    STOA:          /\[STOA DATA|## Live Leasing & Occupancy Data|## Project Details|## Occupancy & Rent Trend/i.test(systemPrompt),
+    TenantCloud:   /\[TenantCloud DATA/i.test(systemPrompt),
+    Plaid:         /\[Plaid Financial DATA/i.test(systemPrompt),
+    Weaviate:      /\[Weaviate DATA|\[RAG DATA/i.test(systemPrompt),
+    HomeAssistant: /\[Home Assistant DATA/i.test(systemPrompt),
+    GitHub:        /\[GitHub DATA/i.test(systemPrompt),
+  };
+  const FOOTER_RE = /(^|\n)\s*[—–-]\s*Source:\s*([A-Za-z]+)[^\n]*/gi;
+  return text.replace(FOOTER_RE, (match, pre, source) => {
+    const key = Object.keys(injected).find(k => k.toLowerCase() === source.toLowerCase());
+    if (key && injected[key]) return match; // legitimate — keep
+    return `${pre}— Source: Model (no live data injected — numbers above may be estimates)`;
+  });
+}
+
+/**
  * System prompt — generated fresh on every request so the date is always accurate.
  * LLMs have a training cutoff and don't know the current date unless told explicitly.
  */
@@ -259,11 +291,40 @@ ${caps.join('\n')}
 6. **Google Reviews / resident feedback**: The STOA database does NOT contain Google review text. If asked for reviews, say: "The STOA database doesn't include Google review text — I can see Google ratings if they're in the data, but not individual reviews. I can do a web search for recent reviews if you'd like."
 7. **Excel exports**: Only generate Excel files for data you actually have (STOA leasing data). Don't offer to generate "top 100 negative reviews" — that data doesn't exist in STOA.
 8. **Typos and abbreviations**: If a user types an ambiguous abbreviation or likely typo (e.g. "IRSN", "AMZM", "stoa stcok"), do NOT assume it refers to a country, company, or concept that superficially matches the letters. Instead, ask for clarification: "Did you mean [most likely interpretation based on context]?" For example, "IRSN" in a stock context likely means a mistyped ticker, not Iran.
-9. Be direct, smart, and friendly. Use markdown for clarity. Refer to yourself as "Alec" in casual replies.`;
+9. **Leasing metric discipline — NEVER conflate these three fields:**
+   - **Occupancy %** = physically occupied units / total units (today's reality).
+   - **Leased %** = units under lease (including future move-ins) / total units. Leased ≥ Occupancy almost always.
+   - **Forward occupancy (4/7/8 wk)** = projected future occupancy after scheduled NTVs and move-ins — a forecast, not today.
+   When asked "what's the occupancy today?" the ONLY valid answer is the Occupancy field. Never substitute Leased % or a forward projection. If you report any number, label it explicitly: "Occupancy today is 93.6% (292/312). Leased stands at 95%. Forward 4-week projection is 92.6%." If data is injected with multiple fields, reproduce them all with their labels.
+10. **Conversation continuity — NEVER deny prior statements.** If [PRIOR TURNS] context shows you said something in this session, own it. If you misspoke, correct yourself and explain the error. Do NOT claim "I didn't say that" when the transcript shows you did.
+11. **Source attribution on data answers.** When you give a specific number (occupancy, rent, pipeline count, balance, etc.), append a 1-line source footer at the bottom of the response in the form: "— Source: STOA · <property or query> · asOf=YYYY-MM-DD" (or TenantCloud / Weaviate / Web / Model). If no data was injected, say so and cite "Model" (meaning you are answering from reasoning alone).
+12. Be direct, smart, and friendly. Use markdown for clarity. Refer to yourself as "Alec" in casual replies.`;
 }
 
 // Keep a static alias for backward compat with any code referencing ALEC_SYSTEM_PROMPT directly
 const ALEC_SYSTEM_PROMPT = buildSystemPrompt();
+
+/**
+ * Load the last N turns from chatHistory and render them as a [PRIOR TURNS] block.
+ * Fixes the gaslighting bug: without this, the LLM forgets what it just said.
+ * Cheap (SQLite read) — safe to call per-turn.
+ */
+function buildPriorTurnsBlock(convId, maxTurns = 12) {
+  if (!chatHistory || !convId) return '';
+  try {
+    const msgs = chatHistory.getMessages(convId, maxTurns) || [];
+    if (!msgs.length) return '';
+    const lines = msgs.slice(-maxTurns).map(m => {
+      const who = m.role === 'assistant' ? 'Alec' : (m.role === 'user' ? 'Owner' : m.role);
+      const body = String(m.content || '').slice(0, 800).replace(/\s+/g, ' ').trim();
+      return `${who}: ${body}`;
+    });
+    return `\n\n[PRIOR TURNS — THIS SESSION, MOST RECENT LAST]\n${lines.join('\n')}\n[/PRIOR TURNS]`;
+  } catch (e) {
+    console.warn('[priorTurns]', e.message);
+    return '';
+  }
+}
 
 // ── Anthropic Claude fallback ───────────────────────────────────
 // Used when: ANTHROPIC_API_KEY is set AND (local model not loaded OR user explicitly picks Claude)
@@ -362,6 +423,14 @@ async function callLLMText(messages, voiceMode = false) {
     return await callClaudeText(fullMsgs, voiceMode);
   }
 
+  // No local model AND no Anthropic fallback — produce a helpful response
+  // instead of crashing the request.
+  if (typeof llamaEngine.isLlamaDisabled === 'function' && llamaEngine.isLlamaDisabled()) {
+    return 'Local inference is currently disabled on this machine (macOS Metal incompatibility). ' +
+           'Set ANTHROPIC_API_KEY in your environment to enable Claude fallback, or set ' +
+           'ALEC_FORCE_LLAMA=1 and restart to attempt Metal inference anyway.';
+  }
+
   return await llamaEngine.generate(fullMsgs, { maxTokens, temperature });
 }
 
@@ -448,7 +517,7 @@ async function extractAndStoreFacts(userMsg, assistantReply) {
 // ════════════════════════════════════════════════════════════════
 //  WEB SEARCH (DuckDuckGo Instant Answers — no API key needed)
 // ════════════════════════════════════════════════════════════════
-const SEARCH_TRIGGERS = /\b(search for|look up|latest news|breaking news|current events|today's weather|weather forecast|stock price|ticker symbol|nasdaq|nyse|crypto price|bitcoin price|ethereum price|market cap|earnings report|interest rate forecast|fed rate)\b/i;
+const SEARCH_TRIGGERS = /\b(search|find|look up|what is|who is|latest|news|current|today|weather|price|how much|when did|when is|define|meaning of|stock|ticker|nasdaq|nyse|crypto|bitcoin|ethereum|market cap|earnings|interest rate)\b/i;
 
 async function webSearch(query) {
   try {
@@ -507,11 +576,119 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: '50mb' }));
 
-// Serve static frontend
-app.use(express.static(path.join(__dirname, '../frontend')));
+// Serve static frontend — prefer built Vite SPA (dist) over legacy /frontend root.
+// `dist/` exists after `npm --prefix frontend run build`; in dev we fall back
+// to the legacy files so the old UI still opens at /.
+const SPA_DIST = path.join(__dirname, '../frontend/dist');
+if (fs.existsSync(path.join(SPA_DIST, 'index.html'))) {
+  app.use(express.static(SPA_DIST));
+  // SPA client-side routing: every non-API, non-file path falls back to index.html
+  app.get(/^\/(?!api|uploads|exports|socket\.io|assets).*/, (req, res, next) => {
+    if (req.method !== 'GET') return next();
+    if (path.extname(req.path)) return next(); // real file request
+    res.sendFile(path.join(SPA_DIST, 'index.html'));
+  });
+} else {
+  app.use(express.static(path.join(__dirname, '../frontend')));
+}
 
 // Serve uploaded files at /uploads/
 app.use('/uploads', express.static(UPLOADS_DIR));
+
+// ── Sprint-1 auth routes (/api/auth/*, /api/admin/*) ────────────
+// Mounted before authenticateToken-protected routes so /login is reachable
+// without a bearer token. The router itself applies mw.authenticate on the
+// endpoints that need it.
+try {
+  const { ensureAuthSchema, runBootstrap } = require('./auth/bootstrap');
+  ensureAuthSchema().catch(e => console.warn('[auth] bootstrap skipped:', e.message));
+  const authRoutes = require('./auth/routes');
+  app.use('/api', authRoutes);
+  console.log('[auth] Sprint-1 routes mounted at /api/auth and /api/admin');
+
+  // ── Connectors v2: SQLite bootstrap + /api/orgs, /api/connectors, /api/mcp ──
+  // Gated on ALEC_CONNECTORS_V2=1 so production stays on the legacy surface
+  // until S6 lands. runBootstrap opens data/alec.db, applies better-sqlite3
+  // migrations, and (when the flag is on) seeds orgs + catalog.
+  if (process.env.ALEC_CONNECTORS_V2 === '1') {
+    runBootstrap()
+      .then(async (alecDb) => {
+        const { orgsRouter }        = await import('./routes/orgs.mjs');
+        const { connectorsRouter }  = await import('./routes/connectors.mjs');
+        const { mcpRouter }         = await import('./routes/mcp.mjs');
+        app.use('/api/orgs',        authenticateToken, orgsRouter(() => alecDb));
+        app.use('/api/connectors',  authenticateToken, connectorsRouter(() => alecDb));
+        app.use('/api/mcp',         authenticateToken, mcpRouter(() => alecDb));
+        console.log('[connectors-v2] routes mounted at /api/orgs, /api/connectors, /api/mcp');
+      })
+      .catch(e => console.warn('[connectors-v2] init failed:', e.message));
+  }
+
+  // ── Nightly ML engine (profiler → gate → tournament → forecasts) ──
+  try {
+    const mlRoutes = require('./ml/routes');
+    app.use('/api/ml', mlRoutes);
+    console.log('[ml] routes mounted at /api/ml');
+    if (process.env.ML_NIGHTLY_ENABLED !== '0') {
+      const { runNightly } = require('./ml/nightly');
+      // 02:15 local every night — offset from fine-tune cron at 02:00.
+      cron.schedule('15 2 * * *', async () => {
+        console.log('[ml] nightly cron firing');
+        try {
+          const r = await runNightly({ trigger: 'cron' });
+          console.log('[ml] nightly done:', JSON.stringify({ ok: r.ok, runId: r.runId, nChampions: r.nChampions, nCandidates: r.nCandidates, nModelsFit: r.nModelsFit }));
+        } catch (e) { console.error('[ml] nightly failed:', e.message); }
+      });
+      console.log('[ml] nightly cron registered (02:15 local)');
+    }
+  } catch (e) { console.warn('[ml] init failed:', e.message); }
+
+  // ── Sprint-2 Domo embed routes ──
+  try {
+    const mw = require('./auth/middleware');
+    const domo = require('./auth/domo');
+    const authPool = require('./auth/_pool');
+
+    // GET /api/domo/dashboards — dashboards the user can embed
+    app.get('/api/domo/dashboards', mw.authenticate, async (req, res) => {
+      try {
+        const pool = await authPool.getPoolForAuth();
+        const rows = await domo.listUserDashboards(pool, req.user.userId, req.user.implicitScope === '*');
+        res.json({ success: true, data: rows });
+      } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+    });
+
+    // POST /api/domo/embed-token — mint a short-lived embed JWT
+    app.post('/api/domo/embed-token', mw.authenticate, async (req, res) => {
+      try {
+        const { dashboardId, filters } = req.body || {};
+        if (!dashboardId) return res.status(400).json({ error: 'dashboardId required' });
+        // Scope check: requireScope-style inline
+        const ok = req.user.implicitScope === '*' ||
+          req.user.scopes.some(s => (s.type === '*' || s.type === 'domo_dashboard') &&
+                                     (s.value === '*' || s.value === String(dashboardId)));
+        if (!ok) return res.status(403).json({ error: 'Out of scope', type: 'domo_dashboard', value: dashboardId });
+
+        const pool = await authPool.getPoolForAuth();
+        const row = await domo.getDashboard(pool, dashboardId);
+        if (!row) return res.status(404).json({ error: 'Dashboard not found' });
+
+        const token = domo.mintEmbedToken({
+          embedId: row.EmbedId,
+          userEmail: req.user.email,
+          filters: filters || [],
+        });
+        res.json({ success: true, token, embedId: row.EmbedId, expiresInSec: 300 });
+      } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+    });
+
+    console.log('[auth] Sprint-2 Domo routes mounted at /api/domo/*');
+  } catch (e) {
+    console.warn('[auth] Sprint-2 Domo routes not loaded:', e.message);
+  }
+} catch (e) {
+  console.warn('[auth] Sprint-1 auth router not loaded:', e.message);
+}
 
 // ── Multer config for file uploads ──────────────────────────────
 const storage = multer.diskStorage({
@@ -593,19 +770,6 @@ async function proxyToNeural(path, options = {}) {
  *   FULL_CAPABILITIES → everything: training, files, admin, smart home
  */
 const authenticateToken = (req, res, next) => {
-  // Localhost auto-authentication — personal tool, no login required for local requests
-  const clientIp = req.ip || req.connection?.remoteAddress || '';
-  if (clientIp === '127.0.0.1' || clientIp === '::1' || clientIp === '::ffff:127.0.0.1') {
-    req.user = {
-      userId: 'alec-local',
-      email: 'arovner@stoagroup.com',
-      tokenType: 'OWNER',
-      scope: ['owner', 'full_access', 'neural_training', 'smart_home', 'stoa_data', 'user_management', 'connectors'],
-      isLocal: true,
-    };
-    return next();
-  }
-
   // Domo embed auto-authentication — no login required
   if (isDomo(req)) {
     req.user = {
@@ -614,6 +778,28 @@ const authenticateToken = (req, res, next) => {
       tokenType: 'STOA_ACCESS',
       scope: ['stoa_data'],
       isDomoEmbed: true,
+    };
+    return next();
+  }
+
+  // Desktop-app / localhost auto-auth — grants OWNER scope for requests
+  // originating from the same machine. The Electron shell only ever
+  // points its <webview> at http://localhost:3001, so this lets every
+  // feature work without a login screen on the user's own Mac while
+  // still requiring JWTs for any network-exposed deployment.
+  // Disable by setting ALEC_REQUIRE_AUTH=1 in .env (e.g. when hosting
+  // the backend on a shared server).
+  const isLocalhost =
+    process.env.ALEC_REQUIRE_AUTH !== '1' &&
+    ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip) ||
+    req.hostname === 'localhost';
+  if (isLocalhost) {
+    req.user = {
+      userId: 'local-owner',
+      email: process.env.ALEC_OWNER_EMAIL || 'arovner@stoagroup.com',
+      tokenType: 'OWNER',
+      scope: ['owner', 'full_access', 'neural_training', 'smart_home', 'stoa_data', 'user_management', 'connectors', 'chat'],
+      isLocalhost: true,
     };
     return next();
   }
@@ -838,8 +1024,10 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     const memCtx = buildMemoryContext(mem);
     let ragContext = '';
     try { ragContext = ragService ? await ragService.retrieve(userText) : ''; } catch (_) {}
+    const priorTurns = buildPriorTurnsBlock(convId);
     let systemContent = buildSystemPrompt()
       + (memCtx ? '\n\n' + memCtx : '')
+      + (priorTurns || '')
       + (ragContext ? '\n\n' + ragContext : '');
 
     // ── Self-improvement trigger — owner can ask ALEC to improve itself ──
@@ -1083,8 +1271,11 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     }
 
     // Web search augmentation
-    // If messages[] is empty but a standalone `message` string was provided, build the array
-    let augmentedMessages = messages.length > 0 ? [...messages] : (userText ? [{ role: 'user', content: userText }] : []);
+    // If the SPA sent only `{message}` (no `messages[]` array), synthesise a
+    // one-turn conversation so the LLM actually sees the user's prompt.
+    let augmentedMessages = Array.isArray(messages) && messages.length > 0
+      ? [...messages]
+      : (userText ? [{ role: 'user', content: userText }] : []);
     if (SEARCH_TRIGGERS.test(userText)) {
       const searchResult = await webSearch(userText);
       if (searchResult && augmentedMessages.length > 0) {
@@ -1097,8 +1288,11 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     }
 
     const llmMessages = [{ role: 'system', content: systemContent }, ...augmentedMessages];
-    const responseText = await callLLMText(llmMessages);
+    let responseText = await callLLMText(llmMessages);
     const latency_ms = Date.now() - startTime;
+
+    // Strip fabricated "Source: X" footers for sources that weren't injected.
+    responseText = stripFalseSourceFooters(responseText, systemContent);
 
     // Async: extract and store facts from this exchange
     extractAndStoreFacts(userText, responseText).catch(() => {});
@@ -1153,11 +1347,11 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
 });
 
 /**
- * GET /api/chat/stream (EventSource) + POST /api/chat/stream (fetch)
+ * POST /api/chat/stream
  * SSE streaming endpoint — tokens arrive one-by-one like Claude.
- * GET reads message/session_id from query params (EventSource only supports GET).
+ * Browser reads via ReadableStream / EventSource.
  */
-async function handleChatStream(req, res) {
+const chatStreamHandler = async (req, res) => {
   // SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -1165,9 +1359,10 @@ async function handleChatStream(req, res) {
   res.setHeader('X-Accel-Buffering', 'no'); // disable nginx buffering
   res.flushHeaders();
 
-  // Support both GET (query params) and POST (body)
-  const source = req.method === 'GET' ? req.query : (req.body || {});
-  const { message, messages = [], session_id, conversation_id } = source;
+  // Browser EventSource can only do GET with query params; native fetch
+  // callers use POST with JSON body. Accept both shapes.
+  const src = (req.method === 'GET') ? req.query : (req.body || {});
+  const { message, messages = [], session_id, sessionId, conversation_id } = src;
   const userText = message || messages.at(-1)?.content || '';
 
   // ── Persist to chat history (streaming) ─────────────────────
@@ -1189,8 +1384,10 @@ async function handleChatStream(req, res) {
     const memCtx = buildMemoryContext(mem);
     let ragContext = '';
     try { ragContext = ragService ? await ragService.retrieve(userText) : ''; } catch (_) {}
+    const priorTurns = buildPriorTurnsBlock(convId);
     let systemContent = buildSystemPrompt()
       + (memCtx ? '\n\n' + memCtx : '')
+      + (priorTurns || '')
       + (ragContext ? '\n\n' + ragContext : '');
 
     // ── Excel export detection (stream) — send download link immediately ──
@@ -1245,7 +1442,7 @@ async function handleChatStream(req, res) {
         });
         if (twilioResp.ok) {
           systemContent += `\n\n[SMS SENT] Successfully sent a Twilio text message to ${ownerPhoneNum}. Confirm this to the user.`;
-          res.write('data: {"token":"📱 "}\n\n');
+          res.write('data: {"token":"📱 Sending SMS via Twilio…\\n"}\n\n');
         } else {
           const errData = await twilioResp.json().catch(() => ({}));
           systemContent += `\n\n[SMS FAILED] Twilio error: ${errData.message || twilioResp.status}`;
@@ -1281,7 +1478,7 @@ async function handleChatStream(req, res) {
           });
           if (r2.ok) {
             systemContent += `\n\n[HA COMMAND EXECUTED] ${svc.replace('_',' ')} ${entityId || keyword}. Confirm this to the user.`;
-            res.write('data: {"token":"🏡 "}\n\n');
+            res.write('data: {"token":"🏡 Executing Home Assistant command…\\n"}\n\n');
           }
         }
       } catch (_haCtrlErr) { /* non-critical */ }
@@ -1291,7 +1488,7 @@ async function handleChatStream(req, res) {
     const vercelCtrlRe = /\b(deploy|redeploy|re-?deploy|push\s+to\s+vercel)\b/i;
     if (vercelCtrlRe.test(userText) && vercelSvc && process.env.VERCEL_TOKEN) {
       try {
-        res.write('data: {"token":"▲ "}\n\n');
+        res.write('data: {"token":"▲ Triggering Vercel redeploy…\\n"}\n\n');
         const result = await vercelSvc.redeploy();
         systemContent += `\n\n[Vercel ACTION EXECUTED] Triggered a new production deployment. URL: ${result.url || 'building…'}. Tell the user the deploy was triggered — it usually takes 1-2 minutes.`;
       } catch (vercelCtrlErr) {
@@ -1334,7 +1531,7 @@ async function handleChatStream(req, res) {
     const iMsgIntentStream = /\b(check|read|show|get|look at|fetch|see)\b.{0,30}\b(imessages?|messages?|texts?|sms)\b|\b(recent|new|unread|latest)\b.{0,20}\b(imessages?|messages?|texts?)\b|\bwho texted\b|\bdid.*text(ed)?\b|\bany.*messages\b/i.test(userText);
     if (iMsgIntentStream && iMessage) {
       try {
-        res.write('data: {"token":"💬 "}\n\n');
+        res.write('data: {"token":"💬 Reading recent iMessages…\\n"}\n\n');
         const convos = await iMessage.getConversations();
         if (convos && convos.length > 0) {
           const recent = convos.slice(0, 8).map(c =>
@@ -1354,7 +1551,7 @@ async function handleChatStream(req, res) {
       const stoaCtx = await stoaQuery.buildStoaContext(userText);
       if (stoaCtx) {
         systemContent += '\n\n' + stoaCtx;
-        res.write('data: {"token":"📊 "}\n\n'); // subtle indicator that real data was loaded
+        res.write('data: {"token":"📊 Loading live STOA portfolio data…\\n"}\n\n');
         console.log('[STOA RAG stream] Injected live data for:', userText.slice(0, 60));
       }
     } catch (stoaErr) {
@@ -1366,7 +1563,7 @@ async function handleChatStream(req, res) {
     if (ghIntentStream && github && process.env.GITHUB_TOKEN) {
       try {
         const defaultRepo = process.env.GITHUB_REPO || 'arovn10/A.L.E.C';
-        res.write('data: {"token":"🐙 "}\n\n');
+        res.write('data: {"token":"🐙 Fetching GitHub repo data…\\n"}\n\n');
         const repoData = await github.getRepo(defaultRepo).catch(() => null);
         if (repoData) {
           let ghCtx = `[GitHub DATA — ${defaultRepo}]\n`;
@@ -1411,7 +1608,7 @@ async function handleChatStream(req, res) {
     const haTokenStr = process.env.HOME_ASSISTANT_ACCESS_TOKEN || process.env.HA_TOKEN;
     if (haIntentStream && haUrlStr && haTokenStr) {
       try {
-        res.write('data: {"token":"🏡 "}\n\n');
+        res.write('data: {"token":"🏡 Reading Home Assistant device states…\\n"}\n\n');
         const haResp = await fetch(`${haUrlStr}/api/states`, {
           headers: { Authorization: `Bearer ${haTokenStr}`, 'Content-Type': 'application/json' },
           signal: AbortSignal.timeout(5000),
@@ -1440,7 +1637,7 @@ async function handleChatStream(req, res) {
     const awsIntentStream = /\b(campus|campusrental|website|server|aws|ec2|nginx|deploy|ssh|uptime|down|offline|traffic|hosting)\b/i.test(userText);
     if (awsIntentStream && awsSvc) {
       try {
-        res.write('data: {"token":"☁️ "}\n\n');
+        res.write('data: {"token":"☁️ Checking AWS website status…\\n"}\n\n');
         const websiteStatus = await awsSvc.checkWebsiteStatus();
         let awsCtx = `[AWS DATA — campusrentalsllc.com server status]\n`;
         awsCtx += `Website: ${websiteStatus.online ? '✅ Online' : '❌ Offline'} (host: ${process.env.AWS_WEBSITE_HOST || 'not configured'})\n`;
@@ -1459,7 +1656,7 @@ async function handleChatStream(req, res) {
       try {
         const items = await plaidDbAll('SELECT item_id, institution_name, access_token_enc FROM plaid_items').catch(() => []);
         if (items.length > 0) {
-          res.write('data: {"token":"💰 "}\n\n');
+          res.write('data: {"token":"💰 Pulling Plaid brokerage holdings…\\n"}\n\n');
           let totalValue = 0;
           const accountLines = [];
           for (const item of items.slice(0, 5)) {
@@ -1486,7 +1683,7 @@ async function handleChatStream(req, res) {
     const tcIntentStream = /tenantcloud|\b(tenant|rent|payment|overdue|maintenance|lease|property|properties|unit|units|inquiry|inquiries|renter|move.?out|move.?in|vacancy|vacant|occupan|evict)\b/i.test(userText);
     if (tcIntentStream) {
       try {
-        res.write('data: {"token":"🏠 "}\n\n');
+        res.write('data: {"token":"🏠 Loading TenantCloud rentals data…\\n"}\n\n');
         let tcCtx = '';
 
         // Try browser-relay cache first (most reliable — real data from authenticated browser)
@@ -1530,7 +1727,7 @@ async function handleChatStream(req, res) {
     const vercelIntentStream = /\bvercel\b|\b(deployment|deploy|production|preview|build|frontend|hosting)\b/i.test(userText);
     if (vercelIntentStream && vercelSvc && process.env.VERCEL_TOKEN) {
       try {
-        res.write('data: {"token":"▲ "}\n\n');
+        res.write('data: {"token":"▲ Fetching Vercel deployments…\\n"}\n\n');
         const deployments = await vercelSvc.listDeployments(3);
         if (deployments.length > 0) {
           const lines = deployments.map(d =>
@@ -1544,8 +1741,11 @@ async function handleChatStream(req, res) {
     }
 
     // Web search augmentation
-    // If messages[] is empty but a standalone `message` string was provided, build the array
-    let augmentedMessages = messages.length > 0 ? [...messages] : (userText ? [{ role: 'user', content: userText }] : []);
+    // If the SPA sent only `{message}` (no `messages[]` array), synthesise a
+    // one-turn conversation so the LLM actually sees the user's prompt.
+    let augmentedMessages = Array.isArray(messages) && messages.length > 0
+      ? [...messages]
+      : (userText ? [{ role: 'user', content: userText }] : []);
     if (SEARCH_TRIGGERS.test(userText)) {
       res.write('data: {"token":"🔍 Searching the web…\\n"}\n\n');
       const searchResult = await webSearch(userText);
@@ -1561,6 +1761,14 @@ async function handleChatStream(req, res) {
 
     const llmMessages = [{ role: 'system', content: systemContent }, ...augmentedMessages];
     let fullResponse  = '';
+
+    // Blank line between status/thinking lines and the model's answer,
+    // so the chat bubble reads:
+    //   📊 Loading live STOA portfolio data…
+    //   🏠 Loading TenantCloud rentals data…
+    //
+    //   <model answer starts here>
+    res.write('data: {"token":"\\n"}\n\n');
 
     // ── node-llama-cpp streaming (Metal GPU, no external server) ──
     for await (const token of callLLMStream(llmMessages)) {
@@ -1578,9 +1786,19 @@ async function handleChatStream(req, res) {
       res.write(`data: ${JSON.stringify({ hardRuleViolation: true, rule: ruleErr.message })}\n\n`);
     }
 
-    // Save assistant response to history
-    if (chatHistory && convId && fullResponse) {
-      try { chatHistory.addMessage(convId, 'assistant', fullResponse); } catch (_) {}
+    // Strip fabricated "Source: X" footers for sources not injected this turn.
+    // We can't retroactively edit tokens already streamed, but we MUST store
+    // the corrected version so the model's next-turn context doesn't include
+    // a phantom "Source: STOA" it can later be cross-examined on.
+    const correctedFull = stripFalseSourceFooters(fullResponse, systemContent);
+    if (correctedFull !== fullResponse) {
+      res.write(`data: ${JSON.stringify({ sourceCorrection: true, note: 'One or more source footers were unverified and have been relabeled in history.' })}\n\n`);
+    }
+
+    // Save assistant response to history (corrected version — prevents
+    // future-turn self-reference to hallucinated source tags).
+    if (chatHistory && convId && correctedFull) {
+      try { chatHistory.addMessage(convId, 'assistant', correctedFull); } catch (_) {}
     }
 
     // Signal completion with metadata (including conversation_id so frontend can persist it)
@@ -1614,11 +1832,13 @@ async function handleChatStream(req, res) {
     res.write('data: [DONE]\n\n');
     res.end();
   }
-}
+};
 
-// Register stream handler for both GET (EventSource) and POST (fetch)
-app.get('/api/chat/stream', authenticateToken, handleChatStream);
-app.post('/api/chat/stream', authenticateToken, handleChatStream);
+// Register the streaming handler for both GET (browser EventSource) and
+// POST (native fetch / SSE over POST body) so the SPA's EventSource
+// client and programmatic callers both work.
+app.get('/api/chat/stream',  authenticateToken, chatStreamHandler);
+app.post('/api/chat/stream', authenticateToken, chatStreamHandler);
 
 // ════════════════════════════════════════════════════════════════
 //  FEEDBACK ENDPOINTS
@@ -2056,6 +2276,163 @@ app.post('/api/tasks/:id/cancel', authenticateToken, async (req, res) => {
 app.get('/api/stoa/ping', authenticateToken, async (req, res) => {
   const result = await stoaQuery.ping();
   res.json(result);
+});
+
+// ── Sprint-2 scope-aware gate for finance/portfolio routes ──
+// Prefers new bearer-JWT `authenticate` + `requireScope('project', …)`; falls
+// back to the legacy `authenticateToken` if the auth module isn't loaded
+// (keeps dev builds without Sprint-1 auth still functional).
+let financeAuthChain = [authenticateToken];
+try {
+  const mw = require('./auth/middleware');
+  // Use authenticate (Bearer/device/localhost) and require the 'project'
+  // scope to match ?property=… when supplied. Master/Admin bypass via '*'.
+  financeAuthChain = [
+    mw.authenticate,
+    mw.requireScope('project', (req) => req.query.property || req.query.projectName || null),
+  ];
+  console.log('[auth] finance/portfolio routes gated by requireScope("project", …)');
+} catch (e) {
+  console.warn('[auth] scope gate unavailable, falling back to legacy authenticateToken:', e.message);
+}
+
+// ── /api/finance/* aliases (SPA-facing) ─────────────────────────
+// The SPA's reports layer hits /api/finance/{ping,projects,loans,maturity,
+// lenders,dscr,ltv,equity}. These thin wrappers delegate to stoaQueryService
+// so the desktop app's Finance + Portfolio tabs light up against the live
+// Azure SQL Stoa DB whenever STOA_DB_* env vars are present.
+app.get('/api/finance/ping', ...financeAuthChain, async (_req, res) => {
+  try { res.json(await stoaQuery.ping()); }
+  catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+app.get('/api/finance/projects', ...financeAuthChain, async (req, res) => {
+  try {
+    const data = await stoaQuery.findProjects(req.query.search || '');
+    res.json({ success: true, count: data.length, data });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+app.get('/api/finance/loans', ...financeAuthChain, async (req, res) => {
+  try {
+    const data = await stoaQuery.getLoans(req.query.property || null);
+    res.json({ success: true, count: data.length, data });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// Maturity wall, lenders, DSCR, LTV, equity — derived from the loans table.
+// If a dedicated aggregate query exists in stoaQueryService we use it;
+// otherwise we compute a lightweight roll-up client-side-safe aggregate.
+// Maturity wall — bucketed by calendar quarter. Frontend (reports.js) maps
+// Year + Quarter → "2028 Q1" label, so we must emit those as distinct fields.
+app.get('/api/finance/maturity', ...financeAuthChain, async (_req, res) => {
+  try {
+    const loans = await stoaQuery.getLoans(null);
+    const buckets = new Map();
+    for (const l of loans) {
+      const d = l.MaturityDate ? new Date(l.MaturityDate) : null;
+      if (!d || isNaN(d.getTime())) continue;
+      const year = d.getFullYear();
+      const quarter = Math.floor(d.getMonth() / 3) + 1;
+      const key = `${year}-Q${quarter}`;
+      const b = buckets.get(key) || { Year: year, Quarter: quarter, LoanCount: 0, TotalBalance: 0 };
+      b.LoanCount += 1;
+      b.TotalBalance += Number(l.OriginalAmount ?? l.CurrentBalance ?? 0);
+      buckets.set(key, b);
+    }
+    const data = Array.from(buckets.values()).sort(
+      (a, b) => a.Year - b.Year || a.Quarter - b.Quarter
+    );
+    res.json({ success: true, data });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// Lender exposure — frontend reads `TotalExposure` (not `TotalBalance`).
+app.get('/api/finance/lenders', ...financeAuthChain, async (_req, res) => {
+  try {
+    const loans = await stoaQuery.getLoans(null);
+    const byLender = new Map();
+    for (const l of loans) {
+      const name = l.LenderName || l.Lender || 'Unknown';
+      const b = byLender.get(name) || { LenderName: name, LoanCount: 0, TotalExposure: 0 };
+      b.LoanCount += 1;
+      b.TotalExposure += Number(l.OriginalAmount ?? l.CurrentBalance ?? 0);
+      byLender.set(name, b);
+    }
+    res.json({
+      success: true,
+      data: Array.from(byLender.values()).sort((a, b) => b.TotalExposure - a.TotalExposure),
+    });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// DSCR — pulled from banking.Covenant (only ~5 rows have real DSCR data today,
+// the rest show dashes in the UI, which is honest rather than fake).
+app.get('/api/finance/dscr', ...financeAuthChain, async (_req, res) => {
+  try {
+    const data = await stoaQuery.getDSCRCovenants();
+    res.json({ success: true, data });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// LTV — derived from loans joined with the project's ValuationWhenComplete
+// and LTCOriginal. Frontend reads ProjectName, LenderName, LTV, LTC,
+// ValuationWhenComplete (appraised value), CurrentBalance.
+app.get('/api/finance/ltv', ...financeAuthChain, async (_req, res) => {
+  try {
+    const data = await stoaQuery.getLTVRows();
+    res.json({ success: true, data });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// Equity — real rows from banking.EquityCommitment, aggregated by project.
+app.get('/api/finance/equity', ...financeAuthChain, async (_req, res) => {
+  try {
+    const data = await stoaQuery.getEquityCommitments();
+    res.json({ success: true, data });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// Dashboard KPIs — consolidates leasing.MMRData + banking.Loan + covenants so
+// the Dashboard tab doesn't have to filter on stage labels that don't exist.
+app.get('/api/portfolio/summary', ...financeAuthChain, async (_req, res) => {
+  try {
+    const [summary, loans, dscrRows, ltvRows] = await Promise.all([
+      stoaQuery.getPortfolioSummary(),
+      stoaQuery.getLoans(null),
+      stoaQuery.getDSCRCovenants().catch(() => []),
+      stoaQuery.getLTVRows().catch(() => []),
+    ]);
+    const s = summary[0] || {};
+    const totalExposure = loans.reduce((a, l) => a + Number(l.OriginalAmount || 0), 0);
+    const maturingSoon = loans.filter(l => Number(l.DaysToMaturity) >= 0 && Number(l.DaysToMaturity) < 90).length;
+    const avg = (rows, key) => {
+      const vals = rows.map(r => Number(r[key])).filter(v => Number.isFinite(v));
+      return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+    };
+    res.json({
+      success: true,
+      data: {
+        activeProperties: Number(s.PropertyCount ?? 0),
+        totalUnits: Number(s.TotalUnits ?? 0),
+        totalOccupied: Number(s.TotalOccupied ?? 0),
+        avgOccupancyPct: s.AvgOccupancyPct != null ? Number(s.AvgOccupancyPct) * 100 : null,
+        avgLeasedPct: s.AvgLeasedPct != null ? Number(s.AvgLeasedPct) * 100 : null,
+        totalExposure,
+        maturingSoon,
+        avgDscr: avg(dscrRows, 'ProjectedDSCR'),
+        avgLtv: avg(ltvRows, 'LTV'),
+      },
+    });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// /api/portfolio/* alias — Portfolio tab was hitting /api/portfolio/*
+app.get('/api/portfolio/pipeline', ...financeAuthChain, async (_req, res) => {
+  try {
+    const data = await stoaQuery.getPipelineDeals(null);
+    res.json({ success: true, count: data.length, data });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
 /**
@@ -4548,13 +4925,11 @@ app.get('/api/tenantcloud/bookmarklet.js', (req, res) => {
 fs.mkdirSync(path.join(__dirname, '..', 'data', 'exports'), { recursive: true });
 fs.mkdirSync(path.join(__dirname, '..', 'tmp', 'reports'), { recursive: true });
 
-const pdfRoutes         = require('../routes/pdfRoutes');
-const reportRoutes      = require('../routes/reportRoutes');
-const financeDataRoutes = require('../routes/financeDataRoutes');
+const pdfRoutes    = require('../routes/pdfRoutes');
+const reportRoutes = require('../routes/reportRoutes');
 
 app.use('/api', authenticateToken, pdfRoutes);
 app.use('/api', authenticateToken, reportRoutes);
-app.use('/api', authenticateToken, financeDataRoutes);
 
 app.get('/api/download/:filename', (req, res) => {
   // path.basename strips any path traversal attempts (e.g. ../../etc/passwd → passwd)
@@ -4577,16 +4952,6 @@ app.post('/api/webhooks/github/sync', async (_req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-// ════════════════════════════════════════════════════════════════
-//  PRODUCTION STATIC SERVING — React SPA from frontend/dist
-//  Must come AFTER all API routes so /api/* is matched first.
-// ════════════════════════════════════════════════════════════════
-if (process.env.NODE_ENV === 'production') {
-  const distPath = path.join(__dirname, '../frontend/dist');
-  app.use(express.static(distPath));
-  app.get('*', (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
-}
 
 if (require.main === module) app.listen(PORT, HOST, () => {
   const lanIps = getLanAddresses();
