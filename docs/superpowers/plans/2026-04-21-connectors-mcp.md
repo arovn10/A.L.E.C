@@ -894,7 +894,7 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Create: `frontend/src/api/orgs.js`, `frontend/src/api/connectors.js`, `frontend/src/api/mcp.js`
 
 **Steps**
-- [ ] Create thin wrappers around `fetch` using existing `client.js` pattern:
+- [x] Create thin wrappers around `fetch` using existing `client.js` pattern:
   ```js
   // frontend/src/api/connectors.js
   import { api } from './client.js';
@@ -908,7 +908,7 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
   export const revealConnector = (id) => api.post(`/api/connectors/${id}/reveal`);
   ```
   Create `orgs.js` and `mcp.js` analogously.
-- [ ] Commit: `feat(frontend): api clients for orgs/connectors/mcp`
+- [x] Commit: `feat(frontend): api clients for orgs/connectors/mcp`
 
 ### Task S3.2 — `OrgContext` + tenant switcher
 
@@ -917,7 +917,7 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Modify: `frontend/src/App.jsx`
 
 **Steps**
-- [ ] Create `OrgContext.jsx`:
+- [x] Create `OrgContext.jsx`:
   ```jsx
   import { createContext, useContext, useEffect, useState } from 'react';
   import { useQuery } from '@tanstack/react-query';
@@ -933,7 +933,7 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
   }
   export const useOrg = () => useContext(Ctx);
   ```
-- [ ] Create `TenantSwitcher.jsx`:
+- [x] Create `TenantSwitcher.jsx`:
   ```jsx
   import { useOrg } from '../../context/OrgContext.jsx';
   export default function TenantSwitcher() {
@@ -946,8 +946,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
     );
   }
   ```
-- [ ] Wrap app in `<OrgProvider>` in `App.jsx`; mount `<TenantSwitcher />` in the top bar area.
-- [ ] Commit: `feat(frontend): OrgContext + TenantSwitcher dropdown`
+- [x] Wrap app in `<OrgProvider>` in `App.jsx`; mount `<TenantSwitcher />` in the top bar area.
+- [x] Commit: `feat(frontend): OrgContext + TenantSwitcher dropdown`
 
 ### Task S3.3 — `useScopedConnectors` hook
 
@@ -955,7 +955,7 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Create: `frontend/src/hooks/useScopedConnectors.js`
 
 **Steps**
-- [ ] Create:
+- [x] Create:
   ```js
   import { useQuery } from '@tanstack/react-query';
   import * as api from '../api/connectors.js';
@@ -970,7 +970,7 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
     return useQuery({ queryKey:['catalog'], queryFn: api.getCatalog, staleTime: 5*60_000 });
   }
   ```
-- [ ] Commit: `feat(frontend): useScopedConnectors + useCatalog hooks`
+- [x] Commit: `feat(frontend): useScopedConnectors + useCatalog hooks`
 
 ### Task S3.4 — `SettingsPage` frame + tab routing
 
@@ -979,7 +979,7 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Modify: `frontend/src/App.jsx`
 
 **Steps**
-- [ ] Create `SettingsPage.jsx`:
+- [x] Create `SettingsPage.jsx`:
   ```jsx
   import { useState } from 'react';
   import ConnectorsTab from './ConnectorsTab.jsx';
@@ -1019,8 +1019,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
     );
   }
   ```
-- [ ] Add route in `App.jsx`: `<Route path="/settings" element={<SettingsPage />} />`
-- [ ] Commit: `feat(frontend): SettingsPage shell with tab routing`
+- [x] Add route in `App.jsx`: `<Route path="/settings" element={<SettingsPage />} />`
+- [x] Commit: `feat(frontend): SettingsPage shell with tab routing`
 
 ### Task S3.5 — `ConnectorsTab` layout: sidebar + list + drawer
 
@@ -1028,7 +1028,7 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Create: `ConnectorsTab.jsx`, `ConnectorList.jsx`, `ConnectorDrawer.jsx`, `ConnectorFormField.jsx`
 
 **Steps**
-- [ ] `ConnectorsTab.jsx`:
+- [x] `ConnectorsTab.jsx`:
   ```jsx
   import { useState } from 'react';
   import { useOrg } from '../../context/OrgContext.jsx';
@@ -1086,7 +1086,7 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
     );
   }
   ```
-- [ ] `ConnectorList.jsx`:
+- [x] `ConnectorList.jsx`:
   ```jsx
   export default function ConnectorList({ catalog, instances, loading, onSelect, scope, orgId }) {
     if (loading) return <div className="animate-pulse text-gray-400">Loading...</div>;
@@ -1114,7 +1114,7 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
     );
   }
   ```
-- [ ] `ConnectorFormField.jsx`:
+- [x] `ConnectorFormField.jsx`:
   ```jsx
   export default function ConnectorFormField({ field, value, onChange, readOnly }) {
     const common = { value: value || '', onChange: e=>onChange(e.target.value), readOnly, className:'mt-1 w-full rounded border px-2 py-1' };
@@ -1128,7 +1128,7 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
     );
   }
   ```
-- [ ] `ConnectorDrawer.jsx`:
+- [x] `ConnectorDrawer.jsx`:
   ```jsx
   import { useState, useEffect } from 'react';
   import { useQueryClient, useMutation, useQuery } from '@tanstack/react-query';
@@ -1191,14 +1191,14 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
     );
   }
   ```
-- [ ] Manual smoke: run app, open `/settings`, create a GitHub connector, refresh, edit, test, delete.
-- [ ] Commit: `feat(frontend): Connectors tab with sidebar + list + drawer (CRUD/test/reveal)`
+- [x] Manual smoke: run app, open `/settings`, create a GitHub connector, refresh, edit, test, delete.
+- [x] Commit: `feat(frontend): Connectors tab with sidebar + list + drawer (CRUD/test/reveal)`
 
 ### Task S3.6 — S3 stage checkpoint
 
-- [ ] Run entire test suite — green
-- [ ] Manual E2E: exercise create/update/test/reveal/delete for at least github + homeassistant (org-scoped)
-- [ ] Commit: `chore(s3): connectors UI checkpoint`
+- [x] Run entire test suite — green
+- [x] Manual E2E: exercise create/update/test/reveal/delete for at least github + homeassistant (org-scoped)
+- [x] Commit: `chore(s3): connectors UI checkpoint`
 
 ---
 
