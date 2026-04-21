@@ -225,3 +225,61 @@ describe('GET/PATCH/DELETE /api/connectors/:id', () => {
     expect(after.status).toBe(404);
   });
 });
+
+describe('POST /api/connectors/:id/test and /reveal', () => {
+  async function seedInstance(db, email) {
+    return svcCreate(db, {
+      definitionId: 'github', scope: 'user', scopeId: email,
+      fields: { GITHUB_TOKEN: 'plain' }, createdBy: email,
+    });
+  }
+
+  test('/test probes the connector and flips status=connected on ok', async () => {
+    const db = await freshDb();
+    const inst = await seedInstance(db, 'alice@stoagroup.com');
+    // Stub fetch so GitHub probe returns ok without network.
+    const orig = global.fetch;
+    global.fetch = async () => ({ ok: true, status: 200 });
+    try {
+      const res = await request(mkApp(db, 'alice@stoagroup.com')).post(`/api/connectors/${inst.id}/test`);
+      expect(res.status).toBe(200);
+      expect(res.body.ok).toBe(true);
+    } finally { global.fetch = orig; }
+    const row = db.prepare('SELECT status FROM connector_instances WHERE id=?').get(inst.id);
+    expect(row.status).toBe('connected');
+  });
+
+  test('/reveal returns plaintext and writes audit BEFORE the body', async () => {
+    const db = await freshDb();
+    const inst = await seedInstance(db, 'alice@stoagroup.com');
+    const res = await request(mkApp(db, 'alice@stoagroup.com')).post(`/api/connectors/${inst.id}/reveal`);
+    expect(res.status).toBe(200);
+    expect(res.body.fields.GITHUB_TOKEN).toBe('plain');
+    const audit = db.prepare(
+      "SELECT action, target_id FROM audit_log WHERE action='connector.reveal' AND target_id=?"
+    ).get(inst.id);
+    expect(audit).toBeTruthy();
+  });
+
+  test('/reveal 11th call within the hour -> 429 RATE_LIMITED', async () => {
+    const db = await freshDb();
+    __resetRevealBucket();
+    const inst = await seedInstance(db, 'alice@stoagroup.com');
+    const app = mkApp(db, 'alice@stoagroup.com');
+    for (let i = 0; i < 10; i++) {
+      const ok = await request(app).post(`/api/connectors/${inst.id}/reveal`);
+      expect(ok.status).toBe(200);
+    }
+    const eleventh = await request(app).post(`/api/connectors/${inst.id}/reveal`);
+    expect(eleventh.status).toBe(429);
+    expect(eleventh.body.error).toBe('RATE_LIMITED');
+  });
+
+  test('/reveal by non-writer -> 403 (middleware denies before audit)', async () => {
+    const db = await freshDb();
+    __resetRevealBucket();
+    const inst = await seedInstance(db, 'alice@stoagroup.com');
+    const res = await request(mkApp(db, 'bob@abodingo.com')).post(`/api/connectors/${inst.id}/reveal`);
+    expect(res.status).toBe(403);
+  });
+});
