@@ -1214,17 +1214,17 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Test: `tests/unit/mcpService.test.js`
 
 **Steps**
-- [ ] Write failing test using a dummy stdio server (node script echoing MCP handshake) to assert `start(id)` spawns, handshake succeeds, `listTools()` returns `[]`, `stop(id)` kills and row status becomes `stopped`.
-- [ ] Extract or wrap `mcpSkills.js` MCP Manager so `mcpRuntime.start(id)`:
+- [x] Write failing test using a dummy stdio server (node script echoing MCP handshake) to assert `start(id)` spawns, handshake succeeds, `listTools()` returns `[]`, `stop(id)` kills and row status becomes `stopped`.
+- [x] Extract or wrap `mcpSkills.js` MCP Manager so `mcpRuntime.start(id)`:
   1. Loads row
   2. Builds env from `env_ref_ids_json` -> `getFields(refId)` merged; kills on kill_switch check (future)
   3. `child_process.spawn(command, args, { env: { ...process.env, ...merged } })`
   4. JSON-RPC handshake; on success store `tools_json`, set `status='running'`, `last_started=now`
   5. On failure: status='error', status_detail=err.message, no retry
-- [ ] `stop(id)` — send SIGTERM, wait 5s, SIGKILL, update status
-- [ ] `test(id)` — start (if not running), handshake, cache tools, stop if we started it
-- [ ] Run test — expect green
-- [ ] Commit: `feat(mcp): runtime spawn/stop/test with env injection from referenced connectors`
+- [x] `stop(id)` — send SIGTERM, wait 5s, SIGKILL, update status
+- [x] `test(id)` — start (if not running), handshake, cache tools, stop if we started it
+- [x] Run test — expect green
+- [x] Commit: `feat(mcp): runtime spawn/stop/test with env injection from referenced connectors`
 
 ### Task S4.2 — Wire runtime into `/api/mcp/:id/{start,stop,test}`
 
@@ -1233,10 +1233,10 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Extend: `tests/integration/mcp.test.js`
 
 **Steps**
-- [ ] Replace 501 stubs in start/stop/test with calls to `mcpRuntime`. Write integration tests using the same dummy stdio server.
-- [ ] Assert audit rows `mcp.start`, `mcp.stop`, `mcp.test` written.
-- [ ] Run — expect green
-- [ ] Commit: `feat(api): /api/mcp/:id start/stop/test wire runtime`
+- [x] Replace 501 stubs in start/stop/test with calls to `mcpRuntime`. Write integration tests using the same dummy stdio server.
+- [x] Assert audit rows `mcp.start`, `mcp.stop`, `mcp.test` written.
+- [x] Run — expect green
+- [x] Commit: `feat(api): /api/mcp/:id start/stop/test wire runtime`
 
 ### Task S4.3 — `MCPsTab` UI (mirrors Connectors pattern)
 
@@ -1245,10 +1245,10 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Create: `frontend/src/hooks/useScopedMCPs.js`
 
 **Steps**
-- [ ] `useScopedMCPs.js`: same shape as `useScopedConnectors` against `/api/mcp`.
-- [ ] `MCPsTab.jsx`: sidebar sections `[Installed, Discover, Custom]`. `Installed` shows `status='running'|'stopped'`. `Custom` shows everything. `Discover` reads `/api/mcp/catalog` (empty for v1).
-- [ ] `MCPList.jsx`: rows with name, transport label (stdio/sse/http), status, start/stop toggle button.
-- [ ] `MCPDrawer.jsx`: form fields
+- [x] `useScopedMCPs.js`: same shape as `useScopedConnectors` against `/api/mcp`.
+- [x] `MCPsTab.jsx`: sidebar sections `[Installed, Discover, Custom]`. `Installed` shows `status='running'|'stopped'`. `Custom` shows everything. `Discover` reads `/api/mcp/catalog` (empty for v1).
+- [x] `MCPList.jsx`: rows with name, transport label (stdio/sse/http), status, start/stop toggle button.
+- [x] `MCPDrawer.jsx`: form fields
   - `name` (text)
   - `transport` (select: stdio|sse|http)
   - `command` (visible if stdio)
@@ -1258,8 +1258,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
   - `autoStart` (checkbox), `enabled` (checkbox)
   - Actions: Save, Test (handshake), Start, Stop, Delete
   - Show `tools_json` array as a collapsible "Tools" list if present
-- [ ] Manual smoke: register a simple filesystem MCP server (node with `@modelcontextprotocol/sdk`), start, verify tools appear, stop.
-- [ ] Commit: `feat(frontend): MCPs tab with start/stop/test drawer`
+- [x] Manual smoke: register a simple filesystem MCP server (node with `@modelcontextprotocol/sdk`), start, verify tools appear, stop.
+- [x] Commit: `feat(frontend): MCPs tab with start/stop/test drawer`
 
 ### Task S4.4 — Desktop-control MCP row pre-seeded (stopped)
 
@@ -1267,19 +1267,19 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Modify: `backend/migrations/002_seed_migration.js`
 
 **Steps**
-- [ ] In the seed function, after catalog, insert:
+- [x] In the seed function, after catalog, insert:
   ```js
   db.prepare(`INSERT OR IGNORE INTO mcp_servers(id,name,scope_type,scope_id,transport,command,args_json,enabled,auto_start,status,created_by)
     VALUES ('desktop-control','Desktop Control','user','arovner@stoagroup.com','stdio','node',
             '["backend/mcp-servers/desktop-control/index.js"]',0,0,'stopped','system')`).run();
   ```
   This row will be activated in S7.
-- [ ] Commit: `feat(migrations): seed desktop-control MCP row (stopped)`
+- [x] Commit: `feat(migrations): seed desktop-control MCP row (stopped)`
 
 ### Task S4.5 — S4 stage checkpoint
 
-- [ ] Full test suite green
-- [ ] Commit: `chore(s4): MCPs tab + runtime checkpoint`
+- [x] Full test suite green
+- [x] Commit: `chore(s4): MCPs tab + runtime checkpoint`
 
 ---
 
