@@ -14,6 +14,8 @@
     "download-model": "bash scripts/download-model.sh",
     "start:full": "bash scripts/start-alec.sh",
     "test": "NODE_OPTIONS=--experimental-vm-modules jest --forceExit",
+    "migrate:verify": "node scripts/migrate-verify.js",
+    "connector:doctor": "node scripts/connector-vault-doctor.js",
     "lint": "node -c backend/server.js && node -c services/neuralEngine.js && node -c frontend/app.js"
   },
   "keywords": [

@@ -1348,13 +1348,13 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Modify: `package.json` (add `"migrate:verify": "node scripts/migrate-verify.js"`)
 
 **Steps**
-- [ ] Script: boot DB + load vault JSON. Assert:
+- [x] Script: boot DB + load vault JSON. Assert:
   1. `users`/`global`/`_legacy`/`custom` top-level keys are absent OR have been mapped (every path has a matching `audit_log.action='migrate'` row)
   2. Every `connector_instances.id` has a matching `instances[id]` key in vault
   3. Every `instances[id]` vault key has a matching SQL row
   4. No source file still imports `skillsRegistry.get(` with the old 3-arg signature (grep heuristic)
   Print diagnostics; exit nonzero on any failure.
-- [ ] Commit: `feat(scripts): migrate:verify preflight for S6`
+- [x] Commit: `feat(scripts): migrate:verify preflight for S6`
 
 ### Task S6.2 — Refactor sweep: callers of old `skillsRegistry.get(uid,key,field)`
 
