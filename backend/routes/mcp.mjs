@@ -5,6 +5,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import * as svc from '../services/mcpService.mjs';
+import * as runtime from '../services/mcpRuntime.mjs';
 
 const CreateBody = z.object({
   name: z.string().min(1),
@@ -99,10 +100,66 @@ export function mcpRouter(getDb) {
     }
   });
 
-  // Runtime endpoints — stubbed for S2.
-  r.post('/:id/start', (_req, res) => res.status(501).json({ error: 'NOT_IMPLEMENTED' }));
-  r.post('/:id/stop',  (_req, res) => res.status(501).json({ error: 'NOT_IMPLEMENTED' }));
-  r.post('/:id/test',  (_req, res) => res.status(501).json({ error: 'NOT_IMPLEMENTED' }));
+  // Runtime endpoints — wired to mcpRuntime in S4.2.
+  function requireWrite(req, res) {
+    const db = getDb();
+    const row = svc.get(db, req.params.id);
+    if (!row) { res.status(404).json({ error: 'NOT_FOUND' }); return null; }
+    if (!svc.canWrite(db, req.user.email, row)) {
+      res.status(403).json({ error: 'FORBIDDEN' }); return null;
+    }
+    return { db, row };
+  }
+
+  r.post('/:id/start', async (req, res) => {
+    const ctx = requireWrite(req, res); if (!ctx) return;
+    try {
+      const result = await runtime.start(ctx.db, req.params.id);
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: 'START_FAILED', message: e.message });
+    }
+  });
+
+  r.post('/:id/stop', async (req, res) => {
+    const ctx = requireWrite(req, res); if (!ctx) return;
+    try {
+      const result = await runtime.stop(ctx.db, req.params.id);
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: 'STOP_FAILED', message: e.message });
+    }
+  });
+
+  r.post('/:id/test', async (req, res) => {
+    const ctx = requireWrite(req, res); if (!ctx) return;
+    const result = await runtime.test(ctx.db, req.params.id);
+    res.json(result);
+  });
+
+  r.get('/:id/status', (req, res) => {
+    const db = getDb();
+    const row = svc.get(db, req.params.id);
+    if (!row) return res.status(404).json({ error: 'NOT_FOUND' });
+    const mems = db.prepare('SELECT org_id FROM org_memberships WHERE user_id=?')
+      .all(req.user.email).map(m => m.org_id);
+    const visible = (row.scope_type === 'user' && row.scope_id === req.user.email)
+      || (row.scope_type === 'org' && mems.includes(row.scope_id));
+    if (!visible) return res.status(403).json({ error: 'FORBIDDEN' });
+    res.json(runtime.status(db, req.params.id));
+  });
+
+  r.get('/:id/tools', (req, res) => {
+    const db = getDb();
+    const row = svc.get(db, req.params.id);
+    if (!row) return res.status(404).json({ error: 'NOT_FOUND' });
+    const mems = db.prepare('SELECT org_id FROM org_memberships WHERE user_id=?')
+      .all(req.user.email).map(m => m.org_id);
+    const visible = (row.scope_type === 'user' && row.scope_id === req.user.email)
+      || (row.scope_type === 'org' && mems.includes(row.scope_id));
+    if (!visible) return res.status(403).json({ error: 'FORBIDDEN' });
+    res.json({ tools: row.tools || [] });
+  });
 
   return r;
 }

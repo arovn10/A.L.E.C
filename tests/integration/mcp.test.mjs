@@ -124,17 +124,63 @@ describe('/api/mcp CRUD skeleton', () => {
     expect(d.status).toBe(403);
   });
 
-  test('runtime endpoints stubbed at 501', async () => {
+  test('runtime: start -> status -> tools -> stop with dummy stdio server', async () => {
+    const DUMMY = path.resolve(__dirname, '../unit/fixtures/dummy-mcp-server.mjs');
     const db = await freshDb();
     const app = mkApp(db, 'alice@stoagroup.com');
     const { body: created } = await request(app).post('/api/mcp').send({
-      name: 'stub-run', scope: 'user', scopeId: 'alice@stoagroup.com',
+      name: 'runtime-live', scope: 'user', scopeId: 'alice@stoagroup.com',
+      transport: 'stdio', command: process.execPath, args: [DUMMY],
+    });
+
+    const start = await request(app).post(`/api/mcp/${created.id}/start`);
+    expect(start.status).toBe(200);
+    expect(start.body.status).toBe('running');
+
+    const status = await request(app).get(`/api/mcp/${created.id}/status`);
+    expect(status.status).toBe(200);
+    expect(status.body.status).toBe('running');
+
+    const tools = await request(app).get(`/api/mcp/${created.id}/tools`);
+    expect(tools.status).toBe(200);
+    expect(Array.isArray(tools.body.tools)).toBe(true);
+
+    const stop = await request(app).post(`/api/mcp/${created.id}/stop`);
+    expect(stop.status).toBe(200);
+    expect(stop.body.status).toBe('stopped');
+
+    const audits = db.prepare(
+      "SELECT action FROM audit_log WHERE target_id=? AND action LIKE 'mcp.%'"
+    ).all(created.id).map(r => r.action);
+    expect(audits).toEqual(expect.arrayContaining(['mcp.create', 'mcp.start', 'mcp.stop']));
+  });
+
+  test('runtime: POST /test writes audit and returns tool list', async () => {
+    const DUMMY = path.resolve(__dirname, '../unit/fixtures/dummy-mcp-server.mjs');
+    const db = await freshDb();
+    const app = mkApp(db, 'alice@stoagroup.com');
+    const { body: created } = await request(app).post('/api/mcp').send({
+      name: 'runtime-test', scope: 'user', scopeId: 'alice@stoagroup.com',
+      transport: 'stdio', command: process.execPath, args: [DUMMY],
+    });
+    const res = await request(app).post(`/api/mcp/${created.id}/test`);
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    const audits = db.prepare(
+      "SELECT action FROM audit_log WHERE target_id=? AND action='mcp.test'"
+    ).all(created.id);
+    expect(audits.length).toBe(1);
+  });
+
+  test('runtime: start by non-writer -> 403', async () => {
+    const db = await freshDb();
+    const alice = mkApp(db, 'alice@stoagroup.com');
+    const { body: created } = await request(alice).post('/api/mcp').send({
+      name: 'priv-run', scope: 'user', scopeId: 'alice@stoagroup.com',
       transport: 'stdio', command: '/x',
     });
-    for (const sub of ['start', 'stop', 'test']) {
-      const r = await request(app).post(`/api/mcp/${created.id}/${sub}`);
-      expect(r.status).toBe(501);
-      expect(r.body.error).toBe('NOT_IMPLEMENTED');
-    }
+    const bob = mkApp(db, 'bob@abodingo.com');
+    const r = await request(bob).post(`/api/mcp/${created.id}/start`);
+    expect(r.status).toBe(403);
   });
 });
