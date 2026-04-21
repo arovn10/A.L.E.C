@@ -620,7 +620,7 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Test: `tests/integration/connectors.test.js` (start file)
 
 **Steps**
-- [ ] Create middleware:
+- [x] Create middleware:
   ```js
   import { canWrite } from '../services/connectorService.js';
   export function requireConnectorWrite(getDb){
@@ -634,9 +634,9 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
     };
   }
   ```
-- [ ] Write test that mounts a minimal Express app, inserts a user-scope instance for `alice`, calls `PATCH /:id` as `bob` -> expects 403. As `alice` -> 200.
-- [ ] Run — expect green
-- [ ] Commit: `feat(middleware): requireConnectorWrite centralizes ACL`
+- [x] Write test that mounts a minimal Express app, inserts a user-scope instance for `alice`, calls `PATCH /:id` as `bob` -> expects 403. As `alice` -> 200.
+- [x] Run — expect green
+- [x] Commit: `feat(middleware): requireConnectorWrite centralizes ACL`
 
 ### Task S2.2 — `requireOrgRole` middleware
 
@@ -644,7 +644,7 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Create: `backend/middleware/requireOrgRole.js`
 
 **Steps**
-- [ ] Create:
+- [x] Create:
   ```js
   export function requireOrgRole(getDb, roles){
     return (req, res, next) => {
@@ -655,8 +655,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
     };
   }
   ```
-- [ ] Unit test: role=`admin` with roles=`['owner']` -> 403; role=`owner` with same -> next called.
-- [ ] Commit: `feat(middleware): requireOrgRole(roles)`
+- [x] Unit test: role=`admin` with roles=`['owner']` -> 403; role=`owner` with same -> next called.
+- [x] Commit: `feat(middleware): requireOrgRole(roles)`
 
 ### Task S2.3 — `/api/orgs` routes
 
@@ -665,7 +665,7 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Test: `tests/integration/orgs.test.js`
 
 **Steps**
-- [ ] Write integration test using supertest: seed 3 orgs + memberships (arovner=owner of stoagroup+abodingo+campusrentals, bob=member of abodingo); assert:
+- [x] Write integration test using supertest: seed 3 orgs + memberships (arovner=owner of stoagroup+abodingo+campusrentals, bob=member of abodingo); assert:
   - `GET /api/orgs` as bob -> one org (`abodingo`)
   - `GET /api/orgs` as arovner -> three orgs
   - `GET /api/orgs/abodingo/members` as bob -> 403 (member, not admin)
@@ -673,8 +673,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
   - `POST /api/orgs/abodingo/members` as arovner body `{userId:'c@abodingo.com', role:'member'}` -> 201; now visible
   - `PATCH /api/orgs/abodingo/members/c@abodingo.com` as arovner body `{role:'admin'}` -> 200
   - `DELETE /api/orgs/abodingo/members/c@abodingo.com` -> 204
-- [ ] Run — expect fail
-- [ ] Create routes:
+- [x] Run — expect fail
+- [x] Create routes:
   ```js
   import { Router } from 'express';
   import { z } from 'zod';
@@ -717,9 +717,9 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
     return r;
   }
   ```
-- [ ] Mount in `backend/server.js`: `if (process.env.ALEC_CONNECTORS_V2==='1') app.use('/api/orgs', authenticateToken, orgsRouter(()=>db));`
-- [ ] Run test — expect green
-- [ ] Commit: `feat(api): /api/orgs CRUD for orgs and memberships`
+- [x] Mount in `backend/server.js`: `if (process.env.ALEC_CONNECTORS_V2==='1') app.use('/api/orgs', authenticateToken, orgsRouter(()=>db));`
+- [x] Run test — expect green
+- [x] Commit: `feat(api): /api/orgs CRUD for orgs and memberships`
 
 ### Task S2.4 — `/api/connectors/catalog` and `GET /api/connectors`
 
@@ -728,11 +728,11 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Extend: `tests/integration/connectors.test.js`
 
 **Steps**
-- [ ] Write tests:
+- [x] Write tests:
   - `GET /api/connectors/catalog` -> 200, contains github entry
   - `GET /api/connectors` as alice -> only her instances (no bob's)
   - `GET /api/connectors?orgId=stoagroup` as arovner -> instances scoped to stoagroup only
-- [ ] Create `backend/routes/connectors.js`:
+- [x] Create `backend/routes/connectors.js`:
   ```js
   import { Router } from 'express';
   import * as svc from '../services/connectorService.js';
@@ -750,9 +750,9 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
     return r;
   }
   ```
-- [ ] Mount `app.use('/api/connectors', authenticateToken, connectorsRouter(()=>db))`
-- [ ] Run — expect green
-- [ ] Commit: `feat(api): GET /api/connectors[/catalog] with scope filter`
+- [x] Mount `app.use('/api/connectors', authenticateToken, connectorsRouter(()=>db))`
+- [x] Run — expect green
+- [x] Commit: `feat(api): GET /api/connectors[/catalog] with scope filter`
 
 ### Task S2.5 — `POST /api/connectors` (create)
 
@@ -761,8 +761,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Extend: `tests/integration/connectors.test.js`
 
 **Steps**
-- [ ] Test: alice POSTs `{definitionId:'github', scope:'user', scopeId:'alice@...', fields:{GITHUB_TOKEN:'x'}}` -> 201; secret redacted in response. ORG_ONLY test: alice POSTs `{definitionId:'tenantcloud', scope:'user', ...}` -> 400 `ORG_ONLY`. Org-scope without admin: bob (member) POSTs `{scope:'org', scopeId:'abodingo'}` -> 403.
-- [ ] Extend routes:
+- [x] Test: alice POSTs `{definitionId:'github', scope:'user', scopeId:'alice@...', fields:{GITHUB_TOKEN:'x'}}` -> 201; secret redacted in response. ORG_ONLY test: alice POSTs `{definitionId:'tenantcloud', scope:'user', ...}` -> 400 `ORG_ONLY`. Org-scope without admin: bob (member) POSTs `{scope:'org', scopeId:'abodingo'}` -> 403.
+- [x] Extend routes:
   ```js
   import { z } from 'zod';
   const CreateBody = z.object({
@@ -791,8 +791,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
     }
   });
   ```
-- [ ] Run — expect green
-- [ ] Commit: `feat(api): POST /api/connectors with zod validation and scope ACL`
+- [x] Run — expect green
+- [x] Commit: `feat(api): POST /api/connectors with zod validation and scope ACL`
 
 ### Task S2.6 — `GET /api/connectors/:id`, `PATCH`, `DELETE`
 
@@ -801,8 +801,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Extend tests
 
 **Steps**
-- [ ] Tests: read redacted fields; patch updates + new values reflected; delete returns 204 + subsequent GET returns 404.
-- [ ] Add:
+- [x] Tests: read redacted fields; patch updates + new values reflected; delete returns 204 + subsequent GET returns 404.
+- [x] Add:
   ```js
   import { requireConnectorWrite } from '../middleware/requireConnectorWrite.js';
   r.get('/:id', (req,res)=>{
@@ -826,8 +826,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
     res.status(204).end();
   });
   ```
-- [ ] Run — expect green
-- [ ] Commit: `feat(api): GET/PATCH/DELETE /api/connectors/:id`
+- [x] Run — expect green
+- [x] Commit: `feat(api): GET/PATCH/DELETE /api/connectors/:id`
 
 ### Task S2.7 — `POST /api/connectors/:id/test` and `/reveal` (audit + rate limit)
 
@@ -836,10 +836,10 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Extend tests
 
 **Steps**
-- [ ] Tests:
+- [x] Tests:
   - `/test` — calls probe, row gets `status='connected'` on success
   - `/reveal` — returns plaintext; audit row with `action='connector.reveal'` written *before* response; 11th call within hour -> 429
-- [ ] Add:
+- [x] Add:
   ```js
   const revealHits = new Map(); // userId -> [timestamps]
   r.post('/:id/test', requireConnectorWrite(getDb), async (req,res)=>{
@@ -857,8 +857,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
     res.json(svc.get(db, req.params.id, req.user.email, { reveal:true }));
   });
   ```
-- [ ] Run — expect green
-- [ ] Commit: `feat(api): /test + /reveal with pre-response audit and 10/h rate limit`
+- [x] Run — expect green
+- [x] Commit: `feat(api): /test + /reveal with pre-response audit and 10/h rate limit`
 
 ### Task S2.8 — `/api/mcp` routes (skeleton, no runtime yet)
 
@@ -868,19 +868,19 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Test: `tests/integration/mcp.test.js`
 
 **Steps**
-- [ ] Create `backend/services/mcpService.js`: CRUD mirror of connectorService (`listVisible`, `create`, `get`, `update`, `remove`, `canWrite`) reading/writing `mcp_servers` with fields `{name, transport, command, args_json, url, env_ref_ids_json, enabled, auto_start, status, status_detail, tools_json}`. No process management yet. Audit via `writeAudit`.
-- [ ] Create `backend/routes/mcp.js` mirroring connectors (`GET /catalog` stub returning `[]` for now, `GET /`, `POST /`, `GET /:id`, `PATCH /:id`, `DELETE /:id`). Start/Stop/Test return `501 NOT_IMPLEMENTED` in this stage.
-- [ ] Write failing integration tests for CRUD only.
-- [ ] Implement.
-- [ ] Run — expect green
-- [ ] Mount `app.use('/api/mcp', authenticateToken, mcpRouter(()=>db))`
-- [ ] Commit: `feat(api): /api/mcp CRUD (runtime endpoints stubbed)`
+- [x] Create `backend/services/mcpService.js`: CRUD mirror of connectorService (`listVisible`, `create`, `get`, `update`, `remove`, `canWrite`) reading/writing `mcp_servers` with fields `{name, transport, command, args_json, url, env_ref_ids_json, enabled, auto_start, status, status_detail, tools_json}`. No process management yet. Audit via `writeAudit`.
+- [x] Create `backend/routes/mcp.js` mirroring connectors (`GET /catalog` stub returning `[]` for now, `GET /`, `POST /`, `GET /:id`, `PATCH /:id`, `DELETE /:id`). Start/Stop/Test return `501 NOT_IMPLEMENTED` in this stage.
+- [x] Write failing integration tests for CRUD only.
+- [x] Implement.
+- [x] Run — expect green
+- [x] Mount `app.use('/api/mcp', authenticateToken, mcpRouter(()=>db))`
+- [x] Commit: `feat(api): /api/mcp CRUD (runtime endpoints stubbed)`
 
 ### Task S2.9 — S2 stage checkpoint
 
-- [ ] `NODE_OPTIONS=--experimental-vm-modules npx jest --forceExit` — green
-- [ ] Manual smoke: boot server with `ALEC_CONNECTORS_V2=1`; curl `/api/connectors/catalog` with valid JWT -> returns catalog
-- [ ] Commit: `chore(s2): API layer checkpoint`
+- [x] `NODE_OPTIONS=--experimental-vm-modules npx jest --forceExit` — green
+- [x] Manual smoke: boot server with `ALEC_CONNECTORS_V2=1`; curl `/api/connectors/catalog` with valid JWT -> returns catalog
+- [x] Commit: `chore(s2): API layer checkpoint`
 
 ---
 
