@@ -119,22 +119,22 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Test: `tests/unit/migrationRunner.test.js` (new)
 
 **Steps**
-- [ ] Write failing test `tests/unit/migrationRunner.test.js`:
+- [x] Write failing test `tests/unit/migrationRunner.test.js`:
   - Creates a temp sqlite DB
   - Drops `fixtures/migration-runner/001_a.sql` (content: `CREATE TABLE a(x INTEGER);`) and `fixtures/migration-runner/002_b.js` (exports `async function up(db){ db.exec('CREATE TABLE b(y INTEGER);'); }`)
   - Calls `runMigrations(db, fixturesDir)`
   - Asserts `_migrations` table contains rows `'001_a'` and `'002_b'`
   - Asserts running again is a no-op (idempotent)
-- [ ] Run: `NODE_OPTIONS=--experimental-vm-modules npx jest tests/unit/migrationRunner.test.js` — expect fail (runner lacks `.js` support)
-- [ ] Modify `backend/auth/bootstrap.js`:
+- [x] Run: `NODE_OPTIONS=--experimental-vm-modules npx jest tests/unit/migrationRunner.test.js` — expect fail (runner lacks `.js` support)
+- [x] Modify `backend/auth/bootstrap.js`:
   - Ensure `CREATE TABLE IF NOT EXISTS _migrations (id TEXT PRIMARY KEY, applied_at DATETIME DEFAULT CURRENT_TIMESTAMP)`
   - `readdirSync` migrations dir, sort lexicographically
   - For `.sql`: `db.exec(fs.readFileSync(...))`
   - For `.js`: `const mod = await import(pathToFileURL(...)); await mod.up(db)`
   - Wrap each in a transaction; insert into `_migrations` on success
   - Skip ids already present
-- [ ] Re-run test — expect green
-- [ ] Commit: `feat(migrations): support .sql and .js migration files with _migrations tracking`
+- [x] Re-run test — expect green
+- [x] Commit: `feat(migrations): support .sql and .js migration files with _migrations tracking`
 
 ### Task S1.2 — Migration 002 SQL: six tables
 
@@ -143,7 +143,7 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Test: `tests/unit/migration002.test.js`
 
 **Steps**
-- [ ] Write failing test `tests/unit/migration002.test.js`:
+- [x] Write failing test `tests/unit/migration002.test.js`:
   ```js
   import Database from 'better-sqlite3';
   import { runMigrations } from '../../backend/auth/bootstrap.js';
@@ -156,8 +156,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
     }
   });
   ```
-- [ ] Run — expect fail (file absent)
-- [ ] Create `backend/migrations/002_connectors_mcp.sql` with the exact CREATE TABLE statements from the spec (lines 47-124 plus the desktop additions from 392-420). Use `CREATE TABLE IF NOT EXISTS` on every table. Add indices:
+- [x] Run — expect fail (file absent)
+- [x] Create `backend/migrations/002_connectors_mcp.sql` with the exact CREATE TABLE statements from the spec (lines 47-124 plus the desktop additions from 392-420). Use `CREATE TABLE IF NOT EXISTS` on every table. Add indices:
   ```sql
   CREATE INDEX IF NOT EXISTS idx_instances_scope ON connector_instances(scope_type, scope_id);
   CREATE INDEX IF NOT EXISTS idx_mcp_scope ON mcp_servers(scope_type, scope_id);
@@ -165,8 +165,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
   CREATE INDEX IF NOT EXISTS idx_memberships_user ON org_memberships(user_id);
   ```
   Include the seed `INSERT OR IGNORE INTO desktop_policy(...)` and three `INSERT OR IGNORE INTO desktop_permissions(...)` rows from the spec.
-- [ ] Run test — expect green
-- [ ] Commit: `feat(db): migration 002 six connector/mcp tables + desktop permissions`
+- [x] Run test — expect green
+- [x] Commit: `feat(db): migration 002 six connector/mcp tables + desktop permissions`
 
 ### Task S1.3 — Connector catalog (seed source)
 
@@ -175,7 +175,7 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Test: `tests/unit/catalog.test.js`
 
 **Steps**
-- [ ] Write failing test `tests/unit/catalog.test.js`:
+- [x] Write failing test `tests/unit/catalog.test.js`:
   ```js
   import { CATALOG } from '../../backend/connectors/catalog.js';
   test('catalog has required connectors', () => {
@@ -197,8 +197,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
     }
   });
   ```
-- [ ] Run — expect fail
-- [ ] Create `backend/connectors/catalog.js`:
+- [x] Run — expect fail
+- [x] Create `backend/connectors/catalog.js`:
   ```js
   export const CATALOG = [
     { id:'github', name:'GitHub', category:'source-control', icon:'🐙', auth_type:'apikey', multi_instance:0, is_org_only:0,
@@ -239,8 +239,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
       fields:[{key:'RENDER_API_KEY',label:'API Key',type:'password',required:true,secret:true}] },
   ];
   ```
-- [ ] Run test — expect green
-- [ ] Commit: `feat(catalog): seed connector catalog with 9 connectors`
+- [x] Run test — expect green
+- [x] Commit: `feat(catalog): seed connector catalog with 9 connectors`
 
 ### Task S1.4 — Migration 002 seed step (orgs + memberships + catalog)
 
@@ -249,7 +249,7 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Extend: `tests/unit/migration002.test.js`
 
 **Steps**
-- [ ] Extend test to call seed:
+- [x] Extend test to call seed:
   ```js
   import { up as seedUp } from '../../backend/migrations/002_seed_migration.js';
   test('seed populates orgs and catalog', async () => {
@@ -263,8 +263,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
     expect(defs.length).toBeGreaterThanOrEqual(9);
   });
   ```
-- [ ] Run — expect fail
-- [ ] Create `backend/migrations/002_seed_migration.js`:
+- [x] Run — expect fail
+- [x] Create `backend/migrations/002_seed_migration.js`:
   ```js
   import { CATALOG } from '../connectors/catalog.js';
   export async function up(db) {
@@ -282,9 +282,9 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
     for (const org of ['stoagroup','abodingo','campusrentals']) insertMem.run('arovner@stoagroup.com', org, 'owner');
   }
   ```
-- [ ] Wire seed invocation: in `backend/auth/bootstrap.js`, after running file migrations, if `process.env.ALEC_CONNECTORS_V2==='1'` call `await seedUp(db)` from the module path `backend/migrations/002_seed_migration.js` (import only when flag set).
-- [ ] Run test — expect green
-- [ ] Commit: `feat(migrations): seed three orgs, catalog, owner membership for arovner`
+- [x] Wire seed invocation: in `backend/auth/bootstrap.js`, after running file migrations, if `process.env.ALEC_CONNECTORS_V2==='1'` call `await seedUp(db)` from the module path `backend/migrations/002_seed_migration.js` (import only when flag set).
+- [x] Run test — expect green
+- [x] Commit: `feat(migrations): seed three orgs, catalog, owner membership for arovner`
 
 ### Task S1.5 — Secret vault (UUID-keyed AES-256-CBC)
 
@@ -293,7 +293,7 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Test: `tests/unit/secretVault.test.js`
 
 **Steps**
-- [ ] Write failing test:
+- [x] Write failing test:
   ```js
   import { setFields, getFields, deleteInstance, redact } from '../../backend/services/secretVault.js';
   import fs from 'node:fs';
@@ -313,8 +313,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
     expect(redact({K:'v'}, [{key:'K',secret:false}])).toEqual({K:'v'});
   });
   ```
-- [ ] Run — expect fail
-- [ ] Create `backend/services/secretVault.js`:
+- [x] Run — expect fail
+- [x] Create `backend/services/secretVault.js`:
   ```js
   import fs from 'node:fs';
   import crypto from 'node:crypto';
@@ -353,8 +353,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
     return out;
   }
   ```
-- [ ] Run — expect green
-- [ ] Commit: `feat(vault): UUID-keyed secret vault with encrypt/decrypt/redact helpers`
+- [x] Run — expect green
+- [x] Commit: `feat(vault): UUID-keyed secret vault with encrypt/decrypt/redact helpers`
 
 ### Task S1.6 — `connectorService` DAO: list/get/create/update/delete
 
@@ -363,7 +363,7 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Test: `tests/unit/connectorService.test.js`
 
 **Steps**
-- [ ] Write failing test covering:
+- [x] Write failing test covering:
   - `listVisible(userId)` returns instances where scope_type='user' AND scope_id=userId OR scope_type='org' AND scope_id IN memberships
   - `create({definitionId, scope, scopeId, fields, createdBy})` inserts SQL row + calls `setFields`
   - `get(id, userId)` redacts secrets unless `{reveal:true}` passed
@@ -371,8 +371,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
   - `delete(id)` removes SQL row + calls `deleteInstance`
   - `canWrite(userId, instance)` -> true if owner of user-scoped, or admin/owner of org-scoped
   - `is_org_only` definition rejects `scope_type='user'` with a thrown error `ORG_ONLY`
-- [ ] Run — expect fail
-- [ ] Create `backend/services/connectorService.js`:
+- [x] Run — expect fail
+- [x] Create `backend/services/connectorService.js`:
   ```js
   import crypto from 'node:crypto';
   import { setFields, getFields, deleteInstance, redact } from './secretVault.js';
@@ -444,8 +444,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
       VALUES (?,?,?,?,?,?)`).run(userId, orgId || null, action, targetType, targetId, metadata ? JSON.stringify(metadata) : null);
   }
   ```
-- [ ] Run — expect green
-- [ ] Commit: `feat(connectorService): DAO with ACL, CRUD, audit`
+- [x] Run — expect green
+- [x] Commit: `feat(connectorService): DAO with ACL, CRUD, audit`
 
 ### Task S1.7 — `connectorService.test()` liveness probe stub
 
@@ -454,9 +454,9 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Extend: `tests/unit/connectorService.test.js`
 
 **Steps**
-- [ ] Add failing test: `test('test() sets status and last_checked', ...)` — calls `await testInstance(db, id, userId)`, asserts row has `status` and `last_checked` not null.
-- [ ] Run — expect fail
-- [ ] Add to `connectorService.js`:
+- [x] Add failing test: `test('test() sets status and last_checked', ...)` — calls `await testInstance(db, id, userId)`, asserts row has `status` and `last_checked` not null.
+- [x] Run — expect fail
+- [x] Add to `connectorService.js`:
   ```js
   const PROBES = {
     github: async (f) => { const r = await fetch('https://api.github.com/user', { headers:{Authorization:`Bearer ${f.GITHUB_TOKEN}`}}); return r.ok ? {ok:true} : {ok:false, detail:`HTTP ${r.status}`}; },
@@ -475,8 +475,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
     return result;
   }
   ```
-- [ ] Run — expect green
-- [ ] Commit: `feat(connectorService): liveness test probe with audit trail`
+- [x] Run — expect green
+- [x] Commit: `feat(connectorService): liveness test probe with audit trail`
 
 ### Task S1.8 — Migration 002 mapping function (legacy JSON -> rows)
 
@@ -485,7 +485,7 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Test: `tests/unit/migration002Mapping.test.js`
 
 **Steps**
-- [ ] Write failing test feeding this snapshot:
+- [x] Write failing test feeding this snapshot:
   ```js
   const input = {
     users: { 'alice@stoagroup.com': { github: { GITHUB_TOKEN: 'ghp_a' } } },
@@ -497,8 +497,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
   const plan = buildMigrationPlan(input);
   ```
   Assert `plan` is an array of `{definitionId, scope, scopeId, fields, reasonTag}` entries matching the spec's migration table (lines 246-257).
-- [ ] Run — expect fail
-- [ ] Create `backend/migrations/002_mapping.js`:
+- [x] Run — expect fail
+- [x] Create `backend/migrations/002_mapping.js`:
   ```js
   const FALLBACK_OWNER = 'arovner@stoagroup.com';
   export function buildMigrationPlan(json){
@@ -526,8 +526,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
     return out;
   }
   ```
-- [ ] Run — expect green
-- [ ] Commit: `feat(migrations): pure mapping function for legacy JSON to row plan`
+- [x] Run — expect green
+- [x] Commit: `feat(migrations): pure mapping function for legacy JSON to row plan`
 
 ### Task S1.9 — Migration 002 executor (domain-based memberships + file backup + apply plan)
 
@@ -536,7 +536,7 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Test: `tests/migration/002-snapshot.test.js`
 
 **Steps**
-- [ ] Write failing snapshot test that:
+- [x] Write failing snapshot test that:
   - Seeds a temp DB, writes a sample legacy JSON to a temp vault path, sets `ALEC_VAULT_KEY`
   - Inserts two Azure-style user emails (`bob@abodingo.com`, `dan@campusrentalsllc.com`, `contractor@gmail.com`) via direct insert into a `users_seen` fixture (or passes as a list arg)
   - Calls `runFullMigration(db, { users: [...], vaultPath })`
@@ -544,8 +544,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
   - Asserts expected `connector_instances` count matches plan
   - Asserts backup file exists at `skills-config.json.pre-migration-*.bak`
   - Asserts idempotency: a second call adds zero new rows
-- [ ] Run — expect fail
-- [ ] Extend `backend/migrations/002_seed_migration.js` with:
+- [x] Run — expect fail
+- [x] Extend `backend/migrations/002_seed_migration.js` with:
   ```js
   import fs from 'node:fs';
   import { setFields } from '../services/secretVault.js';
@@ -597,15 +597,15 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
   }
   ```
   Export `runFullMigration` and call it from `up(db)` when given a users list via env var (skip if users unknown).
-- [ ] Run — expect green
-- [ ] Commit: `feat(migrations): 002 executor with domain-based memberships, backup, idempotent plan apply`
+- [x] Run — expect green
+- [x] Commit: `feat(migrations): 002 executor with domain-based memberships, backup, idempotent plan apply`
 
 ### Task S1.10 — S1 stage checkpoint
 
 **Steps**
-- [ ] Run full suite: `NODE_OPTIONS=--experimental-vm-modules npx jest --forceExit` — expect green
-- [ ] Manual smoke: `ALEC_CONNECTORS_V2=1 node -e "import('./backend/auth/bootstrap.js').then(m=>m.runBootstrap())"` — verify log shows 002 applied, no exceptions
-- [ ] Commit: `chore(s1): data model + migration + service layer checkpoint`
+- [x] Run full suite: `NODE_OPTIONS=--experimental-vm-modules npx jest --forceExit` — expect green
+- [x] Manual smoke: `ALEC_CONNECTORS_V2=1 node -e "import('./backend/auth/bootstrap.js').then(m=>m.runBootstrap())"` — verify log shows 002 applied, no exceptions
+- [x] Commit: `chore(s1): data model + migration + service layer checkpoint`
 
 ---
 
