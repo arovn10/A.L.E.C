@@ -14,6 +14,7 @@ import LegacySettings from '../Settings.jsx';
 import ConnectorsTab from './ConnectorsTab.jsx';
 import MCPsTab from './MCPsTab.jsx';
 import OrgMembersTab from './OrgMembersTab.jsx';
+import DesktopTab from './DesktopTab.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { ToastProvider } from '../../components/ui/Toast.jsx';
 
@@ -27,12 +28,17 @@ function isConnectorsV2() {
   return false;
 }
 
+function isElectron() {
+  return typeof window !== 'undefined' && !!window.electronAPI;
+}
+
 const ALL_TABS = [
   { id: 'profile',    label: 'Profile' },
   { id: 'security',   label: 'Security' },
   { id: 'connectors', label: 'Connectors', v2: true },
   { id: 'mcps',       label: 'MCPs',       v2: true },
   { id: 'members',    label: 'Members',    v2: true },
+  { id: 'desktop',    label: 'Desktop',    v2: true, desktopOnly: true },
 ];
 
 export default function SettingsPage() {
@@ -40,7 +46,11 @@ export default function SettingsPage() {
   const v2 = isConnectorsV2();
   const { user } = useAuth();
   const viewerEmail = user?.email || user?.Email || null;
-  const tabs = useMemo(() => ALL_TABS.filter(t => !t.v2 || v2), [v2]);
+  const electron = isElectron();
+  const tabs = useMemo(
+    () => ALL_TABS.filter(t => (!t.v2 || v2) && (!t.desktopOnly || electron)),
+    [v2, electron]
+  );
   const tab = params.get('tab') || (v2 ? 'connectors' : 'profile');
   const setTab = (id) => setParams({ tab: id });
 
@@ -68,6 +78,7 @@ export default function SettingsPage() {
         {tab === 'connectors' && v2 && <ConnectorsTab />}
         {tab === 'mcps'       && v2 && <MCPsTab />}
         {tab === 'members'    && v2 && <OrgMembersTab viewerEmail={viewerEmail} />}
+        {tab === 'desktop'    && v2 && electron && <DesktopTab />}
       </main>
     </div>
     </ToastProvider>
