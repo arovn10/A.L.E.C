@@ -1332,8 +1332,8 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 
 ### Task S5.5 — S5 stage checkpoint
 
-- [ ] Full test suite green
-- [ ] Commit: `chore(s5): admin polish checkpoint`
+- [x] Full test suite green
+- [x] Commit: `chore(s5): admin polish checkpoint`
 
 ---
 
