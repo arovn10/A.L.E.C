@@ -13,6 +13,8 @@ import { useSearchParams } from 'react-router-dom';
 import LegacySettings from '../Settings.jsx';
 import ConnectorsTab from './ConnectorsTab.jsx';
 import MCPsTab from './MCPsTab.jsx';
+import OrgMembersTab from './OrgMembersTab.jsx';
+import { useAuth } from '../../context/AuthContext.jsx';
 
 // Vite exposes env vars via import.meta.env.VITE_*; fall back to a runtime
 // flag (window.__ALEC_FLAGS) so the desktop shell can toggle too.
@@ -29,11 +31,14 @@ const ALL_TABS = [
   { id: 'security',   label: 'Security' },
   { id: 'connectors', label: 'Connectors', v2: true },
   { id: 'mcps',       label: 'MCPs',       v2: true },
+  { id: 'members',    label: 'Members',    v2: true },
 ];
 
 export default function SettingsPage() {
   const [params, setParams] = useSearchParams();
   const v2 = isConnectorsV2();
+  const { user } = useAuth();
+  const viewerEmail = user?.email || user?.Email || null;
   const tabs = useMemo(() => ALL_TABS.filter(t => !t.v2 || v2), [v2]);
   const tab = params.get('tab') || (v2 ? 'connectors' : 'profile');
   const setTab = (id) => setParams({ tab: id });
@@ -60,6 +65,7 @@ export default function SettingsPage() {
         {tab === 'security'   && <div className="p-6 text-gray-300">Security settings coming soon.</div>}
         {tab === 'connectors' && v2 && <ConnectorsTab />}
         {tab === 'mcps'       && v2 && <MCPsTab />}
+        {tab === 'members'    && v2 && <OrgMembersTab viewerEmail={viewerEmail} />}
       </main>
     </div>
   );

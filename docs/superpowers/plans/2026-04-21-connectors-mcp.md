@@ -1293,9 +1293,9 @@ Replace the ad-hoc `data/skills-config.json` credential store with a multi-tenan
 - Create: `frontend/src/pages/Settings/OrgMembersTab.jsx`
 
 **Steps**
-- [ ] Component fetches `/api/orgs/:currentId/members` (uses `useOrg`). Table: email, role, created_at, actions. Owner can: add member (modal with email + role select), change role (inline select), remove (confirm modal). Hide actions if viewer is admin (not owner). Hide entire tab if user is plain member.
-- [ ] Manual smoke: as arovner, add `b@abodingo.com` as admin to abodingo.
-- [ ] Commit: `feat(frontend): org members management tab`
+- [x] Component fetches `/api/orgs/:currentId/members` (uses `useOrg`). Table: email, role, created_at, actions. Owner can: add member (modal with email + role select), change role (inline select), remove (confirm modal). Hide actions if viewer is admin (not owner). Hide entire tab if user is plain member.
+- [x] Manual smoke: as arovner, add `b@abodingo.com` as admin to abodingo.
+- [x] Commit: `feat(frontend): org members management tab`
 
 ### Task S5.2 — Reveal-secret confirmation UX
 
