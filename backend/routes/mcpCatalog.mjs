@@ -120,6 +120,18 @@ export const MCP_CATALOG = [
     docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/memory',
   },
   {
+    id: 'tenantcloud',
+    name: 'TenantCloud (browser)',
+    publisher: 'alec',
+    description: 'Headed Chromium driver for app.tenantcloud.com — auto-logs in with vault creds, lets you take over the window. Starter-tier has no API, so this is the bridge.',
+    category: 'Finance',
+    transport: 'stdio',
+    command: 'node',
+    args: ['backend/mcp-servers/tenantcloud/index.mjs'],
+    env: { TENANTCLOUD_EMAIL: '', TENANTCLOUD_PASSWORD: '', ALEC_TENANTCLOUD_CONNECTOR_ID: '' },
+    docs: 'https://app.tenantcloud.com',
+  },
+  {
     id: 'context7',
     name: 'Context7',
     publisher: 'upstash',

@@ -102,6 +102,23 @@ export function update(db, id, userId, { fields, displayName, enabled }) {
 // so the UI can still record a green check; per-connector HTTP checks grow
 // over time.
 const PROBES = {
+  tenantcloud: async (f, { connectorId } = {}) => {
+    if (!f.TENANTCLOUD_EMAIL || !f.TENANTCLOUD_PASSWORD) {
+      return { ok: false, detail: 'missing email or password' };
+    }
+    try {
+      const { TenantCloudExecutor } = await import('../connectors/executors/tenantcloud.mjs');
+      const exec = new TenantCloudExecutor({
+        connectorId: connectorId || 'probe',
+        email: f.TENANTCLOUD_EMAIL,
+        password: f.TENANTCLOUD_PASSWORD,
+      });
+      try { return await exec.probe(); }
+      finally { await exec.close(); }
+    } catch (e) {
+      return { ok: false, detail: String(e.message || e) };
+    }
+  },
   github: async (f) => {
     try {
       const r = await fetch('https://api.github.com/user', {
@@ -120,7 +137,7 @@ export async function testInstance(db, id, userId) {
   const fields = getFields(id);
   const probe = PROBES[inst.definition_id] || (async () => ({ ok: true }));
   let result;
-  try { result = await probe(fields); }
+  try { result = await probe(fields, { connectorId: id }); }
   catch (e) { result = { ok: false, detail: String(e.message || e) }; }
   db.prepare(
     `UPDATE connector_instances
