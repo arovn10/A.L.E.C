@@ -39,7 +39,7 @@
 **Files:**
 - Create: `docker-compose.weaviate.yml`
 
-- [ ] **Step 1.1: Create docker-compose file**
+- [x] **Step 1.1: Create docker-compose file**
 
 ```yaml
 # docker-compose.weaviate.yml
@@ -65,7 +65,7 @@ volumes:
   weaviate_data:
 ```
 
-- [ ] **Step 1.2: Start Weaviate**
+- [x] **Step 1.2: Start Weaviate**
 
 ```bash
 docker compose -f docker-compose.weaviate.yml up -d
@@ -73,7 +73,7 @@ docker compose -f docker-compose.weaviate.yml up -d
 
 Expected: container `weaviate` starts, no errors in `docker compose logs weaviate`.
 
-- [ ] **Step 1.3: Verify health endpoint**
+- [x] **Step 1.3: Verify health endpoint**
 
 ```bash
 curl http://localhost:8080/v1/.well-known/ready
@@ -81,7 +81,7 @@ curl http://localhost:8080/v1/.well-known/ready
 
 Expected: `{}` with HTTP 200.
 
-- [ ] **Step 1.4: Commit**
+- [x] **Step 1.4: Commit**
 
 ```bash
 git add docker-compose.weaviate.yml
@@ -94,7 +94,7 @@ git commit -m "feat: add Weaviate docker-compose for local vector store"
 
 **Files:** `package.json`
 
-- [ ] **Step 2.1: Install npm packages**
+- [x] **Step 2.1: Install npm packages**
 
 ```bash
 cd "/Users/alec/Desktop/App Development/A.L.E.C"
@@ -103,7 +103,7 @@ npm install weaviate-ts-client@2 pdf-parse pptxgenjs docx
 
 Note: `node-cron`, `exceljs`, `better-sqlite3`, `mssql` are already in package.json.
 
-- [ ] **Step 2.2: Verify install**
+- [x] **Step 2.2: Verify install**
 
 ```bash
 node -e "require('weaviate-ts-client'); console.log('weaviate OK')"
@@ -114,7 +114,7 @@ node -e "require('docx'); console.log('docx OK')"
 
 Expected: 4 lines ending in `OK`.
 
-- [ ] **Step 2.3: Commit**
+- [x] **Step 2.3: Commit**
 
 ```bash
 git add package.json package-lock.json
@@ -129,7 +129,7 @@ git commit -m "feat: install weaviate-ts-client, pdf-parse, pptxgenjs, docx"
 - Create: `config/weaviate.js`
 - Create: `tests/weaviateConfig.test.js`
 
-- [ ] **Step 3.1: Write the failing test**
+- [x] **Step 3.1: Write the failing test**
 
 ```js
 // tests/weaviateConfig.test.js
@@ -155,7 +155,7 @@ test('ALECDocument has sourceType and tags properties', () => {
 });
 ```
 
-- [ ] **Step 3.2: Run to verify it fails**
+- [x] **Step 3.2: Run to verify it fails**
 
 ```bash
 npx jest tests/weaviateConfig.test.js --no-coverage 2>&1 | tail -5
@@ -163,7 +163,7 @@ npx jest tests/weaviateConfig.test.js --no-coverage 2>&1 | tail -5
 
 Expected: `Cannot find module '../config/weaviate'`
 
-- [ ] **Step 3.3: Create `config/weaviate.js`**
+- [x] **Step 3.3: Create `config/weaviate.js`**
 
 ```js
 // config/weaviate.js
@@ -230,7 +230,7 @@ module.exports = {
 };
 ```
 
-- [ ] **Step 3.4: Run test to verify it passes**
+- [x] **Step 3.4: Run test to verify it passes**
 
 ```bash
 npx jest tests/weaviateConfig.test.js --no-coverage 2>&1 | tail -5
@@ -238,7 +238,7 @@ npx jest tests/weaviateConfig.test.js --no-coverage 2>&1 | tail -5
 
 Expected: `Tests: 3 passed, 3 total`
 
-- [ ] **Step 3.5: Commit**
+- [x] **Step 3.5: Commit**
 
 ```bash
 git add config/weaviate.js tests/weaviateConfig.test.js
@@ -253,7 +253,7 @@ git commit -m "feat: add Weaviate collection schema config"
 - Create: `services/weaviateService.js`
 - Create: `tests/weaviateService.test.js`
 
-- [ ] **Step 4.1: Write the failing tests**
+- [x] **Step 4.1: Write the failing tests**
 
 ```js
 // tests/weaviateService.test.js
@@ -313,7 +313,7 @@ test('search() returns array with distance field', async () => {
 });
 ```
 
-- [ ] **Step 4.2: Run to verify it fails**
+- [x] **Step 4.2: Run to verify it fails**
 
 ```bash
 npx jest tests/weaviateService.test.js --no-coverage 2>&1 | tail -5
@@ -321,7 +321,7 @@ npx jest tests/weaviateService.test.js --no-coverage 2>&1 | tail -5
 
 Expected: `Cannot find module '../services/weaviateService'`
 
-- [ ] **Step 4.3: Create `services/weaviateService.js`**
+- [x] **Step 4.3: Create `services/weaviateService.js`**
 
 ```js
 // services/weaviateService.js
@@ -432,7 +432,7 @@ class WeaviateService {
 module.exports = WeaviateService;
 ```
 
-- [ ] **Step 4.4: Run tests to verify they pass**
+- [x] **Step 4.4: Run tests to verify they pass**
 
 ```bash
 npx jest tests/weaviateService.test.js --no-coverage 2>&1 | tail -5
@@ -440,7 +440,7 @@ npx jest tests/weaviateService.test.js --no-coverage 2>&1 | tail -5
 
 Expected: `Tests: 3 passed, 3 total`
 
-- [ ] **Step 4.5: Commit**
+- [x] **Step 4.5: Commit**
 
 ```bash
 git add services/weaviateService.js tests/weaviateService.test.js
@@ -457,7 +457,7 @@ git commit -m "feat: add WeaviateService — connect, upsert, search, hybridSear
 
 Uses `better-sqlite3` (already in package.json). Each `CREATE TABLE IF NOT EXISTS` is a separate `db.prepare().run()` call — idempotent and safe to re-run.
 
-- [ ] **Step 5.1: Write the failing tests**
+- [x] **Step 5.1: Write the failing tests**
 
 ```js
 // tests/setupAlecDb.test.js
@@ -491,7 +491,7 @@ test('migration is idempotent — running twice does not throw', () => {
 });
 ```
 
-- [ ] **Step 5.2: Run to verify it fails**
+- [x] **Step 5.2: Run to verify it fails**
 
 ```bash
 npx jest tests/setupAlecDb.test.js --no-coverage 2>&1 | tail -5
@@ -499,7 +499,7 @@ npx jest tests/setupAlecDb.test.js --no-coverage 2>&1 | tail -5
 
 Expected: `Cannot find module '../scripts/setupAlecDb'`
 
-- [ ] **Step 5.3: Create `scripts/setupAlecDb.js`**
+- [x] **Step 5.3: Create `scripts/setupAlecDb.js`**
 
 ```js
 // scripts/setupAlecDb.js
@@ -591,7 +591,7 @@ if (require.main === module) {
 module.exports = { runMigration };
 ```
 
-- [ ] **Step 5.4: Run tests to verify they pass**
+- [x] **Step 5.4: Run tests to verify they pass**
 
 ```bash
 npx jest tests/setupAlecDb.test.js --no-coverage 2>&1 | tail -5
@@ -599,7 +599,7 @@ npx jest tests/setupAlecDb.test.js --no-coverage 2>&1 | tail -5
 
 Expected: `Tests: 6 passed, 6 total`
 
-- [ ] **Step 5.5: Run migration against real alec.db**
+- [x] **Step 5.5: Run migration against real alec.db**
 
 ```bash
 node "/Users/alec/Desktop/App Development/A.L.E.C/scripts/setupAlecDb.js"
@@ -607,7 +607,7 @@ node "/Users/alec/Desktop/App Development/A.L.E.C/scripts/setupAlecDb.js"
 
 Expected: `[setupAlecDb] Migration complete: .../data/alec.db`
 
-- [ ] **Step 5.6: Commit**
+- [x] **Step 5.6: Commit**
 
 ```bash
 git add scripts/setupAlecDb.js tests/setupAlecDb.test.js
@@ -625,7 +625,7 @@ git commit -m "feat: SQLite migration for fine_tune_jobs, quality_scores, review
 - Create: `dataConnectors/githubConnector.js`
 - Create: `tests/dataConnectors.test.js`
 
-- [ ] **Step 6.1: Write the failing tests**
+- [x] **Step 6.1: Write the failing tests**
 
 ```js
 // tests/dataConnectors.test.js
@@ -665,7 +665,7 @@ test('list() returns all registered connector names', () => {
 });
 ```
 
-- [ ] **Step 6.2: Run to verify it fails**
+- [x] **Step 6.2: Run to verify it fails**
 
 ```bash
 npx jest tests/dataConnectors.test.js --no-coverage 2>&1 | tail -5
@@ -673,7 +673,7 @@ npx jest tests/dataConnectors.test.js --no-coverage 2>&1 | tail -5
 
 Expected: `Cannot find module '../dataConnectors/index'`
 
-- [ ] **Step 6.3: Create `dataConnectors/index.js`**
+- [x] **Step 6.3: Create `dataConnectors/index.js`**
 
 ```js
 // dataConnectors/index.js
@@ -712,7 +712,7 @@ const registry = new ConnectorRegistry();
 module.exports = { ConnectorRegistry, registry };
 ```
 
-- [ ] **Step 6.4: Run tests to verify they pass**
+- [x] **Step 6.4: Run tests to verify they pass**
 
 ```bash
 npx jest tests/dataConnectors.test.js --no-coverage 2>&1 | tail -5
@@ -720,7 +720,7 @@ npx jest tests/dataConnectors.test.js --no-coverage 2>&1 | tail -5
 
 Expected: `Tests: 5 passed, 5 total`
 
-- [ ] **Step 6.5: Create `dataConnectors/azureSqlConnector.js`**
+- [x] **Step 6.5: Create `dataConnectors/azureSqlConnector.js`**
 
 ```js
 // dataConnectors/azureSqlConnector.js
@@ -772,7 +772,7 @@ const azureSqlConnector = {
 module.exports = azureSqlConnector;
 ```
 
-- [ ] **Step 6.6: Create `dataConnectors/tenantCloudConnector.js`**
+- [x] **Step 6.6: Create `dataConnectors/tenantCloudConnector.js`**
 
 ```js
 // dataConnectors/tenantCloudConnector.js
@@ -811,7 +811,7 @@ const tenantCloudConnector = {
 module.exports = tenantCloudConnector;
 ```
 
-- [ ] **Step 6.7: Create `dataConnectors/githubConnector.js`**
+- [x] **Step 6.7: Create `dataConnectors/githubConnector.js`**
 
 ```js
 // dataConnectors/githubConnector.js
@@ -876,7 +876,7 @@ const githubConnector = {
 module.exports = githubConnector;
 ```
 
-- [ ] **Step 6.8: Register connectors at server startup**
+- [x] **Step 6.8: Register connectors at server startup**
 
 In `backend/server.js`, after the existing require block (around line 71), add:
 
@@ -889,7 +889,7 @@ connectorRegistry.register(require('../dataConnectors/githubConnector'));
 console.log('[Connectors] Registered:', connectorRegistry.list().join(', '));
 ```
 
-- [ ] **Step 6.9: Smoke test connector registration**
+- [x] **Step 6.9: Smoke test connector registration**
 
 ```bash
 cd "/Users/alec/Desktop/App Development/A.L.E.C"
@@ -906,7 +906,7 @@ node -e "
 
 Expected: `Connectors: [ 'azureSql', 'tenantCloud', 'github' ]`
 
-- [ ] **Step 6.10: Commit**
+- [x] **Step 6.10: Commit**
 
 ```bash
 git add dataConnectors/ tests/dataConnectors.test.js backend/server.js
@@ -924,7 +924,7 @@ git commit -m "feat: data connector registry with azureSql, tenantCloud, github 
 
 These two files must always be identical. `ALEC_DIRECTIVE.md` is loaded at runtime by server.js. `ALEC_CONSTITUTION.md` is injected into every SFT training example by the fine-tune pipeline (Plan C). `checkDirectiveDrift.js` is the CI guard.
 
-- [ ] **Step 7.1: Create `data/ALEC_DIRECTIVE.md`**
+- [x] **Step 7.1: Create `data/ALEC_DIRECTIVE.md`**
 
 ```markdown
 # A.L.E.C. Constitutional Directive
@@ -985,7 +985,7 @@ H7: Never quote financial figures, stock prices, or occupancy rates from memory.
 H8: Self-edit proposals cannot modify H1-H8. These rules are constitutional.
 ```
 
-- [ ] **Step 7.2: Create `data/ALEC_CONSTITUTION.md` with the same content**
+- [x] **Step 7.2: Create `data/ALEC_CONSTITUTION.md` with the same content**
 
 Copy the file exactly — content must be byte-for-byte identical:
 
@@ -994,7 +994,7 @@ cp "/Users/alec/Desktop/App Development/A.L.E.C/data/ALEC_DIRECTIVE.md" \
    "/Users/alec/Desktop/App Development/A.L.E.C/data/ALEC_CONSTITUTION.md"
 ```
 
-- [ ] **Step 7.3: Create `scripts/checkDirectiveDrift.js`**
+- [x] **Step 7.3: Create `scripts/checkDirectiveDrift.js`**
 
 ```js
 // scripts/checkDirectiveDrift.js
@@ -1017,7 +1017,7 @@ if (directive.trim() !== constitution.trim()) {
 console.log('[CI PASS] Directive and Constitution are in sync.');
 ```
 
-- [ ] **Step 7.4: Verify drift check passes**
+- [x] **Step 7.4: Verify drift check passes**
 
 ```bash
 node "/Users/alec/Desktop/App Development/A.L.E.C/scripts/checkDirectiveDrift.js"
@@ -1025,7 +1025,7 @@ node "/Users/alec/Desktop/App Development/A.L.E.C/scripts/checkDirectiveDrift.js
 
 Expected: `[CI PASS] Directive and Constitution are in sync.`
 
-- [ ] **Step 7.5: Commit**
+- [x] **Step 7.5: Commit**
 
 ```bash
 git add data/ALEC_DIRECTIVE.md data/ALEC_CONSTITUTION.md scripts/checkDirectiveDrift.js
@@ -1040,7 +1040,7 @@ git commit -m "feat: add ALEC_DIRECTIVE.md, ALEC_CONSTITUTION.md, drift-check CI
 - Modify: `backend/server.js`
 - Create: `tests/hardRules.test.js`
 
-- [ ] **Step 8.1: Write the failing tests**
+- [x] **Step 8.1: Write the failing tests**
 
 ```js
 // tests/hardRules.test.js
@@ -1077,7 +1077,7 @@ test('clean sourced response passes through', () => {
 });
 ```
 
-- [ ] **Step 8.2: Run to verify it fails**
+- [x] **Step 8.2: Run to verify it fails**
 
 ```bash
 npx jest tests/hardRules.test.js --no-coverage 2>&1 | tail -8
@@ -1085,7 +1085,7 @@ npx jest tests/hardRules.test.js --no-coverage 2>&1 | tail -8
 
 Expected: error about `enforceHardRules` not exported from server.js.
 
-- [ ] **Step 8.3: Add `enforceHardRules` to `backend/server.js`**
+- [x] **Step 8.3: Add `enforceHardRules` to `backend/server.js`**
 
 Insert this function immediately before the `buildSystemPrompt()` function (around line 90 in server.js):
 
@@ -1131,7 +1131,7 @@ function enforceHardRules(responseText) {
 }
 ```
 
-- [ ] **Step 8.4: Export `enforceHardRules` from server.js**
+- [x] **Step 8.4: Export `enforceHardRules` from server.js**
 
 At the bottom of `backend/server.js`, add or update the exports:
 
@@ -1139,7 +1139,7 @@ At the bottom of `backend/server.js`, add or update the exports:
 module.exports = { enforceHardRules };
 ```
 
-- [ ] **Step 8.5: Update `buildSystemPrompt()` to load from file**
+- [x] **Step 8.5: Update `buildSystemPrompt()` to load from file**
 
 Find the `buildSystemPrompt()` function. Replace the opening lines (before the `const now = new Date()` line) with a file-load block:
 
@@ -1162,7 +1162,7 @@ function buildSystemPrompt() {
   // To:       return `${directiveSection}You are Alec...`
 ```
 
-- [ ] **Step 8.6: Wrap LLM response with enforceHardRules in the main chat handler**
+- [x] **Step 8.6: Wrap LLM response with enforceHardRules in the main chat handler**
 
 In `backend/server.js`, find where the LLM response is returned as JSON (search for `res.json({ response:`). Wrap the output:
 
@@ -1179,7 +1179,7 @@ try {
 res.json({ response: safeResponse, /* ...other fields */ });
 ```
 
-- [ ] **Step 8.7: Run hard rules tests**
+- [x] **Step 8.7: Run hard rules tests**
 
 ```bash
 npx jest tests/hardRules.test.js --no-coverage 2>&1 | tail -5
@@ -1187,7 +1187,7 @@ npx jest tests/hardRules.test.js --no-coverage 2>&1 | tail -5
 
 Expected: `Tests: 5 passed, 5 total`
 
-- [ ] **Step 8.8: Commit**
+- [x] **Step 8.8: Commit**
 
 ```bash
 git add backend/server.js tests/hardRules.test.js
@@ -1198,7 +1198,7 @@ git commit -m "feat: enforceHardRules() H2/H3/H7 enforcement + load ALEC_DIRECTI
 
 ## Task 9: Final Verification
 
-- [ ] **Step 9.1: Run all Plan A tests together**
+- [x] **Step 9.1: Run all Plan A tests together**
 
 ```bash
 cd "/Users/alec/Desktop/App Development/A.L.E.C"
@@ -1209,7 +1209,7 @@ npx jest tests/weaviateConfig.test.js tests/weaviateService.test.js \
 
 Expected: All tests pass. No failures.
 
-- [ ] **Step 9.2: Verify Weaviate connectivity (Docker must be running)**
+- [x] **Step 9.2: Verify Weaviate connectivity (Docker must be running)**
 
 ```bash
 node -e "
@@ -1222,7 +1222,7 @@ node -e "
 
 Expected: `Weaviate health: true` then `Collections initialized`.
 
-- [ ] **Step 9.3: Verify directive drift check**
+- [x] **Step 9.3: Verify directive drift check**
 
 ```bash
 node scripts/checkDirectiveDrift.js
@@ -1230,7 +1230,7 @@ node scripts/checkDirectiveDrift.js
 
 Expected: `[CI PASS] Directive and Constitution are in sync.`
 
-- [ ] **Step 9.4: Commit**
+- [x] **Step 9.4: Commit**
 
 ```bash
 git status
