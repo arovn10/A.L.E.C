@@ -40,11 +40,18 @@ function mkApp(db, email) {
 }
 
 describe('/api/mcp CRUD skeleton', () => {
-  test('GET /catalog returns empty list (stubbed)', async () => {
+  test('GET /catalog returns curated entries + category index', async () => {
     const db = await freshDb();
     const res = await request(mkApp(db, 'alice@stoagroup.com')).get('/api/mcp/catalog');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual([]);
+    expect(Array.isArray(res.body.entries)).toBe(true);
+    expect(res.body.entries.length).toBeGreaterThan(0);
+    expect(Array.isArray(res.body.categories)).toBe(true);
+    for (const e of res.body.entries) {
+      expect(typeof e.id).toBe('string');
+      expect(typeof e.name).toBe('string');
+      expect(typeof e.transport).toBe('string');
+    }
   });
 
   test('POST creates, GET returns, list scoped to caller', async () => {

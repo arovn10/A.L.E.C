@@ -54,12 +54,19 @@ export default function MCPDrawer({ selected, scope, orgId, userEmail, onClose }
         autoStart: !!existing.auto_start,
       });
     } else if (isNew) {
+      const p = selected?.prefill;
       setForm({
-        name: '', transport: 'stdio', command: '', argsText: '', url: '',
-        envRefIds: [], enabled: true, autoStart: false,
+        name: p?.name || '',
+        transport: p?.transport || 'stdio',
+        command: p?.command || '',
+        argsText: Array.isArray(p?.args) ? p.args.join(', ') : '',
+        url: p?.url || '',
+        envRefIds: [],
+        enabled: true,
+        autoStart: false,
       });
     }
-  }, [existing, isNew]);
+  }, [existing, isNew, selected]);
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['mcps'] });
 

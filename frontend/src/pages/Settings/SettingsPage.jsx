@@ -15,6 +15,7 @@ import ConnectorsTab from './ConnectorsTab.jsx';
 import MCPsTab from './MCPsTab.jsx';
 import OrgMembersTab from './OrgMembersTab.jsx';
 import DesktopTab from './DesktopTab.jsx';
+import SecurityTab from './SecurityTab.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { ToastProvider } from '../../components/ui/Toast.jsx';
 
@@ -74,7 +75,7 @@ export default function SettingsPage() {
       </nav>
       <main className="flex-1 overflow-auto">
         {tab === 'profile'    && <LegacySettings />}
-        {tab === 'security'   && <div className="p-6 text-gray-300">Security settings coming soon.</div>}
+        {tab === 'security'   && <SecurityTab />}
         {tab === 'connectors' && v2 && <ConnectorsTab />}
         {tab === 'mcps'       && v2 && <MCPsTab />}
         {tab === 'members'    && v2 && <OrgMembersTab viewerEmail={viewerEmail} />}

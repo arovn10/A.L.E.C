@@ -6,7 +6,13 @@
  */
 import { apiFetch } from './client.js';
 
-export const getMcpCatalog = () => apiFetch('/mcp/catalog');
+// Catalog endpoint returns { entries, categories }. Back-compat: if the
+// server returns a bare array (old shape), pass it through.
+export const getMcpCatalog = async () => {
+  const r = await apiFetch('/mcp/catalog');
+  if (Array.isArray(r)) return { entries: r, categories: [] };
+  return r || { entries: [], categories: [] };
+};
 
 export const listMcps = () => apiFetch('/mcp');
 

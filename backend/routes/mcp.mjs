@@ -34,8 +34,19 @@ const PatchBody = z.object({
 export function mcpRouter(getDb) {
   const r = Router();
 
-  // Catalog stub — returns empty until curated MCP directory lands (S6).
-  r.get('/catalog', (_req, res) => res.json([]));
+  // Curated MCP directory — see backend/routes/mcpCatalog.mjs.
+  // Returns { entries, categories } so the Discover sidebar can render
+  // counts-per-category without a second round-trip.
+  r.get('/catalog', (_req, res) => {
+    // Lazy-require to keep route construction cheap for tests that
+    // don't touch this endpoint.
+    import('./mcpCatalog.mjs').then(({ MCP_CATALOG, categoriesOf }) => {
+      res.json({ entries: MCP_CATALOG, categories: categoriesOf(MCP_CATALOG) });
+    }).catch((e) => {
+      console.error('[mcp:catalog]', e.message);
+      res.status(500).json({ error: 'CATALOG_LOAD_FAILED' });
+    });
+  });
 
   r.get('/', (req, res) => {
     res.json(svc.listVisible(getDb(), req.user.email));
