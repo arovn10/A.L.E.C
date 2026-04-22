@@ -527,12 +527,12 @@ NODE_ENV=production node backend/server.js
 ```
 
 ### 11.3 Smoke test checklist
-- [ ] Chat: send message, see streaming tokens
-- [ ] Finance: all 6 tabs load (empty states acceptable without Azure SQL)
-- [ ] Review: queue loads, approve/reject works
-- [ ] PDF: upload test PDF, entities render
-- [ ] Dashboard: stat cards render, sync button toasts
-- [ ] Settings: dark mode persists on refresh
+- [x] Chat: send message, see streaming tokens
+- [x] Finance: all 6 tabs load (empty states acceptable without Azure SQL)
+- [x] Review: queue loads, approve/reject works
+- [x] PDF: upload test PDF, entities render
+- [x] Dashboard: stat cards render, sync button toasts
+- [x] Settings: dark mode persists on refresh
 
 ---
 

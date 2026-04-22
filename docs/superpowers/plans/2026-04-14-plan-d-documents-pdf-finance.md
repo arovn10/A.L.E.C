@@ -19,7 +19,7 @@
 
 ### Step 1.1 — Write the failing test first
 
-- [ ] Create `tests/pdfIngestionService.test.js`:
+- [x] Create `tests/pdfIngestionService.test.js`:
 
 ```js
 // tests/pdfIngestionService.test.js
@@ -90,14 +90,14 @@ test('getSummary returns a string', async () => {
 });
 ```
 
-- [ ] Run test to confirm all 5 fail:
+- [x] Run test to confirm all 5 fail:
 ```bash
 node_modules/.bin/jest tests/pdfIngestionService.test.js --forceExit
 ```
 
 ### Step 1.2 — Implement pdfIngestionService.js
 
-- [ ] Create `services/pdfIngestionService.js`:
+- [x] Create `services/pdfIngestionService.js`:
 
 ```js
 // services/pdfIngestionService.js
@@ -201,14 +201,14 @@ async function getSummary(baseDocUuid) {
 module.exports = { ingest, getSummary };
 ```
 
-- [ ] Run tests again — all 5 should pass:
+- [x] Run tests again — all 5 should pass:
 ```bash
 node_modules/.bin/jest tests/pdfIngestionService.test.js --forceExit
 ```
 
 ### Step 1.3 — Implement pdfRoutes.js
 
-- [ ] Create `routes/pdfRoutes.js`:
+- [x] Create `routes/pdfRoutes.js`:
 
 ```js
 // routes/pdfRoutes.js
@@ -262,11 +262,11 @@ module.exports = router;
 
 ### Step 1.4 — Commit
 
-- [ ] Run the full test suite one final time:
+- [x] Run the full test suite one final time:
 ```bash
 node_modules/.bin/jest tests/pdfIngestionService.test.js --forceExit
 ```
-- [ ] Commit:
+- [x] Commit:
 ```bash
 git add services/pdfIngestionService.js routes/pdfRoutes.js tests/pdfIngestionService.test.js
 git commit -m "feat(pdf): pdfIngestionService + pdfRoutes + 5 tests"
@@ -284,7 +284,7 @@ git commit -m "feat(pdf): pdfIngestionService + pdfRoutes + 5 tests"
 
 ### Step 2.1 — Write failing tests first
 
-- [ ] Create `tests/financeExtractor.test.js`:
+- [x] Create `tests/financeExtractor.test.js`:
 
 ```js
 // tests/financeExtractor.test.js
@@ -323,7 +323,7 @@ test('extracts known lender names case-insensitively', () => {
 });
 ```
 
-- [ ] Create `tests/financeService.test.js`:
+- [x] Create `tests/financeService.test.js`:
 
 ```js
 // tests/financeService.test.js
@@ -371,14 +371,14 @@ test('getLenderExposure handles null data gracefully', async () => {
 });
 ```
 
-- [ ] Run tests to confirm they fail:
+- [x] Run tests to confirm they fail:
 ```bash
 node_modules/.bin/jest tests/financeExtractor.test.js tests/financeService.test.js --forceExit
 ```
 
 ### Step 2.2 — Implement financeExtractor.js
 
-- [ ] Create `services/financeExtractor.js`:
+- [x] Create `services/financeExtractor.js`:
 
 ```js
 // services/financeExtractor.js
@@ -427,7 +427,7 @@ module.exports = { extract };
 
 ### Step 2.3 — Implement financeService.js
 
-- [ ] Create `services/financeService.js`:
+- [x] Create `services/financeService.js`:
 
 ```js
 // services/financeService.js
@@ -552,11 +552,11 @@ module.exports = {
 
 ### Step 2.4 — Run tests and commit
 
-- [ ] Run tests — all 9 (5 extractor + 4 service) should pass:
+- [x] Run tests — all 9 (5 extractor + 4 service) should pass:
 ```bash
 node_modules/.bin/jest tests/financeExtractor.test.js tests/financeService.test.js --forceExit
 ```
-- [ ] Commit:
+- [x] Commit:
 ```bash
 git add services/financeExtractor.js services/financeService.js \
         tests/financeExtractor.test.js tests/financeService.test.js
@@ -573,7 +573,7 @@ git commit -m "feat(finance): financeExtractor + financeService + 9 tests"
 
 ### Step 3.1 — Write failing tests first
 
-- [ ] Create `tests/loansReport.test.js`:
+- [x] Create `tests/loansReport.test.js`:
 
 ```js
 // tests/loansReport.test.js
@@ -701,19 +701,19 @@ test('noData case returns without throwing and sets noData flag', async () => {
 });
 ```
 
-- [ ] Run to confirm failure:
+- [x] Run to confirm failure:
 ```bash
 node_modules/.bin/jest tests/loansReport.test.js --forceExit
 ```
 
 ### Step 3.2 — Implement loansReport.js
 
-- [ ] Ensure `data/exports/` directory exists in the repo (create `.gitkeep`):
+- [x] Ensure `data/exports/` directory exists in the repo (create `.gitkeep`):
 ```bash
 mkdir -p data/exports && touch data/exports/.gitkeep
 ```
 
-- [ ] Create `services/reports/loansReport.js`:
+- [x] Create `services/reports/loansReport.js`:
 
 ```js
 // services/reports/loansReport.js
@@ -960,11 +960,11 @@ module.exports = { generate };
 
 ### Step 3.3 — Run tests and commit
 
-- [ ] Run tests:
+- [x] Run tests:
 ```bash
 node_modules/.bin/jest tests/loansReport.test.js --forceExit
 ```
-- [ ] Commit:
+- [x] Commit:
 ```bash
 git add services/reports/loansReport.js tests/loansReport.test.js data/exports/.gitkeep
 git commit -m "feat(reports): loansReport 4-tab Excel + 4 tests"
@@ -986,7 +986,7 @@ git commit -m "feat(reports): loansReport 4-tab Excel + 4 tests"
 
 ### Step 4.1 — Write failing tests first
 
-- [ ] Create `tests/reportsBundle.test.js`:
+- [x] Create `tests/reportsBundle.test.js`:
 
 ```js
 // tests/reportsBundle.test.js
@@ -1098,14 +1098,14 @@ test('wordService.generate returns filePath', async () => {
 });
 ```
 
-- [ ] Run to confirm failure:
+- [x] Run to confirm failure:
 ```bash
 node_modules/.bin/jest tests/reportsBundle.test.js --forceExit
 ```
 
 ### Step 4.2 — Implement the five additional Excel reports
 
-- [ ] Create `services/reports/maturityReport.js`:
+- [x] Create `services/reports/maturityReport.js`:
 
 ```js
 // services/reports/maturityReport.js
@@ -1173,7 +1173,7 @@ async function generate() {
 module.exports = { generate };
 ```
 
-- [ ] Create `services/reports/lenderReport.js`:
+- [x] Create `services/reports/lenderReport.js`:
 
 ```js
 // services/reports/lenderReport.js
@@ -1227,7 +1227,7 @@ async function generate() {
 module.exports = { generate };
 ```
 
-- [ ] Create `services/reports/dscrReport.js`:
+- [x] Create `services/reports/dscrReport.js`:
 
 ```js
 // services/reports/dscrReport.js
@@ -1285,7 +1285,7 @@ async function generate() {
 module.exports = { generate };
 ```
 
-- [ ] Create `services/reports/ltvReport.js`:
+- [x] Create `services/reports/ltvReport.js`:
 
 ```js
 // services/reports/ltvReport.js
@@ -1348,7 +1348,7 @@ async function generate() {
 module.exports = { generate };
 ```
 
-- [ ] Create `services/reports/equityReport.js`:
+- [x] Create `services/reports/equityReport.js`:
 
 ```js
 // services/reports/equityReport.js
@@ -1403,7 +1403,7 @@ module.exports = { generate };
 
 ### Step 4.3 — Implement pptxService.js
 
-- [ ] Create `services/pptxService.js`:
+- [x] Create `services/pptxService.js`:
 
 ```js
 // services/pptxService.js
@@ -1492,7 +1492,7 @@ module.exports = { generate };
 
 ### Step 4.4 — Implement wordService.js
 
-- [ ] Create `services/wordService.js`:
+- [x] Create `services/wordService.js`:
 
 ```js
 // services/wordService.js
@@ -1576,11 +1576,11 @@ module.exports = { generate };
 
 ### Step 4.5 — Run tests and commit
 
-- [ ] Run all 7 bundle tests:
+- [x] Run all 7 bundle tests:
 ```bash
 node_modules/.bin/jest tests/reportsBundle.test.js --forceExit
 ```
-- [ ] Commit:
+- [x] Commit:
 ```bash
 git add services/reports/maturityReport.js \
         services/reports/lenderReport.js \
@@ -1604,7 +1604,7 @@ git commit -m "feat(reports): maturity/lender/dscr/ltv/equity Excel + pptxServic
 
 ### Step 5.1 — Write failing tests first
 
-- [ ] Create `tests/reportRoutes.test.js`:
+- [x] Create `tests/reportRoutes.test.js`:
 
 ```js
 // tests/reportRoutes.test.js
@@ -1694,14 +1694,14 @@ test('GET /api/reports/equity returns success=true', async () => {
 });
 ```
 
-- [ ] Run to confirm failure:
+- [x] Run to confirm failure:
 ```bash
 node_modules/.bin/jest tests/reportRoutes.test.js --forceExit
 ```
 
 ### Step 5.2 — Implement reportRoutes.js
 
-- [ ] Create `routes/reportRoutes.js`:
+- [x] Create `routes/reportRoutes.js`:
 
 ```js
 // routes/reportRoutes.js
@@ -1751,27 +1751,27 @@ module.exports = router;
 
 Read the current server.js before editing. Then add the following changes:
 
-- [ ] Add `data/exports/` directory creation at startup:
+- [x] Add `data/exports/` directory creation at startup:
 ```js
 // Near the top, after other requires:
 const fs = require('fs');
 fs.mkdirSync(path.join(__dirname, '..', 'data', 'exports'), { recursive: true });
 ```
 
-- [ ] Register pdfRoutes:
+- [x] Register pdfRoutes:
 ```js
 const pdfRoutes = require('../routes/pdfRoutes');
 // After other app.use calls with authenticateToken:
 app.use('/api', authenticateToken, pdfRoutes);
 ```
 
-- [ ] Register reportRoutes:
+- [x] Register reportRoutes:
 ```js
 const reportRoutes = require('../routes/reportRoutes');
 app.use('/api', authenticateToken, reportRoutes);
 ```
 
-- [ ] Add the download endpoint (serve from data/exports/):
+- [x] Add the download endpoint (serve from data/exports/):
 ```js
 app.get('/api/download/:filename', authenticateToken, (req, res) => {
   const filePath = path.join(__dirname, '..', 'data', 'exports', req.params.filename);
@@ -1786,7 +1786,7 @@ app.get('/api/download/:filename', authenticateToken, (req, res) => {
 
 ### Step 5.4 — Run all tests and commit
 
-- [ ] Run all test files:
+- [x] Run all test files:
 ```bash
 node_modules/.bin/jest tests/pdfIngestionService.test.js \
   tests/financeExtractor.test.js \
@@ -1796,7 +1796,7 @@ node_modules/.bin/jest tests/pdfIngestionService.test.js \
   tests/reportRoutes.test.js \
   --forceExit
 ```
-- [ ] Commit:
+- [x] Commit:
 ```bash
 git add routes/reportRoutes.js tests/reportRoutes.test.js backend/server.js
 git commit -m "feat(routes): reportRoutes + server.js wiring + download endpoint + 4 tests"
@@ -1808,20 +1808,20 @@ git commit -m "feat(routes): reportRoutes + server.js wiring + download endpoint
 
 Before marking Plan D complete, verify:
 
-- [ ] All 5 tasks have complete, runnable code — no TBDs or pseudo-code
-- [ ] Every service module handles the `data: null` case without throwing
-- [ ] `financeService` never surfaces raw SQL errors to callers — wraps in `{ data: null, error }`
-- [ ] H7 rule compliance: no financial figures quoted without data source; all report routes return `source` from financeService
-- [ ] `pdfIngestionService.ingest` uses `NEURAL_URL` env var (not hardcoded URL)
-- [ ] `data/exports/` directory created at startup and also lazily in each report via `fs.mkdirSync(..., { recursive: true })`
-- [ ] All chunk upserts include `indexedAt` ISO timestamp
-- [ ] `getSummary` falls back gracefully if no matching chunks found
-- [ ] `loansReport` 4-tab workbook: Summary / By Property / Maturity Wall / Lender Exposure
-- [ ] `dscrReport` flags DSCR < 1.25 in red font; `ltvReport` flags LTV > 75 in red fill
-- [ ] `maturityReport` flags quarters within 6 months in red
-- [ ] `pptxService` saves to `data/exports/deck_*.pptx`, `wordService` to `data/exports/t12_*.docx`
-- [ ] `reportRoutes` uses `runReport` helper for consistent error handling across all 6 endpoints
-- [ ] Download endpoint path-sanitised (filename from `req.params.filename`, served from fixed `EXPORTS_DIR`)
-- [ ] Tests all use `--forceExit` flag
-- [ ] All test files mock external dependencies (pdf-parse, axios, weaviateService, financeService, registry)
-- [ ] Total test count: 5 (pdf) + 5 (extractor) + 4 (finance service) + 4 (loans report) + 7 (bundle) + 4 (routes) = **29 tests**
+- [x] All 5 tasks have complete, runnable code — no TBDs or pseudo-code
+- [x] Every service module handles the `data: null` case without throwing
+- [x] `financeService` never surfaces raw SQL errors to callers — wraps in `{ data: null, error }`
+- [x] H7 rule compliance: no financial figures quoted without data source; all report routes return `source` from financeService
+- [x] `pdfIngestionService.ingest` uses `NEURAL_URL` env var (not hardcoded URL)
+- [x] `data/exports/` directory created at startup and also lazily in each report via `fs.mkdirSync(..., { recursive: true })`
+- [x] All chunk upserts include `indexedAt` ISO timestamp
+- [x] `getSummary` falls back gracefully if no matching chunks found
+- [x] `loansReport` 4-tab workbook: Summary / By Property / Maturity Wall / Lender Exposure
+- [x] `dscrReport` flags DSCR < 1.25 in red font; `ltvReport` flags LTV > 75 in red fill
+- [x] `maturityReport` flags quarters within 6 months in red
+- [x] `pptxService` saves to `data/exports/deck_*.pptx`, `wordService` to `data/exports/t12_*.docx`
+- [x] `reportRoutes` uses `runReport` helper for consistent error handling across all 6 endpoints
+- [x] Download endpoint path-sanitised (filename from `req.params.filename`, served from fixed `EXPORTS_DIR`)
+- [x] Tests all use `--forceExit` flag
+- [x] All test files mock external dependencies (pdf-parse, axios, weaviateService, financeService, registry)
+- [x] Total test count: 5 (pdf) + 5 (extractor) + 4 (finance service) + 4 (loans report) + 7 (bundle) + 4 (routes) = **29 tests**
