@@ -34,7 +34,7 @@
 nomic-embed-text-v1.5 uses a `trust_remote_code=True` flag because it ships custom pooling logic. The model produces 768-dim L2-normalized vectors. We lazy-load it at first request rather than at import time so the neural server starts fast even if the model isn't cached yet.
 `─────────────────────────────────────────────────`
 
-- [ ] **Step 1: Install sentence-transformers in the neural engine virtualenv**
+- [x] **Step 1: Install sentence-transformers in the neural engine virtualenv**
 
 ```bash
 cd services/neural
@@ -43,7 +43,7 @@ pip install sentence-transformers
 
 Expected: installs without error. If the venv isn't active, run `source .venv/bin/activate` first.
 
-- [ ] **Step 2: Write the failing test for ragPipeline**
+- [x] **Step 2: Write the failing test for ragPipeline**
 
 The neural engine is Python — we test it with a quick inline script rather than Jest. Create `services/neural/test_ragPipeline.py`:
 
@@ -73,7 +73,7 @@ print("PASS: get_embedding returns 768-dim list")
 Run: `cd services/neural && python test_ragPipeline.py`
 Expected: FAIL with `ModuleNotFoundError: No module named 'ragPipeline'`
 
-- [ ] **Step 3: Create services/neural/ragPipeline.py**
+- [x] **Step 3: Create services/neural/ragPipeline.py**
 
 ```python
 """
@@ -111,7 +111,7 @@ def get_embedding(text: str) -> list:
     return vector.tolist()
 ```
 
-- [ ] **Step 4: Run the Python test — verify it passes**
+- [x] **Step 4: Run the Python test — verify it passes**
 
 ```bash
 cd services/neural && python test_ragPipeline.py
@@ -119,7 +119,7 @@ cd services/neural && python test_ragPipeline.py
 
 Expected: `PASS: get_embedding returns 768-dim list`
 
-- [ ] **Step 5: Add /embed endpoint to services/neural/server.py**
+- [x] **Step 5: Add /embed endpoint to services/neural/server.py**
 
 Append these lines at the very end of `services/neural/server.py` (after the last `@app` route, before any `if __name__` block):
 
@@ -144,7 +144,7 @@ async def embed_text(req: EmbedRequest):
         raise HTTPException(status_code=500, detail=str(e))
 ```
 
-- [ ] **Step 6: Verify server syntax (no Python errors)**
+- [x] **Step 6: Verify server syntax (no Python errors)**
 
 ```bash
 cd services/neural && python -c "import ast; ast.parse(open('server.py').read()); print('syntax OK')"
@@ -152,7 +152,7 @@ cd services/neural && python -c "import ast; ast.parse(open('server.py').read())
 
 Expected: `syntax OK`
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add services/neural/ragPipeline.py services/neural/server.py services/neural/test_ragPipeline.py
@@ -167,7 +167,7 @@ git commit -m "feat(rag): nomic-embed-text ragPipeline + /embed endpoint"
 - Create: `services/ragService.js`
 - Create: `tests/ragService.test.js`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/ragService.test.js`:
 
@@ -244,7 +244,7 @@ test('_formatContext() uses content for ALECDocument hits', () => {
 Run: `node_modules/.bin/jest tests/ragService.test.js --forceExit`
 Expected: FAIL with `Cannot find module '../services/ragService'`
 
-- [ ] **Step 2: Create services/ragService.js**
+- [x] **Step 2: Create services/ragService.js**
 
 ```js
 'use strict';
@@ -330,7 +330,7 @@ class RagService {
 module.exports = RagService;
 ```
 
-- [ ] **Step 3: Run tests — verify all 6 pass**
+- [x] **Step 3: Run tests — verify all 6 pass**
 
 ```bash
 node_modules/.bin/jest tests/ragService.test.js --forceExit
@@ -338,7 +338,7 @@ node_modules/.bin/jest tests/ragService.test.js --forceExit
 
 Expected: `Tests: 6 passed, 6 total`
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add services/ragService.js tests/ragService.test.js
@@ -357,7 +357,7 @@ git commit -m "feat(rag): RagService — embed + hybrid search + context injecti
 GitHub delivers webhook payloads with an `X-Hub-Signature-256` header — an HMAC-SHA256 of the raw request body signed with a shared secret. You must verify this signature using `crypto.timingSafeEqual` (not `===`) to prevent timing attacks. The raw body must be captured before `express.json()` parses it, which is why the webhook route uses `express.raw({ type: '*/*' })` as inline middleware.
 `─────────────────────────────────────────────────`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/stoaBrainSync.test.js`:
 
@@ -464,7 +464,7 @@ test('fullSync() iterates all files from github connector', async () => {
 Run: `node_modules/.bin/jest tests/stoaBrainSync.test.js --forceExit`
 Expected: FAIL with `Cannot find module '../services/stoaBrainSync'`
 
-- [ ] **Step 2: Create services/stoaBrainSync.js**
+- [x] **Step 2: Create services/stoaBrainSync.js**
 
 ```js
 'use strict';
@@ -628,7 +628,7 @@ class StoaBrainSync {
 module.exports = StoaBrainSync;
 ```
 
-- [ ] **Step 3: Run tests — verify all 7 pass**
+- [x] **Step 3: Run tests — verify all 7 pass**
 
 ```bash
 node_modules/.bin/jest tests/stoaBrainSync.test.js --forceExit
@@ -636,7 +636,7 @@ node_modules/.bin/jest tests/stoaBrainSync.test.js --forceExit
 
 Expected: `Tests: 7 passed, 7 total`
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add services/stoaBrainSync.js tests/stoaBrainSync.test.js
@@ -655,7 +655,7 @@ git commit -m "feat(rag): StoaBrainSync — GitHub webhook + 30-min cron + Weavi
 The RAG call must be async and placed after the user message is extracted but before the system prompt is finalized. We inject the context as a suffix to `systemContent` at line ~744 (the existing `let systemContent = buildSystemPrompt() + ...` line). The webhook route needs `express.raw({ type: '*/*' })` as its own middleware because `express.json()` is already applied globally — using `express.raw()` on the specific route re-buffers the body bytes needed for HMAC verification.
 `─────────────────────────────────────────────────`
 
-- [ ] **Step 1: Add the require statements at the top of backend/server.js**
+- [x] **Step 1: Add the require statements at the top of backend/server.js**
 
 In `backend/server.js`, find the block of requires near the top (around line 29–40). Add these two lines after the existing requires:
 
@@ -664,7 +664,7 @@ const RagService = require('../services/ragService');
 const StoaBrainSync = require('../services/stoaBrainSync');
 ```
 
-- [ ] **Step 2: Instantiate ragService and stoaBrainSync after the existing service instantiation block**
+- [x] **Step 2: Instantiate ragService and stoaBrainSync after the existing service instantiation block**
 
 Find the connector registry block (added in Plan A, near line ~130–140) that starts with `try { registry.register(azureSqlConnector) ...`. Add these two lines immediately after that block:
 
@@ -674,7 +674,7 @@ const stoaBrainSync = new StoaBrainSync();
 stoaBrainSync.startCron();
 ```
 
-- [ ] **Step 3: Inject RAG context into /api/chat system prompt**
+- [x] **Step 3: Inject RAG context into /api/chat system prompt**
 
 In `backend/server.js` at the `/api/chat` handler (~line 744), replace:
 
@@ -692,7 +692,7 @@ with:
       + (ragContext ? '\n\n' + ragContext : '');
 ```
 
-- [ ] **Step 4: Inject RAG context into /api/chat/stream system prompt**
+- [x] **Step 4: Inject RAG context into /api/chat/stream system prompt**
 
 In `backend/server.js` at the `/api/chat/stream` handler (~line 1072), make the same replacement — find the line:
 
@@ -712,7 +712,7 @@ and replace it with:
 
 Note: `userText` may be named differently in the stream handler. Check the variable name — it's typically extracted from `req.body.message || messages.at(-1)?.content`. Use the same variable name that already exists in that handler.
 
-- [ ] **Step 5: Add the GitHub webhook route**
+- [x] **Step 5: Add the GitHub webhook route**
 
 Find `app.get('/health', ...)` (~line 598) and add the webhook route immediately before it:
 
@@ -748,7 +748,7 @@ app.post(
 );
 ```
 
-- [ ] **Step 6: Verify server.js still parses (no syntax errors)**
+- [x] **Step 6: Verify server.js still parses (no syntax errors)**
 
 ```bash
 node -c backend/server.js
@@ -756,7 +756,7 @@ node -c backend/server.js
 
 Expected: `backend/server.js syntax OK`
 
-- [ ] **Step 7: Run the full test suite**
+- [x] **Step 7: Run the full test suite**
 
 ```bash
 node_modules/.bin/jest --forceExit
@@ -766,7 +766,7 @@ Expected: `Test Suites: 10 passed, 10 total` (or more if new suites were added).
 
 If any test fails due to the new `require` statements (e.g., `Cannot find module`), check that `services/ragService.js` and `services/stoaBrainSync.js` exist in the right paths.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add backend/server.js
