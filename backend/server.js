@@ -68,7 +68,62 @@ const vercelSvc    = (() => { try { return require('../services/vercelService.js
 const tenantCloud  = (() => { try { return require('../services/tenantCloudService.js'); } catch { return null; } })();
 const awsSvc       = (() => { try { return require('../services/awsService.js');      } catch { return null; } })();
 const research     = (() => { try { return require('../services/researchAgent.js');   } catch { return null; } })();
-const skillsReg    = (() => { try { return require('../services/skillsRegistry.js');  } catch { return null; } })();
+// skillsReg removed in S6.4 — the legacy /api/connectors/:skillId/* block
+// is gone and the v2 surface lives in backend/routes/connectors.mjs.
+
+const RagService     = require('../services/ragService');
+const StoaBrainSync  = require('../services/stoaBrainSync');
+const cron           = require('node-cron');
+const QualityScorer  = require('../services/qualityScorer');
+const FineTuneQueue  = require('../services/fineTuneQueue');
+const reviewRoutes   = require('../routes/reviewRoutes');
+
+// ── Data Connector Registry ──────────────────────────────────────────────────
+const { registry: connectorRegistry } = require('../dataConnectors/index');
+try {
+  connectorRegistry.register(require('../dataConnectors/azureSqlConnector'));
+  connectorRegistry.register(require('../dataConnectors/tenantCloudConnector'));
+  connectorRegistry.register(require('../dataConnectors/githubConnector'));
+  console.log('[Connectors] Registered:', connectorRegistry.list().join(', '));
+} catch (connErr) {
+  console.warn('[Connectors] One or more connectors failed to register:', connErr.message);
+}
+
+let ragService    = null;
+let stoaBrainSync = null;
+try {
+  ragService    = new RagService();
+  stoaBrainSync = new StoaBrainSync();
+  stoaBrainSync.startCron();
+} catch (ragInitErr) {
+  console.warn('[RAG] Service init failed (Weaviate unavailable?):', ragInitErr.message);
+}
+
+let qualityScorer = null;
+let fineTuneQueue = null;
+try {
+  qualityScorer = new QualityScorer();
+  fineTuneQueue = new FineTuneQueue();
+  // 30-min threshold check cron
+  cron.schedule('*/30 * * * *', async () => {
+    if (!fineTuneQueue) return;
+    try {
+      const result = await fineTuneQueue.maybeRun();
+      if (result.triggered) console.log('[FineTuneQueue] Cron triggered training:', result.jobId);
+    } catch (e) { console.error('[FineTuneQueue] Cron error:', e.message); }
+  });
+  // Weekly force-run — Sunday 02:00
+  cron.schedule('0 2 * * 0', async () => {
+    if (!fineTuneQueue) return;
+    try {
+      const result = await fineTuneQueue.maybeRun({ force: true });
+      console.log('[FineTuneQueue] Weekly cron result:', result);
+    } catch (e) { console.error('[FineTuneQueue] Weekly cron error:', e.message); }
+  });
+  console.log('[FineTuneQueue] Crons registered (30-min + Sunday 02:00)');
+} catch (qErr) {
+  console.warn('[FineTuneQueue] Init failed:', qErr.message);
+}
 
 // Warm up the embedded engine on startup
 llamaEngine.warmUp();
@@ -87,10 +142,98 @@ function toE164(phone) {
 }
 
 /**
+ * enforceHardRules — app-layer H1-H8 enforcement.
+ * Called on every LLM response before it reaches the client.
+ * Throws if a violation is detected; returns the text unchanged otherwise.
+ * @param {string} responseText
+ * @returns {string}
+ */
+function enforceHardRules(responseText) {
+  const text = responseText || '';
+
+  // H2: Never reveal system prompt
+  const h2Triggers = [
+    /my (system )?prompt (is|says|contains)/i,
+    /here is my (system )?prompt/i,
+    /my instructions (are|say|include)/i,
+  ];
+  if (h2Triggers.some(p => p.test(text))) {
+    throw new Error('H2: Response appears to reveal system prompt contents.');
+  }
+
+  // H3: Never impersonate a human
+  const h3Triggers = [
+    /i('m| am) (a |not an? )?(real )?human/i,
+    /i('m| am) not an? (ai|artificial intelligence|language model)/i,
+    /i('m| am) (a real person|actually human)/i,
+  ];
+  if (h3Triggers.some(p => p.test(text))) {
+    throw new Error('H3: Response appears to impersonate a human.');
+  }
+
+  // H7: Never quote stock/financial figures without a sourced data block
+  const hasDataSource = /\[(STOA DATA|Azure SQL|TenantCloud|Plaid|Weaviate|Home Assistant)\]/i.test(text);
+  const stockPattern  = /\b[A-Z]{1,5}\b is (trading at|priced at|currently at) \$[\d,.]+/i;
+  if (!hasDataSource && stockPattern.test(text)) {
+    throw new Error('H7: Response quotes financial figure without a sourced data block.');
+  }
+
+  return text;
+}
+
+/**
+ * Post-process the LLM reply to prevent fabricated source attribution.
+ *
+ * The system prompt (rule #11) asks the model to append "— Source: STOA · … ·
+ * asOf=…" when it gives data answers. If STOA (or any other source) was NOT
+ * actually injected into the system prompt for this turn, the model sometimes
+ * still emits the footer with invented numbers — the user sees "Source: STOA"
+ * and trusts it. This guard:
+ *   1. Inspects the assembled systemPrompt for our injection markers.
+ *   2. Detects any "— Source: X · …" line in the model output.
+ *   3. If X's marker is absent from the system prompt, the line is stripped
+ *      and replaced with an honest "— Source: Model (no live data injected)".
+ *
+ * Marker table (must match the strings used at each inject site in this file):
+ *   STOA          → "## Live Leasing & Occupancy Data" / "[STOA DATA"
+ *   TenantCloud   → "[TenantCloud DATA"
+ *   Plaid         → "[Plaid Financial DATA"
+ *   Weaviate      → "[Weaviate DATA" / "[RAG DATA"
+ *   HomeAssistant → "[Home Assistant DATA"
+ *   GitHub        → "[GitHub DATA"
+ */
+function stripFalseSourceFooters(text, systemPrompt) {
+  if (!text) return text;
+  const injected = {
+    STOA:          /\[STOA DATA|## Live Leasing & Occupancy Data|## Project Details|## Occupancy & Rent Trend/i.test(systemPrompt),
+    TenantCloud:   /\[TenantCloud DATA/i.test(systemPrompt),
+    Plaid:         /\[Plaid Financial DATA/i.test(systemPrompt),
+    Weaviate:      /\[Weaviate DATA|\[RAG DATA/i.test(systemPrompt),
+    HomeAssistant: /\[Home Assistant DATA/i.test(systemPrompt),
+    GitHub:        /\[GitHub DATA/i.test(systemPrompt),
+  };
+  const FOOTER_RE = /(^|\n)\s*[—–-]\s*Source:\s*([A-Za-z]+)[^\n]*/gi;
+  return text.replace(FOOTER_RE, (match, pre, source) => {
+    const key = Object.keys(injected).find(k => k.toLowerCase() === source.toLowerCase());
+    if (key && injected[key]) return match; // legitimate — keep
+    return `${pre}— Source: Model (no live data injected — numbers above may be estimates)`;
+  });
+}
+
+/**
  * System prompt — generated fresh on every request so the date is always accurate.
  * LLMs have a training cutoff and don't know the current date unless told explicitly.
  */
 function buildSystemPrompt() {
+  // Load constitutional directive from data/ALEC_DIRECTIVE.md
+  let directiveSection = '';
+  try {
+    const directivePath = path.join(__dirname, '../data/ALEC_DIRECTIVE.md');
+    directiveSection = fs.readFileSync(directivePath, 'utf8') + '\n\n---\n\n';
+  } catch {
+    console.warn('[server] ALEC_DIRECTIVE.md not found — using empty directive section');
+  }
+
   const now = new Date();
   const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
   const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
@@ -129,7 +272,7 @@ function buildSystemPrompt() {
   if (process.env.MS_TENANT_ID) caps.push('✅ Microsoft 365 — SharePoint, OneDrive, Outlook/calendar');
   else caps.push('⚠️  Microsoft 365 — not configured');
 
-  return `You are Alec (A.L.E.C.), Alec Rovner's personal AI executive assistant running locally on his Mac.
+  return `${directiveSection}You are Alec (A.L.E.C.), Alec Rovner's personal AI executive assistant running locally on his Mac.
 You use a local LLaMA 3.1 8B model (Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf) running on Apple Silicon via node-llama-cpp with Metal GPU acceleration. You do NOT call any external AI API — you run entirely on this Mac.
 Current date and time: ${dateStr} at ${timeStr}.
 
@@ -137,21 +280,52 @@ Current date and time: ${dateStr} at ${timeStr}.
 ${caps.join('\n')}
 
 ## Critical Rules — NEVER Violate These
-1. **NEVER fabricate data.** If real data is injected above (marked [STOA DATA], [iMessage DATA], etc.), use ONLY that. If no real data is available, say: "I don't have access to that data right now."
+1. **NEVER fabricate data.** If real data is injected above (marked [STOA DATA], [iMessage DATA], etc.), use ONLY that. If no real data is available, say so honestly.
 2. **iMessages HARD RULE: If you do NOT see "[iMessage DATA" in this system prompt, you have ZERO iMessages to report. Say "I couldn't read your messages right now" — NEVER invent names, messages, or conversations. Not even as examples. Not even to be helpful.**
 3. **NEVER invent STOA numbers** (occupancy %, rent, tenants, reviews). Real STOA data is injected via the RAG system — if it's not in context, say you don't have it.
 3b. **TenantCloud HARD RULE: If you do NOT see "[TenantCloud DATA" in this system prompt, you have ZERO tenant/rent/maintenance data. Never invent tenant names, payment amounts, or property details.**
-3c. **Plaid HARD RULE: If you do NOT see "[Plaid Financial DATA" in this prompt, you have no investment data. Never invent portfolio values, account balances, or holdings.**
+3c. **Plaid / Financial HARD RULE: If you do NOT see "[Plaid Financial DATA" in this prompt, you have NO investment portfolio data. Never invent portfolio values, account balances, stock holdings, or position sizes. Say: "I don't have access to your brokerage data right now."**
 3d. **Home Assistant HARD RULE: If you do NOT see "[Home Assistant DATA" in this prompt, you have no device state information. Never guess whether lights are on/off or locks are locked/unlocked.**
+3e. **Stock prices / market data HARD RULE: You have NO real-time market data. NEVER quote a specific stock price, index level, or crypto price from memory — your training data is outdated and prices change every second. If asked for a current stock price: (1) attempt a web search if search results appear above, (2) if search results contain a price, report it with the timestamp. If search results are absent or don't contain a current price, say: "I don't have real-time market data — check Yahoo Finance, Google Finance, or Bloomberg for the current price."**
 4. **NEVER claim you can't do something you CAN do** (GitHub, iMessage, STOA queries, Excel exports, research, SMS). Check the capabilities list above.
 5. **SMS/Texting**: If Twilio is ✅ and the owner asks you to text them, the server automatically sends the text — just confirm you're doing it and describe what the message will say.
 6. **Google Reviews / resident feedback**: The STOA database does NOT contain Google review text. If asked for reviews, say: "The STOA database doesn't include Google review text — I can see Google ratings if they're in the data, but not individual reviews. I can do a web search for recent reviews if you'd like."
 7. **Excel exports**: Only generate Excel files for data you actually have (STOA leasing data). Don't offer to generate "top 100 negative reviews" — that data doesn't exist in STOA.
-8. Be direct, smart, and friendly. Use markdown for clarity. Refer to yourself as "Alec" in casual replies.`;
+8. **Typos and abbreviations**: If a user types an ambiguous abbreviation or likely typo (e.g. "IRSN", "AMZM", "stoa stcok"), do NOT assume it refers to a country, company, or concept that superficially matches the letters. Instead, ask for clarification: "Did you mean [most likely interpretation based on context]?" For example, "IRSN" in a stock context likely means a mistyped ticker, not Iran.
+9. **Leasing metric discipline — NEVER conflate these three fields:**
+   - **Occupancy %** = physically occupied units / total units (today's reality).
+   - **Leased %** = units under lease (including future move-ins) / total units. Leased ≥ Occupancy almost always.
+   - **Forward occupancy (4/7/8 wk)** = projected future occupancy after scheduled NTVs and move-ins — a forecast, not today.
+   When asked "what's the occupancy today?" the ONLY valid answer is the Occupancy field. Never substitute Leased % or a forward projection. If you report any number, label it explicitly: "Occupancy today is 93.6% (292/312). Leased stands at 95%. Forward 4-week projection is 92.6%." If data is injected with multiple fields, reproduce them all with their labels.
+10. **Conversation continuity — NEVER deny prior statements.** If [PRIOR TURNS] context shows you said something in this session, own it. If you misspoke, correct yourself and explain the error. Do NOT claim "I didn't say that" when the transcript shows you did.
+11. **Source attribution on data answers.** When you give a specific number (occupancy, rent, pipeline count, balance, etc.), append a 1-line source footer at the bottom of the response in the form: "— Source: STOA · <property or query> · asOf=YYYY-MM-DD" (or TenantCloud / Weaviate / Web / Model). If no data was injected, say so and cite "Model" (meaning you are answering from reasoning alone).
+12. Be direct, smart, and friendly. Use markdown for clarity. Refer to yourself as "Alec" in casual replies.`;
 }
 
 // Keep a static alias for backward compat with any code referencing ALEC_SYSTEM_PROMPT directly
 const ALEC_SYSTEM_PROMPT = buildSystemPrompt();
+
+/**
+ * Load the last N turns from chatHistory and render them as a [PRIOR TURNS] block.
+ * Fixes the gaslighting bug: without this, the LLM forgets what it just said.
+ * Cheap (SQLite read) — safe to call per-turn.
+ */
+function buildPriorTurnsBlock(convId, maxTurns = 12) {
+  if (!chatHistory || !convId) return '';
+  try {
+    const msgs = chatHistory.getMessages(convId, maxTurns) || [];
+    if (!msgs.length) return '';
+    const lines = msgs.slice(-maxTurns).map(m => {
+      const who = m.role === 'assistant' ? 'Alec' : (m.role === 'user' ? 'Owner' : m.role);
+      const body = String(m.content || '').slice(0, 800).replace(/\s+/g, ' ').trim();
+      return `${who}: ${body}`;
+    });
+    return `\n\n[PRIOR TURNS — THIS SESSION, MOST RECENT LAST]\n${lines.join('\n')}\n[/PRIOR TURNS]`;
+  } catch (e) {
+    console.warn('[priorTurns]', e.message);
+    return '';
+  }
+}
 
 // ── Anthropic Claude fallback ───────────────────────────────────
 // Used when: ANTHROPIC_API_KEY is set AND (local model not loaded OR user explicitly picks Claude)
@@ -250,6 +424,14 @@ async function callLLMText(messages, voiceMode = false) {
     return await callClaudeText(fullMsgs, voiceMode);
   }
 
+  // No local model AND no Anthropic fallback — produce a helpful response
+  // instead of crashing the request.
+  if (typeof llamaEngine.isLlamaDisabled === 'function' && llamaEngine.isLlamaDisabled()) {
+    return 'Local inference is currently disabled on this machine (macOS Metal incompatibility). ' +
+           'Set ANTHROPIC_API_KEY in your environment to enable Claude fallback, or set ' +
+           'ALEC_FORCE_LLAMA=1 and restart to attempt Metal inference anyway.';
+  }
+
   return await llamaEngine.generate(fullMsgs, { maxTokens, temperature });
 }
 
@@ -336,7 +518,7 @@ async function extractAndStoreFacts(userMsg, assistantReply) {
 // ════════════════════════════════════════════════════════════════
 //  WEB SEARCH (DuckDuckGo Instant Answers — no API key needed)
 // ════════════════════════════════════════════════════════════════
-const SEARCH_TRIGGERS = /\b(search|find|look up|what is|who is|latest|news|current|today|weather|price|how much|when did|when is|define|meaning of)\b/i;
+const SEARCH_TRIGGERS = /\b(search|find|look up|what is|who is|latest|news|current|today|weather|price|how much|when did|when is|define|meaning of|stock|ticker|nasdaq|nyse|crypto|bitcoin|ethereum|market cap|earnings|interest rate)\b/i;
 
 async function webSearch(query) {
   try {
@@ -395,11 +577,121 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: '50mb' }));
 
-// Serve static frontend
-app.use(express.static(path.join(__dirname, '../frontend')));
+// Serve static frontend — prefer built Vite SPA (dist) over legacy /frontend root.
+// `dist/` exists after `npm --prefix frontend run build`; in dev we fall back
+// to the legacy files so the old UI still opens at /.
+const SPA_DIST = path.join(__dirname, '../frontend/dist');
+if (fs.existsSync(path.join(SPA_DIST, 'index.html'))) {
+  app.use(express.static(SPA_DIST));
+  // SPA client-side routing: every non-API, non-file path falls back to index.html
+  app.get(/^\/(?!api|uploads|exports|socket\.io|assets).*/, (req, res, next) => {
+    if (req.method !== 'GET') return next();
+    if (path.extname(req.path)) return next(); // real file request
+    res.sendFile(path.join(SPA_DIST, 'index.html'));
+  });
+} else {
+  app.use(express.static(path.join(__dirname, '../frontend')));
+}
 
 // Serve uploaded files at /uploads/
 app.use('/uploads', express.static(UPLOADS_DIR));
+
+// ── Sprint-1 auth routes (/api/auth/*, /api/admin/*) ────────────
+// Mounted before authenticateToken-protected routes so /login is reachable
+// without a bearer token. The router itself applies mw.authenticate on the
+// endpoints that need it.
+try {
+  const { ensureAuthSchema, runBootstrap } = require('./auth/bootstrap');
+  ensureAuthSchema().catch(e => console.warn('[auth] bootstrap skipped:', e.message));
+  const authRoutes = require('./auth/routes');
+  app.use('/api', authRoutes);
+  console.log('[auth] Sprint-1 routes mounted at /api/auth and /api/admin');
+
+  // ── Connectors v2: SQLite bootstrap + /api/orgs, /api/connectors, /api/mcp ──
+  // Default: ON. Set ALEC_CONNECTORS_V2=0 to force the legacy surface.
+  // runBootstrap opens data/alec.db, applies better-sqlite3 migrations, and
+  // seeds orgs + catalog.
+  if (process.env.ALEC_CONNECTORS_V2 !== '0') {
+    runBootstrap()
+      .then(async (alecDb) => {
+        const { orgsRouter }        = await import('./routes/orgs.mjs');
+        const { connectorsRouter }  = await import('./routes/connectors.mjs');
+        const { mcpRouter }         = await import('./routes/mcp.mjs');
+        const { desktopRouter }     = await import('./routes/desktop.mjs');
+        app.use('/api/orgs',        authenticateToken, orgsRouter(() => alecDb));
+        app.use('/api/connectors',  authenticateToken, connectorsRouter(() => alecDb));
+        app.use('/api/mcp',         authenticateToken, mcpRouter(() => alecDb));
+        app.use('/api/desktop',     authenticateToken, desktopRouter(() => alecDb));
+        console.log('[connectors-v2] routes mounted at /api/orgs, /api/connectors, /api/mcp, /api/desktop');
+      })
+      .catch(e => console.warn('[connectors-v2] init failed:', e.message));
+  }
+
+  // ── Nightly ML engine (profiler → gate → tournament → forecasts) ──
+  try {
+    const mlRoutes = require('./ml/routes');
+    app.use('/api/ml', mlRoutes);
+    console.log('[ml] routes mounted at /api/ml');
+    if (process.env.ML_NIGHTLY_ENABLED !== '0') {
+      const { runNightly } = require('./ml/nightly');
+      // 02:15 local every night — offset from fine-tune cron at 02:00.
+      cron.schedule('15 2 * * *', async () => {
+        console.log('[ml] nightly cron firing');
+        try {
+          const r = await runNightly({ trigger: 'cron' });
+          console.log('[ml] nightly done:', JSON.stringify({ ok: r.ok, runId: r.runId, nChampions: r.nChampions, nCandidates: r.nCandidates, nModelsFit: r.nModelsFit }));
+        } catch (e) { console.error('[ml] nightly failed:', e.message); }
+      });
+      console.log('[ml] nightly cron registered (02:15 local)');
+    }
+  } catch (e) { console.warn('[ml] init failed:', e.message); }
+
+  // ── Sprint-2 Domo embed routes ──
+  try {
+    const mw = require('./auth/middleware');
+    const domo = require('./auth/domo');
+    const authPool = require('./auth/_pool');
+
+    // GET /api/domo/dashboards — dashboards the user can embed
+    app.get('/api/domo/dashboards', mw.authenticate, async (req, res) => {
+      try {
+        const pool = await authPool.getPoolForAuth();
+        const rows = await domo.listUserDashboards(pool, req.user.userId, req.user.implicitScope === '*');
+        res.json({ success: true, data: rows });
+      } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+    });
+
+    // POST /api/domo/embed-token — mint a short-lived embed JWT
+    app.post('/api/domo/embed-token', mw.authenticate, async (req, res) => {
+      try {
+        const { dashboardId, filters } = req.body || {};
+        if (!dashboardId) return res.status(400).json({ error: 'dashboardId required' });
+        // Scope check: requireScope-style inline
+        const ok = req.user.implicitScope === '*' ||
+          req.user.scopes.some(s => (s.type === '*' || s.type === 'domo_dashboard') &&
+                                     (s.value === '*' || s.value === String(dashboardId)));
+        if (!ok) return res.status(403).json({ error: 'Out of scope', type: 'domo_dashboard', value: dashboardId });
+
+        const pool = await authPool.getPoolForAuth();
+        const row = await domo.getDashboard(pool, dashboardId);
+        if (!row) return res.status(404).json({ error: 'Dashboard not found' });
+
+        const token = domo.mintEmbedToken({
+          embedId: row.EmbedId,
+          userEmail: req.user.email,
+          filters: filters || [],
+        });
+        res.json({ success: true, token, embedId: row.EmbedId, expiresInSec: 300 });
+      } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+    });
+
+    console.log('[auth] Sprint-2 Domo routes mounted at /api/domo/*');
+  } catch (e) {
+    console.warn('[auth] Sprint-2 Domo routes not loaded:', e.message);
+  }
+} catch (e) {
+  console.warn('[auth] Sprint-1 auth router not loaded:', e.message);
+}
 
 // ── Multer config for file uploads ──────────────────────────────
 const storage = multer.diskStorage({
@@ -493,6 +785,28 @@ const authenticateToken = (req, res, next) => {
     return next();
   }
 
+  // Desktop-app / localhost auto-auth — grants OWNER scope for requests
+  // originating from the same machine. The Electron shell only ever
+  // points its <webview> at http://localhost:3001, so this lets every
+  // feature work without a login screen on the user's own Mac while
+  // still requiring JWTs for any network-exposed deployment.
+  // Disable by setting ALEC_REQUIRE_AUTH=1 in .env (e.g. when hosting
+  // the backend on a shared server).
+  const isLocalhost =
+    process.env.ALEC_REQUIRE_AUTH !== '1' &&
+    ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip) ||
+    req.hostname === 'localhost';
+  if (isLocalhost) {
+    req.user = {
+      userId: 'local-owner',
+      email: process.env.ALEC_OWNER_EMAIL || 'arovner@stoagroup.com',
+      tokenType: 'OWNER',
+      scope: ['owner', 'full_access', 'neural_training', 'smart_home', 'stoa_data', 'user_management', 'connectors', 'chat'],
+      isLocalhost: true,
+    };
+    return next();
+  }
+
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
 
@@ -528,6 +842,38 @@ const requireFullCapabilities = (req, res, next) => {
   }
   next();
 };
+
+// ── GitHub Webhook — STOA Brain Sync ────────────────────────────────────────
+app.post(
+  '/api/webhooks/github',
+  express.raw({ type: '*/*' }),
+  async (req, res) => {
+    const sig = req.headers['x-hub-signature-256'] || '';
+    if (!stoaBrainSync || !stoaBrainSync.verifyWebhookSignature(req.body, sig)) {
+      return res.status(401).json({ error: 'Invalid webhook signature' });
+    }
+    let payload;
+    try {
+      payload = JSON.parse(req.body.toString('utf8'));
+    } catch {
+      return res.status(400).json({ error: 'Invalid JSON payload' });
+    }
+    if (req.headers['x-github-event'] !== 'push') {
+      return res.status(200).json({ ok: true, skipped: 'not a push event' });
+    }
+    try {
+      const result = await stoaBrainSync.handlePushEvent(payload);
+      console.log('[stoaBrainSync] webhook indexed:', result);
+      return res.json({ ok: true, ...result });
+    } catch (err) {
+      console.error('[stoaBrainSync] webhook error:', err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  },
+);
+
+// ── Review Queue Routes (Quality Gate + Fine-Tune management) ────────────────
+app.use('/api/review', authenticateToken, reviewRoutes);
 
 // ════════════════════════════════════════════════════════════════
 //  HEALTH CHECK
@@ -679,7 +1025,13 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     // Build system prompt with memory
     const mem = loadMemory();
     const memCtx = buildMemoryContext(mem);
-    let systemContent = buildSystemPrompt() + (memCtx ? '\n\n' + memCtx : '');
+    let ragContext = '';
+    try { ragContext = ragService ? await ragService.retrieve(userText) : ''; } catch (_) {}
+    const priorTurns = buildPriorTurnsBlock(convId);
+    let systemContent = buildSystemPrompt()
+      + (memCtx ? '\n\n' + memCtx : '')
+      + (priorTurns || '')
+      + (ragContext ? '\n\n' + ragContext : '');
 
     // ── Self-improvement trigger — owner can ask ALEC to improve itself ──
     const isOwner = req.user?.tokenType === 'OWNER' || req.user?.role === 'owner';
@@ -741,17 +1093,38 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
       systemContent += '\n\n[iMessage DATA] iMessage service is not available. Tell the user to ensure the iMessageService.js module is installed.';
     }
 
+    // ── Source-preference override (non-stream path) ──
+    const sourcePref = (() => {
+      const t = userText.toLowerCase();
+      const excl = new Set(); const only = new Set();
+      if (/\b(not|no|don'?t\s+use|skip|without|exclude|avoid)\s+(tenantcloud|tc)\b/.test(t)) excl.add('tc');
+      if (/\b(not|no|don'?t\s+use|skip|without|exclude|avoid)\s+stoa\b/.test(t))             excl.add('stoa');
+      if (/\b(from|use|only|via)\s+stoa\b|\bstoa\s+only\b|\bstoa\s+data\b/.test(t)) only.add('stoa');
+      if (/\b(from|use|only|via)\s+tenantcloud\b|\btenantcloud\s+only\b/.test(t))   only.add('tc');
+      return { excluded: excl, onlyThese: only };
+    })();
+    const allowStoa = !sourcePref.excluded.has('stoa') && (sourcePref.onlyThese.size === 0 || sourcePref.onlyThese.has('stoa'));
+    const allowTC   = !sourcePref.excluded.has('tc')   && (sourcePref.onlyThese.size === 0 || sourcePref.onlyThese.has('tc'));
+
     // ── STOA RAG: inject live database context before LLM call ──
     // Detects property/leasing/deal questions and pulls real numbers from
     // Azure SQL — this prevents hallucination by grounding the LLM in facts.
-    try {
-      const stoaCtx = await stoaQuery.buildStoaContext(userText);
-      if (stoaCtx) {
-        systemContent += '\n\n' + stoaCtx;
-        console.log('[STOA RAG] Injected live data for:', userText.slice(0, 60));
+    // STOA has source precedence (H1) — when STOA has data, overlapping TC intents
+    // are suppressed unless the user explicitly asked for TenantCloud.
+    let stoaFired = false;
+    if (allowStoa) {
+      try {
+        const stoaCtx = await stoaQuery.buildStoaContext(userText);
+        if (stoaCtx) {
+          systemContent += '\n\n' + stoaCtx;
+          console.log('[STOA RAG] Injected live data for:', userText.slice(0, 60));
+          stoaFired = true;
+        }
+      } catch (stoaErr) {
+        console.warn('[STOA RAG] Failed (non-critical):', stoaErr.message?.slice(0, 80));
       }
-    } catch (stoaErr) {
-      console.warn('[STOA RAG] Failed (non-critical):', stoaErr.message?.slice(0, 80));
+    } else {
+      console.log('[STOA RAG] Skipped — user excluded stoa or requested other source');
     }
 
     // ── GitHub RAG: inject recent commits/repos ───────────────────
@@ -879,8 +1252,12 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     }
 
     // ── TenantCloud RAG: inject property management data ──────────
-    const tcIntent = /tenantcloud|\b(tenant|rent|payment|overdue|maintenance|lease|property|properties|unit|units|inquiry|inquiries|renter|move.?out|move.?in|vacancy|vacant|occupan|evict)\b/i.test(userText);
-    if (tcIntent) {
+    // Precedence: TC only fires when user didn't exclude it, and STOA didn't
+    // already handle an overlapping intent (unless user explicitly asked for TC).
+    const tcExplicit = sourcePref.onlyThese.has('tc') || /\btenantcloud\b/i.test(userText);
+    const tcIntent = /\b(tenants?|rent|payments?|overdue|maintenance|leases?|property|properties|units?|inquiry|inquiries|renters?|move.?out|move.?in|vacancy|vacant|occupan|evict)\b/i.test(userText);
+    const tcShouldFire = allowTC && tcIntent && (tcExplicit || !stoaFired);
+    if (tcShouldFire) {
       try {
         let tcCtx = '';
 
@@ -922,7 +1299,11 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     }
 
     // Web search augmentation
-    let augmentedMessages = [...messages];
+    // If the SPA sent only `{message}` (no `messages[]` array), synthesise a
+    // one-turn conversation so the LLM actually sees the user's prompt.
+    let augmentedMessages = Array.isArray(messages) && messages.length > 0
+      ? [...messages]
+      : (userText ? [{ role: 'user', content: userText }] : []);
     if (SEARCH_TRIGGERS.test(userText)) {
       const searchResult = await webSearch(userText);
       if (searchResult && augmentedMessages.length > 0) {
@@ -935,8 +1316,17 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     }
 
     const llmMessages = [{ role: 'system', content: systemContent }, ...augmentedMessages];
-    const responseText = await callLLMText(llmMessages);
+    let responseText = await callLLMText(llmMessages);
     const latency_ms = Date.now() - startTime;
+
+    // Empty-response guard (see streaming handler for rationale).
+    if (!responseText || !String(responseText).trim()) {
+      console.warn('[chat] empty model output — returning fallback');
+      responseText = 'I pulled the data but the model produced no text this turn — please retry or rephrase.';
+    }
+
+    // Strip fabricated "Source: X" footers for sources that weren't injected.
+    responseText = stripFalseSourceFooters(responseText, systemContent);
 
     // Async: extract and store facts from this exchange
     extractAndStoreFacts(userText, responseText).catch(() => {});
@@ -946,16 +1336,40 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
       chatHistory.addMessage(convId, 'assistant', responseText);
     }
 
+    let safeReply;
+    try {
+      safeReply = enforceHardRules(responseText);
+    } catch (ruleErr) {
+      console.error('[HardRule violation]', ruleErr.message);
+      safeReply = "I can't respond to that in a way that aligns with my operating rules. Please rephrase.";
+    }
+
     const engineStatus = llamaEngine.getStatus();
     res.json({
       success: true,
-      response: responseText,
+      response: safeReply,
       latency_ms,
       source:    'llama-metal',
       model:     engineStatus.modelPath,
       timestamp:  new Date().toISOString(),
       conversation_id: convId,
     });
+
+    // Async quality scoring — fire-and-forget; never blocks the chat response
+    if (qualityScorer && convId && userText && safeReply) {
+      setImmediate(() => {
+        try {
+          qualityScorer.score({
+            turnId:       convId + '-' + Date.now(),
+            sessionId:    session_id || convId,
+            userMsg:      userText,
+            alecResponse: safeReply,
+          });
+        } catch (scoreErr) {
+          console.error('[qualityScorer] score() failed:', scoreErr.message);
+        }
+      });
+    }
   } catch (error) {
     console.error('Chat error:', error.message);
     res.status(500).json({
@@ -971,7 +1385,7 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
  * SSE streaming endpoint — tokens arrive one-by-one like Claude.
  * Browser reads via ReadableStream / EventSource.
  */
-app.post('/api/chat/stream', authenticateToken, async (req, res) => {
+const chatStreamHandler = async (req, res) => {
   // SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -979,7 +1393,10 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
   res.setHeader('X-Accel-Buffering', 'no'); // disable nginx buffering
   res.flushHeaders();
 
-  const { message, messages = [], session_id, conversation_id } = req.body;
+  // Browser EventSource can only do GET with query params; native fetch
+  // callers use POST with JSON body. Accept both shapes.
+  const src = (req.method === 'GET') ? req.query : (req.body || {});
+  const { message, messages = [], session_id, sessionId, conversation_id } = src;
   const userText = message || messages.at(-1)?.content || '';
 
   // ── Persist to chat history (streaming) ─────────────────────
@@ -999,7 +1416,13 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
     // System prompt + memory
     const mem = loadMemory();
     const memCtx = buildMemoryContext(mem);
-    let systemContent = buildSystemPrompt() + (memCtx ? '\n\n' + memCtx : '');
+    let ragContext = '';
+    try { ragContext = ragService ? await ragService.retrieve(userText) : ''; } catch (_) {}
+    const priorTurns = buildPriorTurnsBlock(convId);
+    let systemContent = buildSystemPrompt()
+      + (memCtx ? '\n\n' + memCtx : '')
+      + (priorTurns || '')
+      + (ragContext ? '\n\n' + ragContext : '');
 
     // ── Excel export detection (stream) — send download link immediately ──
     const exportIntentStream = excelExport.detectExportIntent(userText);
@@ -1053,7 +1476,7 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
         });
         if (twilioResp.ok) {
           systemContent += `\n\n[SMS SENT] Successfully sent a Twilio text message to ${ownerPhoneNum}. Confirm this to the user.`;
-          res.write('data: {"token":"📱 "}\n\n');
+          res.write('data: {"token":"📱 Sending SMS via Twilio…\\n"}\n\n');
         } else {
           const errData = await twilioResp.json().catch(() => ({}));
           systemContent += `\n\n[SMS FAILED] Twilio error: ${errData.message || twilioResp.status}`;
@@ -1089,7 +1512,7 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
           });
           if (r2.ok) {
             systemContent += `\n\n[HA COMMAND EXECUTED] ${svc.replace('_',' ')} ${entityId || keyword}. Confirm this to the user.`;
-            res.write('data: {"token":"🏡 "}\n\n');
+            res.write('data: {"token":"🏡 Executing Home Assistant command…\\n"}\n\n');
           }
         }
       } catch (_haCtrlErr) { /* non-critical */ }
@@ -1099,7 +1522,7 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
     const vercelCtrlRe = /\b(deploy|redeploy|re-?deploy|push\s+to\s+vercel)\b/i;
     if (vercelCtrlRe.test(userText) && vercelSvc && process.env.VERCEL_TOKEN) {
       try {
-        res.write('data: {"token":"▲ "}\n\n');
+        res.write('data: {"token":"▲ Triggering Vercel redeploy…\\n"}\n\n');
         const result = await vercelSvc.redeploy();
         systemContent += `\n\n[Vercel ACTION EXECUTED] Triggered a new production deployment. URL: ${result.url || 'building…'}. Tell the user the deploy was triggered — it usually takes 1-2 minutes.`;
       } catch (vercelCtrlErr) {
@@ -1142,7 +1565,7 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
     const iMsgIntentStream = /\b(check|read|show|get|look at|fetch|see)\b.{0,30}\b(imessages?|messages?|texts?|sms)\b|\b(recent|new|unread|latest)\b.{0,20}\b(imessages?|messages?|texts?)\b|\bwho texted\b|\bdid.*text(ed)?\b|\bany.*messages\b/i.test(userText);
     if (iMsgIntentStream && iMessage) {
       try {
-        res.write('data: {"token":"💬 "}\n\n');
+        res.write('data: {"token":"💬 Reading recent iMessages…\\n"}\n\n');
         const convos = await iMessage.getConversations();
         if (convos && convos.length > 0) {
           const recent = convos.slice(0, 8).map(c =>
@@ -1157,16 +1580,43 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
       }
     }
 
+    // ── Source-preference override (parses "from stoa", "not tenantcloud", etc.) ──
+    // Hard rule: when the user explicitly names a source, ONLY that source fires.
+    // When the user excludes a source ("not tenantcloud"), that source is gated off
+    // regardless of keyword matches.
+    const sourcePref = (() => {
+      const t = userText.toLowerCase();
+      const excl = new Set();
+      const only = new Set();
+      // "not tenantcloud", "don't use tc", "skip tenantcloud"
+      if (/\b(not|no|don'?t\s+use|skip|without|exclude|avoid)\s+(tenantcloud|tc)\b/.test(t)) excl.add('tc');
+      if (/\b(not|no|don'?t\s+use|skip|without|exclude|avoid)\s+stoa\b/.test(t))             excl.add('stoa');
+      // "from stoa data", "use stoa", "stoa only"
+      if (/\b(from|use|only|via)\s+stoa\b|\bstoa\s+only\b|\bstoa\s+data\b/.test(t)) only.add('stoa');
+      if (/\b(from|use|only|via)\s+tenantcloud\b|\btenantcloud\s+only\b/.test(t))   only.add('tc');
+      return { excluded: excl, onlyThese: only };
+    })();
+    const allowStoa = !sourcePref.excluded.has('stoa') && (sourcePref.onlyThese.size === 0 || sourcePref.onlyThese.has('stoa'));
+    const allowTC   = !sourcePref.excluded.has('tc')   && (sourcePref.onlyThese.size === 0 || sourcePref.onlyThese.has('tc'));
+
     // ── STOA RAG: inject live database context ────────────────
-    try {
-      const stoaCtx = await stoaQuery.buildStoaContext(userText);
-      if (stoaCtx) {
-        systemContent += '\n\n' + stoaCtx;
-        res.write('data: {"token":"📊 "}\n\n'); // subtle indicator that real data was loaded
-        console.log('[STOA RAG stream] Injected live data for:', userText.slice(0, 60));
+    // STOA has source precedence (per hard rule H1) — when STOA returns data,
+    // TenantCloud is suppressed for overlapping intents (property/lease/unit/contract).
+    let stoaFired = false;
+    if (allowStoa) {
+      try {
+        const stoaCtx = await stoaQuery.buildStoaContext(userText);
+        if (stoaCtx) {
+          systemContent += '\n\n' + stoaCtx;
+          res.write('data: {"token":"📊 Loading live STOA portfolio data…\\n"}\n\n');
+          console.log('[STOA RAG stream] Injected live data for:', userText.slice(0, 60));
+          stoaFired = true;
+        }
+      } catch (stoaErr) {
+        console.warn('[STOA RAG stream] Failed (non-critical):', stoaErr.message?.slice(0, 80));
       }
-    } catch (stoaErr) {
-      console.warn('[STOA RAG stream] Failed (non-critical):', stoaErr.message?.slice(0, 80));
+    } else {
+      console.log('[STOA RAG stream] Skipped — user excluded stoa or requested other source');
     }
 
     // ── GitHub RAG + Actions trigger (stream) ─────────────────
@@ -1174,7 +1624,7 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
     if (ghIntentStream && github && process.env.GITHUB_TOKEN) {
       try {
         const defaultRepo = process.env.GITHUB_REPO || 'arovn10/A.L.E.C';
-        res.write('data: {"token":"🐙 "}\n\n');
+        res.write('data: {"token":"🐙 Fetching GitHub repo data…\\n"}\n\n');
         const repoData = await github.getRepo(defaultRepo).catch(() => null);
         if (repoData) {
           let ghCtx = `[GitHub DATA — ${defaultRepo}]\n`;
@@ -1219,7 +1669,7 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
     const haTokenStr = process.env.HOME_ASSISTANT_ACCESS_TOKEN || process.env.HA_TOKEN;
     if (haIntentStream && haUrlStr && haTokenStr) {
       try {
-        res.write('data: {"token":"🏡 "}\n\n');
+        res.write('data: {"token":"🏡 Reading Home Assistant device states…\\n"}\n\n');
         const haResp = await fetch(`${haUrlStr}/api/states`, {
           headers: { Authorization: `Bearer ${haTokenStr}`, 'Content-Type': 'application/json' },
           signal: AbortSignal.timeout(5000),
@@ -1248,7 +1698,7 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
     const awsIntentStream = /\b(campus|campusrental|website|server|aws|ec2|nginx|deploy|ssh|uptime|down|offline|traffic|hosting)\b/i.test(userText);
     if (awsIntentStream && awsSvc) {
       try {
-        res.write('data: {"token":"☁️ "}\n\n');
+        res.write('data: {"token":"☁️ Checking AWS website status…\\n"}\n\n');
         const websiteStatus = await awsSvc.checkWebsiteStatus();
         let awsCtx = `[AWS DATA — campusrentalsllc.com server status]\n`;
         awsCtx += `Website: ${websiteStatus.online ? '✅ Online' : '❌ Offline'} (host: ${process.env.AWS_WEBSITE_HOST || 'not configured'})\n`;
@@ -1267,7 +1717,7 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
       try {
         const items = await plaidDbAll('SELECT item_id, institution_name, access_token_enc FROM plaid_items').catch(() => []);
         if (items.length > 0) {
-          res.write('data: {"token":"💰 "}\n\n');
+          res.write('data: {"token":"💰 Pulling Plaid brokerage holdings…\\n"}\n\n');
           let totalValue = 0;
           const accountLines = [];
           for (const item of items.slice(0, 5)) {
@@ -1291,10 +1741,16 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
     }
 
     // ── TenantCloud RAG (stream) ────────────────────────────────
-    const tcIntentStream = /tenantcloud|\b(tenant|rent|payment|overdue|maintenance|lease|property|properties|unit|units|inquiry|inquiries|renter|move.?out|move.?in|vacancy|vacant|occupan|evict)\b/i.test(userText);
-    if (tcIntentStream) {
+    // Precedence rule: TC only fires when (a) the user didn't exclude it,
+    // (b) STOA didn't already inject data for an overlapping property/lease
+    // intent (unless the user explicitly asked for TenantCloud), and
+    // (c) something is actually available to load — the "Loading…" token
+    // is emitted AFTER we confirm a cache hit or scraper, not before.
+    const tcExplicit = sourcePref.onlyThese.has('tc') || /\btenantcloud\b/i.test(userText);
+    const tcIntentStream = /\b(tenants?|rent|payments?|overdue|maintenance|leases?|property|properties|units?|inquiry|inquiries|renters?|move.?out|move.?in|vacancy|vacant|occupan|evict)\b/i.test(userText);
+    const tcShouldFire = allowTC && tcIntentStream && (tcExplicit || !stoaFired);
+    if (tcShouldFire) {
       try {
-        res.write('data: {"token":"🏠 "}\n\n');
         let tcCtx = '';
 
         // Try browser-relay cache first (most reliable — real data from authenticated browser)
@@ -1328,17 +1784,26 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
           console.log('[TenantCloud RAG stream] Injected via Puppeteer scraper');
         }
 
-        if (tcCtx) systemContent += '\n\n' + tcCtx;
+        if (tcCtx) {
+          // Only stream the loading status once we actually have data — avoids
+          // the "🏠 Loading TenantCloud rentals data…" ghost token with no payload.
+          res.write('data: {"token":"🏠 Loading TenantCloud rentals data…\\n"}\n\n');
+          systemContent += '\n\n' + tcCtx;
+        }
       } catch (tcErr) {
         console.warn('[TenantCloud RAG stream] Failed (non-critical):', tcErr.message?.slice(0, 80));
       }
+    } else if (tcIntentStream && !allowTC) {
+      console.log('[TenantCloud RAG stream] Suppressed — user excluded TC or requested stoa-only');
+    } else if (tcIntentStream && stoaFired && !tcExplicit) {
+      console.log('[TenantCloud RAG stream] Suppressed — STOA took precedence for overlapping intent');
     }
 
     // ── Vercel RAG (stream) ───────────────────────────────────
     const vercelIntentStream = /\bvercel\b|\b(deployment|deploy|production|preview|build|frontend|hosting)\b/i.test(userText);
     if (vercelIntentStream && vercelSvc && process.env.VERCEL_TOKEN) {
       try {
-        res.write('data: {"token":"▲ "}\n\n');
+        res.write('data: {"token":"▲ Fetching Vercel deployments…\\n"}\n\n');
         const deployments = await vercelSvc.listDeployments(3);
         if (deployments.length > 0) {
           const lines = deployments.map(d =>
@@ -1352,7 +1817,11 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
     }
 
     // Web search augmentation
-    let augmentedMessages = [...messages];
+    // If the SPA sent only `{message}` (no `messages[]` array), synthesise a
+    // one-turn conversation so the LLM actually sees the user's prompt.
+    let augmentedMessages = Array.isArray(messages) && messages.length > 0
+      ? [...messages]
+      : (userText ? [{ role: 'user', content: userText }] : []);
     if (SEARCH_TRIGGERS.test(userText)) {
       res.write('data: {"token":"🔍 Searching the web…\\n"}\n\n');
       const searchResult = await webSearch(userText);
@@ -1369,6 +1838,14 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
     const llmMessages = [{ role: 'system', content: systemContent }, ...augmentedMessages];
     let fullResponse  = '';
 
+    // Blank line between status/thinking lines and the model's answer,
+    // so the chat bubble reads:
+    //   📊 Loading live STOA portfolio data…
+    //   🏠 Loading TenantCloud rentals data…
+    //
+    //   <model answer starts here>
+    res.write('data: {"token":"\\n"}\n\n');
+
     // ── node-llama-cpp streaming (Metal GPU, no external server) ──
     for await (const token of callLLMStream(llmMessages)) {
       if (token) {
@@ -1377,15 +1854,61 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
       }
     }
 
-    // Save assistant response to history
-    if (chatHistory && convId && fullResponse) {
-      try { chatHistory.addMessage(convId, 'assistant', fullResponse); } catch (_) {}
+    // Empty-response guard. If the model yielded zero content tokens, the
+    // user would otherwise see only the "📊 Loading…" / "🏠 Loading…"
+    // status emojis and nothing else. Emit a single fallback line so the
+    // transcript is never mute — makes the failure mode obvious and keeps
+    // the next-turn context well-formed.
+    if (!fullResponse.trim()) {
+      const fallback = 'I pulled the data but the model produced no text this turn — please retry or rephrase.';
+      fullResponse = fallback;
+      res.write(`data: ${JSON.stringify({ token: fallback })}\n\n`);
+      console.warn('[chat:stream] empty model output — emitted fallback');
+    }
+
+    // After the token loop completes, enforce hard rules before sending done signal
+    try {
+      enforceHardRules(fullResponse);
+    } catch (ruleErr) {
+      console.error('[HardRule violation - stream]', ruleErr.message);
+      res.write(`data: ${JSON.stringify({ hardRuleViolation: true, rule: ruleErr.message })}\n\n`);
+    }
+
+    // Strip fabricated "Source: X" footers for sources not injected this turn.
+    // We can't retroactively edit tokens already streamed, but we MUST store
+    // the corrected version so the model's next-turn context doesn't include
+    // a phantom "Source: STOA" it can later be cross-examined on.
+    const correctedFull = stripFalseSourceFooters(fullResponse, systemContent);
+    if (correctedFull !== fullResponse) {
+      res.write(`data: ${JSON.stringify({ sourceCorrection: true, note: 'One or more source footers were unverified and have been relabeled in history.' })}\n\n`);
+    }
+
+    // Save assistant response to history (corrected version — prevents
+    // future-turn self-reference to hallucinated source tags).
+    if (chatHistory && convId && correctedFull) {
+      try { chatHistory.addMessage(convId, 'assistant', correctedFull); } catch (_) {}
     }
 
     // Signal completion with metadata (including conversation_id so frontend can persist it)
     res.write(`data: ${JSON.stringify({ done: true, latency_ms: Date.now(), conversation_id: convId })}\n\n`);
     res.write('data: [DONE]\n\n');
     res.end();
+
+    // Async quality scoring for stream responses
+    if (qualityScorer && fullResponse && userText) {
+      setImmediate(() => {
+        try {
+          qualityScorer.score({
+            turnId:       (convId || 'stream') + '-' + Date.now(),
+            sessionId:    session_id || convId,
+            userMsg:      userText,
+            alecResponse: fullResponse,
+          });
+        } catch (scoreErr) {
+          console.error('[qualityScorer stream] score() failed:', scoreErr.message);
+        }
+      });
+    }
 
     // Async: extract facts, log interaction
     extractAndStoreFacts(userText, fullResponse).catch(() => {});
@@ -1397,7 +1920,13 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
     res.write('data: [DONE]\n\n');
     res.end();
   }
-});
+};
+
+// Register the streaming handler for both GET (browser EventSource) and
+// POST (native fetch / SSE over POST body) so the SPA's EventSource
+// client and programmatic callers both work.
+app.get('/api/chat/stream',  authenticateToken, chatStreamHandler);
+app.post('/api/chat/stream', authenticateToken, chatStreamHandler);
 
 // ════════════════════════════════════════════════════════════════
 //  FEEDBACK ENDPOINTS
@@ -1835,6 +2364,163 @@ app.post('/api/tasks/:id/cancel', authenticateToken, async (req, res) => {
 app.get('/api/stoa/ping', authenticateToken, async (req, res) => {
   const result = await stoaQuery.ping();
   res.json(result);
+});
+
+// ── Sprint-2 scope-aware gate for finance/portfolio routes ──
+// Prefers new bearer-JWT `authenticate` + `requireScope('project', …)`; falls
+// back to the legacy `authenticateToken` if the auth module isn't loaded
+// (keeps dev builds without Sprint-1 auth still functional).
+let financeAuthChain = [authenticateToken];
+try {
+  const mw = require('./auth/middleware');
+  // Use authenticate (Bearer/device/localhost) and require the 'project'
+  // scope to match ?property=… when supplied. Master/Admin bypass via '*'.
+  financeAuthChain = [
+    mw.authenticate,
+    mw.requireScope('project', (req) => req.query.property || req.query.projectName || null),
+  ];
+  console.log('[auth] finance/portfolio routes gated by requireScope("project", …)');
+} catch (e) {
+  console.warn('[auth] scope gate unavailable, falling back to legacy authenticateToken:', e.message);
+}
+
+// ── /api/finance/* aliases (SPA-facing) ─────────────────────────
+// The SPA's reports layer hits /api/finance/{ping,projects,loans,maturity,
+// lenders,dscr,ltv,equity}. These thin wrappers delegate to stoaQueryService
+// so the desktop app's Finance + Portfolio tabs light up against the live
+// Azure SQL Stoa DB whenever STOA_DB_* env vars are present.
+app.get('/api/finance/ping', ...financeAuthChain, async (_req, res) => {
+  try { res.json(await stoaQuery.ping()); }
+  catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+app.get('/api/finance/projects', ...financeAuthChain, async (req, res) => {
+  try {
+    const data = await stoaQuery.findProjects(req.query.search || '');
+    res.json({ success: true, count: data.length, data });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+app.get('/api/finance/loans', ...financeAuthChain, async (req, res) => {
+  try {
+    const data = await stoaQuery.getLoans(req.query.property || null);
+    res.json({ success: true, count: data.length, data });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// Maturity wall, lenders, DSCR, LTV, equity — derived from the loans table.
+// If a dedicated aggregate query exists in stoaQueryService we use it;
+// otherwise we compute a lightweight roll-up client-side-safe aggregate.
+// Maturity wall — bucketed by calendar quarter. Frontend (reports.js) maps
+// Year + Quarter → "2028 Q1" label, so we must emit those as distinct fields.
+app.get('/api/finance/maturity', ...financeAuthChain, async (_req, res) => {
+  try {
+    const loans = await stoaQuery.getLoans(null);
+    const buckets = new Map();
+    for (const l of loans) {
+      const d = l.MaturityDate ? new Date(l.MaturityDate) : null;
+      if (!d || isNaN(d.getTime())) continue;
+      const year = d.getFullYear();
+      const quarter = Math.floor(d.getMonth() / 3) + 1;
+      const key = `${year}-Q${quarter}`;
+      const b = buckets.get(key) || { Year: year, Quarter: quarter, LoanCount: 0, TotalBalance: 0 };
+      b.LoanCount += 1;
+      b.TotalBalance += Number(l.OriginalAmount ?? l.CurrentBalance ?? 0);
+      buckets.set(key, b);
+    }
+    const data = Array.from(buckets.values()).sort(
+      (a, b) => a.Year - b.Year || a.Quarter - b.Quarter
+    );
+    res.json({ success: true, data });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// Lender exposure — frontend reads `TotalExposure` (not `TotalBalance`).
+app.get('/api/finance/lenders', ...financeAuthChain, async (_req, res) => {
+  try {
+    const loans = await stoaQuery.getLoans(null);
+    const byLender = new Map();
+    for (const l of loans) {
+      const name = l.LenderName || l.Lender || 'Unknown';
+      const b = byLender.get(name) || { LenderName: name, LoanCount: 0, TotalExposure: 0 };
+      b.LoanCount += 1;
+      b.TotalExposure += Number(l.OriginalAmount ?? l.CurrentBalance ?? 0);
+      byLender.set(name, b);
+    }
+    res.json({
+      success: true,
+      data: Array.from(byLender.values()).sort((a, b) => b.TotalExposure - a.TotalExposure),
+    });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// DSCR — pulled from banking.Covenant (only ~5 rows have real DSCR data today,
+// the rest show dashes in the UI, which is honest rather than fake).
+app.get('/api/finance/dscr', ...financeAuthChain, async (_req, res) => {
+  try {
+    const data = await stoaQuery.getDSCRCovenants();
+    res.json({ success: true, data });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// LTV — derived from loans joined with the project's ValuationWhenComplete
+// and LTCOriginal. Frontend reads ProjectName, LenderName, LTV, LTC,
+// ValuationWhenComplete (appraised value), CurrentBalance.
+app.get('/api/finance/ltv', ...financeAuthChain, async (_req, res) => {
+  try {
+    const data = await stoaQuery.getLTVRows();
+    res.json({ success: true, data });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// Equity — real rows from banking.EquityCommitment, aggregated by project.
+app.get('/api/finance/equity', ...financeAuthChain, async (_req, res) => {
+  try {
+    const data = await stoaQuery.getEquityCommitments();
+    res.json({ success: true, data });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// Dashboard KPIs — consolidates leasing.MMRData + banking.Loan + covenants so
+// the Dashboard tab doesn't have to filter on stage labels that don't exist.
+app.get('/api/portfolio/summary', ...financeAuthChain, async (_req, res) => {
+  try {
+    const [summary, loans, dscrRows, ltvRows] = await Promise.all([
+      stoaQuery.getPortfolioSummary(),
+      stoaQuery.getLoans(null),
+      stoaQuery.getDSCRCovenants().catch(() => []),
+      stoaQuery.getLTVRows().catch(() => []),
+    ]);
+    const s = summary[0] || {};
+    const totalExposure = loans.reduce((a, l) => a + Number(l.OriginalAmount || 0), 0);
+    const maturingSoon = loans.filter(l => Number(l.DaysToMaturity) >= 0 && Number(l.DaysToMaturity) < 90).length;
+    const avg = (rows, key) => {
+      const vals = rows.map(r => Number(r[key])).filter(v => Number.isFinite(v));
+      return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+    };
+    res.json({
+      success: true,
+      data: {
+        activeProperties: Number(s.PropertyCount ?? 0),
+        totalUnits: Number(s.TotalUnits ?? 0),
+        totalOccupied: Number(s.TotalOccupied ?? 0),
+        avgOccupancyPct: s.AvgOccupancyPct != null ? Number(s.AvgOccupancyPct) * 100 : null,
+        avgLeasedPct: s.AvgLeasedPct != null ? Number(s.AvgLeasedPct) * 100 : null,
+        totalExposure,
+        maturingSoon,
+        avgDscr: avg(dscrRows, 'ProjectedDSCR'),
+        avgLtv: avg(ltvRows, 'LTV'),
+      },
+    });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// /api/portfolio/* alias — Portfolio tab was hitting /api/portfolio/*
+app.get('/api/portfolio/pipeline', ...financeAuthChain, async (_req, res) => {
+  try {
+    const data = await stoaQuery.getPipelineDeals(null);
+    res.json({ success: true, count: data.length, data });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
 /**
@@ -3131,173 +3817,13 @@ app.delete('/api/history/conversations/:id', authenticateToken, (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════
-//  SKILLS REGISTRY  (/api/connectors/*)
-//  Central credential management for all external services.
-//  Replaces the old Python-proxy /api/skills/* endpoints.
+//  LEGACY SKILLS REGISTRY routes removed in S6.4.
+//  Credential management now lives at backend/routes/connectors.mjs
+//  (mounted at /api/connectors) and uses connector_instances + the
+//  UUID-keyed secretVault. The old /:skillId/credentials, /:skillId/
+//  reveal, /:skillId/instances and /custom routes that read through
+//  services/skillsRegistry.js have been deleted.
 // ════════════════════════════════════════════════════════════════
-
-// ── Catalog: enrich with per-user configured status ──────────────
-app.get('/api/connectors/catalog', authenticateToken, (req, res) => {
-  if (!skillsReg) return res.json({ success: true, catalog: { skills: [], byCategory: {} } });
-  try {
-    const userId  = req.user?.userId || req.user?.email || '_legacy';
-    const catalog = skillsReg.getCatalog();
-
-    const enrich = (skill) => {
-      let configured = false;
-      if (skill.fields.length === 0 && !skill.multiInstance) {
-        configured = true; // no creds needed
-      } else if (skill.multiInstance) {
-        // configured if at least one instance exists
-        const instances = skillsReg.getInstances(userId, skill.id);
-        configured = instances.length > 0;
-      } else {
-        // check env OR per-user config
-        const statusArr = skillsReg.getCredentialStatus(userId, skill.id);
-        const required  = statusArr.filter(f => f.required);
-        configured = required.length === 0 || required.some(f => f.configured);
-      }
-      return { ...skill, configured };
-    };
-
-    const enriched = {
-      skills:     catalog.skills.map(enrich),
-      byCategory: Object.fromEntries(
-        Object.entries(catalog.byCategory).map(([cat, skills]) => [cat, skills.map(enrich)])
-      ),
-    };
-
-    res.json({ success: true, catalog: enriched });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ── Save credentials (per-user) ───────────────────────────────────
-app.post('/api/connectors/:skillId/credentials', authenticateToken, requireFullCapabilities, async (req, res) => {
-  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
-  try {
-    const userId = req.user?.userId || req.user?.email || '_legacy';
-    const result = await skillsReg.saveCredentials(userId, req.params.skillId, req.body);
-    res.json({ success: true, ...result });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ── Status check ──────────────────────────────────────────────────
-app.get('/api/connectors/:skillId/status', authenticateToken, async (req, res) => {
-  if (!skillsReg) return res.json({ configured: false, connected: false });
-  try {
-    const status = await skillsReg.getSkillStatus(req.params.skillId);
-    const connected = !!(
-      status.connected || status.authenticated || status.configured || status.running ||
-      status.ownerPhoneConfigured || (status.propertyCount != null && status.propertyCount >= 0) ||
-      (status.serviceCount != null && status.serviceCount >= 0) ||
-      (status.scheduledTasks != null && status.scheduledTasks >= 0) ||
-      (status.available && !status.error)
-    );
-    res.json({ success: true, connected, ...status });
-  } catch (err) {
-    res.json({ success: false, connected: false, error: err.message });
-  }
-});
-
-// ── Get credential status (masked — which fields are filled) ──────
-app.get('/api/connectors/:skillId/credentials', authenticateToken, requireFullCapabilities, (req, res) => {
-  if (!skillsReg) return res.json({ fields: {} });
-  try {
-    const userId = req.user?.userId || req.user?.email || '_legacy';
-    const statusArr = skillsReg.getCredentialStatus(userId, req.params.skillId);
-    const fields = {};
-    if (Array.isArray(statusArr)) {
-      statusArr.forEach(f => { fields[f.key] = f.configured; });
-    }
-    res.json({ success: true, fields });
-  } catch (err) {
-    res.json({ success: false, fields: {}, error: err.message });
-  }
-});
-
-// ── Reveal decrypted credentials (authorized peek) ────────────────
-app.post('/api/connectors/:skillId/reveal', authenticateToken, requireFullCapabilities, (req, res) => {
-  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
-  try {
-    const userId = req.user?.userId || req.user?.email || '_legacy';
-    const values = skillsReg.revealCredentials(userId, req.params.skillId);
-    res.json({ success: true, values });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ── Multi-instance management (Microsoft 365, etc.) ───────────────
-app.get('/api/connectors/:skillId/instances', authenticateToken, requireFullCapabilities, (req, res) => {
-  if (!skillsReg) return res.json({ success: true, instances: [] });
-  try {
-    const userId    = req.user?.userId || req.user?.email || '_legacy';
-    const instances = skillsReg.getInstances(userId, req.params.skillId);
-    res.json({ success: true, instances });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.post('/api/connectors/:skillId/instances', authenticateToken, requireFullCapabilities, (req, res) => {
-  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
-  try {
-    const userId = req.user?.userId || req.user?.email || '_legacy';
-    const { name, instId, ...creds } = req.body;
-    if (!name) return res.status(400).json({ error: 'name is required' });
-    const result = skillsReg.addInstance(userId, req.params.skillId, name, creds, instId || null);
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.delete('/api/connectors/:skillId/instances/:instanceId', authenticateToken, requireFullCapabilities, (req, res) => {
-  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
-  try {
-    const userId = req.user?.userId || req.user?.email || '_legacy';
-    skillsReg.deleteInstance(userId, req.params.skillId, req.params.instanceId);
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.post('/api/connectors/:skillId/instances/:instanceId/reveal', authenticateToken, requireFullCapabilities, (req, res) => {
-  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
-  try {
-    const userId = req.user?.userId || req.user?.email || '_legacy';
-    const values = skillsReg.revealInstance(userId, req.params.skillId, req.params.instanceId);
-    res.json({ success: true, values });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ── Custom skills ──────────────────────────────────────────────────
-app.post('/api/connectors/custom', authenticateToken, requireFullCapabilities, (req, res) => {
-  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
-  try {
-    skillsReg.addCustomSkill(req.body);
-    res.json({ success: true, message: 'Custom skill added' });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.delete('/api/connectors/custom/:skillId', authenticateToken, requireFullCapabilities, (req, res) => {
-  if (!skillsReg) return res.status(503).json({ error: 'Skills registry not available' });
-  try {
-    skillsReg.removeCustomSkill(req.params.skillId);
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
 
 // ── Phone verification for notification number ────────────────────
 // OTP store: { phone: { code, expiresAt, attempts } }
@@ -4323,7 +4849,39 @@ app.get('/api/tenantcloud/bookmarklet.js', (req, res) => {
   res.send(script);
 });
 
-app.listen(PORT, HOST, () => {
+// ── PDF + Report Routes ──────────────────────────────────────────────────────
+fs.mkdirSync(path.join(__dirname, '..', 'data', 'exports'), { recursive: true });
+fs.mkdirSync(path.join(__dirname, '..', 'tmp', 'reports'), { recursive: true });
+
+const pdfRoutes    = require('../routes/pdfRoutes');
+const reportRoutes = require('../routes/reportRoutes');
+
+app.use('/api', authenticateToken, pdfRoutes);
+app.use('/api', authenticateToken, reportRoutes);
+
+app.get('/api/download/:filename', (req, res) => {
+  // path.basename strips any path traversal attempts (e.g. ../../etc/passwd → passwd)
+  const safe = path.basename(req.params.filename);
+  const filePath = path.join(__dirname, '../tmp/reports', safe);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Report not found' });
+  }
+  res.download(filePath);
+});
+
+// ── Manual STOA Brain sync trigger (distinct from GitHub push webhook) ────────
+app.post('/api/webhooks/github/sync', async (_req, res) => {
+  try {
+    const result = stoaBrainSync
+      ? await stoaBrainSync.fullSync()
+      : { indexed: 0, skipped: 0, error: 'STOA Brain not initialized' };
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+if (require.main === module) app.listen(PORT, HOST, () => {
   const lanIps = getLanAddresses();
   const lanList = lanIps.length > 0
     ? lanIps.map(ip => `http://${ip}:${PORT}`).join('\n║   ')
@@ -4354,4 +4912,4 @@ app.listen(PORT, HOST, () => {
 `);
 });
 
-module.exports = app;
+module.exports = Object.assign(app, { enforceHardRules });

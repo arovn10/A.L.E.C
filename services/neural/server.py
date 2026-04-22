@@ -6,6 +6,7 @@ training, feedback, health, tasks, stoa, auth, and metrics APIs.
 Port 8000 by default. Called by the Node.js backend on localhost.
 """
 
+import asyncio
 import os
 import uuid
 import time
@@ -1828,6 +1829,26 @@ def drive_cycle():
         lambda task_info=None: drive.run_drive_cycle(),
     )
     return {"success": True, "task_id": task_id}
+
+
+# ── RAG Embedding ─────────────────────────────────────────────────────────────
+class EmbedRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=8192)
+
+@app.post("/embed")
+async def embed_text(req: EmbedRequest):
+    """Return nomic-embed-text-v1.5 vector for RAG retrieval.
+
+    Returns:
+        {"vector": [float, ...], "dim": 768}
+    """
+    try:
+        from ragPipeline import get_embedding
+        vector = await asyncio.to_thread(get_embedding, req.text)
+        return {"vector": vector, "dim": len(vector)}
+    except Exception as e:
+        logger.error(f"[embed] error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ══════════════════════════════════════════════════════════════════

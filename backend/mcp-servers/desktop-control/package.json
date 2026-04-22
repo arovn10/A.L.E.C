@@ -1,0 +1,11 @@
+{
+  "name": "@alec/desktop-control-mcp",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.mjs",
+  "private": true,
+  "description": "Local MCP stdio server proxying desktop-control primitives to /api/desktop/actions/:primitive",
+  "bin": {
+    "alec-desktop-control-mcp": "index.mjs"
+  }
+}
