@@ -608,10 +608,10 @@ try {
   console.log('[auth] Sprint-1 routes mounted at /api/auth and /api/admin');
 
   // ── Connectors v2: SQLite bootstrap + /api/orgs, /api/connectors, /api/mcp ──
-  // Gated on ALEC_CONNECTORS_V2=1 so production stays on the legacy surface
-  // until S6 lands. runBootstrap opens data/alec.db, applies better-sqlite3
-  // migrations, and (when the flag is on) seeds orgs + catalog.
-  if (process.env.ALEC_CONNECTORS_V2 === '1') {
+  // Default: ON. Set ALEC_CONNECTORS_V2=0 to force the legacy surface.
+  // runBootstrap opens data/alec.db, applies better-sqlite3 migrations, and
+  // seeds orgs + catalog.
+  if (process.env.ALEC_CONNECTORS_V2 !== '0') {
     runBootstrap()
       .then(async (alecDb) => {
         const { orgsRouter }        = await import('./routes/orgs.mjs');
@@ -1319,6 +1319,12 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     let responseText = await callLLMText(llmMessages);
     const latency_ms = Date.now() - startTime;
 
+    // Empty-response guard (see streaming handler for rationale).
+    if (!responseText || !String(responseText).trim()) {
+      console.warn('[chat] empty model output — returning fallback');
+      responseText = 'I pulled the data but the model produced no text this turn — please retry or rephrase.';
+    }
+
     // Strip fabricated "Source: X" footers for sources that weren't injected.
     responseText = stripFalseSourceFooters(responseText, systemContent);
 
@@ -1846,6 +1852,18 @@ const chatStreamHandler = async (req, res) => {
         fullResponse += token;
         res.write(`data: ${JSON.stringify({ token })}\n\n`);
       }
+    }
+
+    // Empty-response guard. If the model yielded zero content tokens, the
+    // user would otherwise see only the "📊 Loading…" / "🏠 Loading…"
+    // status emojis and nothing else. Emit a single fallback line so the
+    // transcript is never mute — makes the failure mode obvious and keeps
+    // the next-turn context well-formed.
+    if (!fullResponse.trim()) {
+      const fallback = 'I pulled the data but the model produced no text this turn — please retry or rephrase.';
+      fullResponse = fallback;
+      res.write(`data: ${JSON.stringify({ token: fallback })}\n\n`);
+      console.warn('[chat:stream] empty model output — emitted fallback');
     }
 
     // After the token loop completes, enforce hard rules before sending done signal
