@@ -18,14 +18,14 @@ import DesktopTab from './DesktopTab.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { ToastProvider } from '../../components/ui/Toast.jsx';
 
-// Vite exposes env vars via import.meta.env.VITE_*; fall back to a runtime
-// flag (window.__ALEC_FLAGS) so the desktop shell can toggle too.
+// Connectors v2 is now the default. Set VITE_ALEC_CONNECTORS_V2=0 or
+// window.__ALEC_FLAGS.connectorsV2 = false to force the legacy-only shell.
 function isConnectorsV2() {
   try {
-    if (import.meta?.env?.VITE_ALEC_CONNECTORS_V2 === '1') return true;
+    if (import.meta?.env?.VITE_ALEC_CONNECTORS_V2 === '0') return false;
   } catch { /* import.meta not present in some test envs */ }
-  if (typeof window !== 'undefined' && window.__ALEC_FLAGS?.connectorsV2) return true;
-  return false;
+  if (typeof window !== 'undefined' && window.__ALEC_FLAGS?.connectorsV2 === false) return false;
+  return true;
 }
 
 function isElectron() {
