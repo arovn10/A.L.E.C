@@ -50,7 +50,7 @@ The spec's `conversation_id`/`factual_accuracy`/etc. map to these real column na
 
 ### Step 1: Write the failing test first
 
-- [ ] Create `tests/qualityScorer.test.js`:
+- [x] Create `tests/qualityScorer.test.js`:
 
 ```javascript
 'use strict';
@@ -146,7 +146,7 @@ test('score() does not insert into review_queue when score < 0.40', () => {
 });
 ```
 
-- [ ] Run test — expect 6 failures (module not found):
+- [x] Run test — expect 6 failures (module not found):
 
 ```bash
 node_modules/.bin/jest tests/qualityScorer.test.js --forceExit
@@ -160,7 +160,7 @@ Tests:  6 failed
 
 ### Step 2: Implement `services/qualityScorer.js`
 
-- [ ] Create `/Users/alec/Desktop/App Development/A.L.E.C/services/qualityScorer.js`:
+- [x] Create `/Users/alec/Desktop/App Development/A.L.E.C/services/qualityScorer.js`:
 
 ```javascript
 'use strict';
@@ -333,7 +333,7 @@ module.exports = QualityScorer;
 
 ### Step 3: Run tests — expect 6 passing
 
-- [ ] Run:
+- [x] Run:
 
 ```bash
 node_modules/.bin/jest tests/qualityScorer.test.js --forceExit
@@ -370,7 +370,7 @@ Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
 
 ### Step 1: Write the failing test first
 
-- [ ] Create `tests/reviewRoutes.test.js`:
+- [x] Create `tests/reviewRoutes.test.js`:
 
 ```javascript
 'use strict';
@@ -437,13 +437,13 @@ test('GET /api/review/finetune/status returns latest job row or empty', async ()
 });
 ```
 
-- [ ] Install supertest if not already present (check `node_modules/supertest`):
+- [x] Install supertest if not already present (check `node_modules/supertest`):
 
 ```bash
 ls node_modules/supertest 2>/dev/null || npm install --save-dev supertest
 ```
 
-- [ ] Run test — expect 4 failures (module not found):
+- [x] Run test — expect 4 failures (module not found):
 
 ```bash
 node_modules/.bin/jest tests/reviewRoutes.test.js --forceExit
@@ -451,7 +451,7 @@ node_modules/.bin/jest tests/reviewRoutes.test.js --forceExit
 
 ### Step 2: Implement `routes/reviewRoutes.js`
 
-- [ ] Create `/Users/alec/Desktop/App Development/A.L.E.C/routes/reviewRoutes.js`:
+- [x] Create `/Users/alec/Desktop/App Development/A.L.E.C/routes/reviewRoutes.js`:
 
 ```javascript
 'use strict';
@@ -620,7 +620,7 @@ module.exports = router;
 
 ### Step 3: Run tests — expect 4 passing
 
-- [ ] Run:
+- [x] Run:
 
 ```bash
 node_modules/.bin/jest tests/reviewRoutes.test.js --forceExit
@@ -661,7 +661,7 @@ The configurable threshold (default 500, overridable for tests) prevents trigger
 
 ### Step 1: Write the failing test first
 
-- [ ] Create `tests/fineTuneQueue.test.js`:
+- [x] Create `tests/fineTuneQueue.test.js`:
 
 ```javascript
 'use strict';
@@ -765,7 +765,7 @@ test('maybeRun() does not trigger training when approved count is below threshol
 });
 ```
 
-- [ ] Run test — expect 6 failures:
+- [x] Run test — expect 6 failures:
 
 ```bash
 node_modules/.bin/jest tests/fineTuneQueue.test.js --forceExit
@@ -773,7 +773,7 @@ node_modules/.bin/jest tests/fineTuneQueue.test.js --forceExit
 
 ### Step 2: Implement `services/fineTuneQueue.js`
 
-- [ ] Create `/Users/alec/Desktop/App Development/A.L.E.C/services/fineTuneQueue.js`:
+- [x] Create `/Users/alec/Desktop/App Development/A.L.E.C/services/fineTuneQueue.js`:
 
 ```javascript
 'use strict';
@@ -938,7 +938,7 @@ module.exports = FineTuneQueue;
 
 ### Step 3: Run tests — expect 6 passing
 
-- [ ] Run:
+- [x] Run:
 
 ```bash
 node_modules/.bin/jest tests/fineTuneQueue.test.js --forceExit
@@ -982,7 +982,7 @@ The test uses the same stub-module pattern as `test_ragPipeline.py` — no real 
 
 ### Step 1: Write the Python smoke test
 
-- [ ] Create `/Users/alec/Desktop/App Development/A.L.E.C/services/neural/test_fineTuneWorker.py`:
+- [x] Create `/Users/alec/Desktop/App Development/A.L.E.C/services/neural/test_fineTuneWorker.py`:
 
 ```python
 """
@@ -1097,7 +1097,7 @@ print("\nAll Python smoke tests passed.")
 
 ### Step 2: Implement `services/neural/fineTuneWorker.py`
 
-- [ ] Create `/Users/alec/Desktop/App Development/A.L.E.C/services/neural/fineTuneWorker.py`:
+- [x] Create `/Users/alec/Desktop/App Development/A.L.E.C/services/neural/fineTuneWorker.py`:
 
 ```python
 """
@@ -1222,7 +1222,7 @@ if __name__ == "__main__":
 
 ### Step 3: Implement `services/neural/evalRunner.py`
 
-- [ ] Create `/Users/alec/Desktop/App Development/A.L.E.C/services/neural/evalRunner.py`:
+- [x] Create `/Users/alec/Desktop/App Development/A.L.E.C/services/neural/evalRunner.py`:
 
 ```python
 """
@@ -1361,7 +1361,7 @@ if __name__ == "__main__":
 
 ### Step 4: Run Python smoke test
 
-- [ ] Run from `services/neural/` directory:
+- [x] Run from `services/neural/` directory:
 
 ```bash
 cd "/Users/alec/Desktop/App Development/A.L.E.C/services/neural" && python test_fineTuneWorker.py
@@ -1511,7 +1511,7 @@ Note: The streaming handler accumulates chunks into a `fullResponse` string befo
 
 ### Step 3: Verify the full test suite still passes
 
-- [ ] Run all existing tests:
+- [x] Run all existing tests:
 
 ```bash
 node_modules/.bin/jest --forceExit
