@@ -81,9 +81,9 @@ const INTENT_PATTERNS = {
   rent:      /\b(rent|rental.?rate|avg.?rent|average.?rent|revenue|income|per.?unit|psf|per.?sqft|budget.?(rent|income))\b/i,
   project:   /\b(project|property|propert(y|ies)|development|address|units?|beds?|stage|status|where.?is|located?)\b/i,
   pipeline:  /\b(pipeline|deal|acqui|under.?contract|prospect|identified|offer|loi|close[ds]?)\b/i,
-  loan:      /\b(loan|debt|financing|mortgage|lender|bank|maturity|refi|refinanc|ltc|ltv|balance|covenant)\b/i,
-  contract:  /\b(contract|vendor|supplier|agreement|expir|renew|service)\b/i,
-  renewal:   /\b(renewal|renew|retention|t-?12|notice.?to.?vacate|ntv|expir)\b/i,
+  loan:      /\b(loans?|debt|financing|mortgage|lender|bank|maturity|refi|refinanc|ltc|ltv|balance|covenants?)\b/i,
+  contract:  /\b(contracts?|vendors?|suppliers?|agreements?|expir\w*|renew\w*|services?)\b/i,
+  renewal:   /\b(renewals?|renew\w*|retention|t-?12|notice.?to.?vacate|ntv|expir\w*)\b/i,
   portfolio: /\b(portfolio|all.?propert|overall|total|across.?all|summary|overview|how.?many)\b/i,
   trend:     /\b(trend|history|histor|over.?time|past.?\d|last.?\d|previous.?\d|month|quarter|year.?over.?year|yoy|ytd|growth|trajectory|progress|chart|graph|show.?me.?over|over.?the.?past)\b/i,
   export:    /\b(export|excel|spreadsheet|download|\.xlsx|csv|sheet|generate.?report|create.?report)\b/i,
@@ -96,9 +96,13 @@ const INTENT_PATTERNS = {
 function detectStoaIntent(text) {
   const t = text.toLowerCase();
 
-  // Must mention something real-estate related to be STOA
+  // Must mention something real-estate related to be STOA.
+  // Anchors include property brands, cities, and domain concepts (contracts,
+  // leases, expirations, renewals, tenants, units) — STOA's Azure DB is the
+  // authoritative source for all of these. Without this, questions like
+  // "what contracts are expiring" fall through to TenantCloud hallucinations.
   const isStoaRelated =
-    /\b(stoa|waters? at|heights? at|flats? at|hammond|covington|millerville|bluebonnet|settlers? trace|west village|redstone|crestview|freeport|promenade|mcgowin|picardy|waterpointe|crosspointe|ransley|bartlett|owa|robinwood|conway|covington|fayetteville|materra|inverness|property|properties|project|occupanc|leased?|pipeline|deal|loan|covenant|portfolio|acquisition|real estate)\b/i.test(t);
+    /\b(stoa|waters? at|heights? at|flats? at|hammond|covington|millerville|bluebonnet|settlers? trace|west village|redstone|crestview|freeport|promenade|mcgowin|picardy|waterpointe|crosspointe|ransley|bartlett|owa|robinwood|conway|covington|fayetteville|materra|inverness|property|properties|project|occupanc|leases?|leased|pipeline|deals?|loans?|covenants?|portfolio|acquisitions?|real estate|contracts?|expir|renewals?|tenants?|units?|vendors?|agreements?)\b/i.test(t);
 
   if (!isStoaRelated) return null;
 
@@ -110,10 +114,20 @@ function detectStoaIntent(text) {
   // or a city name after "the" / "at" / "in"
   let property = null;
 
-  // Match "Waters at X" / "Heights at X" — stop at common stop words or punctuation
-  const brandMatch = t.match(/(?:the\s+)?(waters? at|heights? at|flats? at)\s+([\w]+(?:\s+[\w]+){0,3}?)(?=\s+(?:doing|is|how|property|project|occupancy|rent|loan|deal|pipeline|about|for|'s)|[,?.]|$)/i);
+  // Match "Waters at X" / "Heights at X".
+  // Capture ONLY the first 1-2 alphanumeric tokens after "at" (the place name).
+  // Verbs like "has", "is", "does" — and filler words — are never part of a
+  // property name, so we stop at the first non-proper-noun boundary.
+  const brandMatch = t.match(/(?:the\s+)?(waters? at|heights? at|flats? at)\s+([a-z]+(?:\s+[a-z]+)?)/i);
   if (brandMatch) {
-    property = 'The ' + brandMatch[1].replace(/\b\w/g, c => c.toUpperCase()) + ' ' + brandMatch[2].trim().replace(/\b\w/g, c => c.toUpperCase());
+    // Strip trailing common verbs/prepositions that leaked into the 2nd token.
+    const STOP = /^(has|have|had|is|are|was|were|doing|does|did|been|being|the|a|an|of|in|on|for|to|how|what|why|tell|show|give|get|update|about)$/i;
+    const tokens = brandMatch[2].trim().split(/\s+/).filter(w => !STOP.test(w));
+    if (tokens.length > 0) {
+      const place = tokens.slice(0, 2).join(' ');
+      property = 'The ' + brandMatch[1].replace(/\b\w/g, c => c.toUpperCase())
+        + ' ' + place.replace(/\b\w/g, c => c.toUpperCase());
+    }
   }
 
   // City fallback
@@ -143,12 +157,21 @@ function detectStoaIntent(text) {
 
 /**
  * Find matching projects by fuzzy name or city.
+ * If no search term is provided, returns the full active portfolio — Dashboard
+ * and Portfolio tabs pass '' and expect every project back.
  */
 async function findProjects(searchTerm) {
-  if (!searchTerm) return [];
+  if (!searchTerm) {
+    return query(
+      `SELECT TOP 500 ProjectId, ProjectName, City, State, Region, Units, Stage,
+         Address, ProductType, FinancingStatus, ConstructionStatus
+       FROM core.Project
+       ORDER BY ProjectName`
+    );
+  }
   const term = `%${searchTerm}%`;
   return query(
-    `SELECT TOP 10 ProjectId, ProjectName, City, State, Region, Units, Stage,
+    `SELECT TOP 50 ProjectId, ProjectName, City, State, Region, Units, Stage,
        Address, ProductType, FinancingStatus, ConstructionStatus
      FROM core.Project
      WHERE ProjectName LIKE @term OR City LIKE @term
@@ -172,19 +195,27 @@ async function getMMRData(propertySearch = null) {
     inputs.prop = { type: sql.NVarChar(256), value: `%${propertySearch}%` };
   }
 
+  // All columns below verified against INFORMATION_SCHEMA on leasing.MMRData.
+  // DO NOT reintroduce bracketed/spaced variants — the canonical no-space
+  // columns are the authoritative set; other variants are stale sync artifacts.
   return query(
-    `SELECT m.Property, m.Location, m.[Total Units] AS TotalUnits,
-       m.[Occupancy %] AS OccupancyPct, m.[Current Leased %] AS LeasedPct,
-       m.[Occ Units] AS OccupiedUnits, m.OccupiedRent AS AvgOccupiedRent,
-       m.BudgetedRent, m.OccupancyPercent,
-       m.[Budgeted Occupancy % (Current Month)] AS BudgetedOccPct,
-       m.[T-12 Leases Renewed] AS T12Renewed, m.[T-12 Leases Expired] AS T12Expired,
-       m.Delinquent, m.MI AS MoveIns, m.MO AS MoveOuts,
-       m.[Week1 End Date] AS Week1Date, m.[Week1: Occ %] AS Week1Occ,
-       m.[Week4 End Date] AS Week4Date, m.[Week4: Occ %] AS Week4Occ,
-       m.Status, m.[Financing Status] AS FinancingStatus,
-       m.[Full Address] AS Address, m.Region, m.ReportDate,
-       m.[Budgeted Occupancy (Current Month)] AS BudgetedOccUnits
+    `SELECT m.Property, m.Location, m.TotalUnits,
+       m.OccupancyPercent        AS OccupancyPct,
+       m.CurrentLeasedPercent    AS LeasedPct,
+       m.OccUnits                AS OccupiedUnits,
+       m.OccupiedRent            AS AvgOccupiedRent,
+       m.BudgetedRent,
+       m.BudgetedOccupancyPercentCurrentMonth AS BudgetedOccPct,
+       m.BudgetedOccupancyCurrentMonth        AS BudgetedOccUnits,
+       m.T12LeasesRenewed AS T12Renewed,
+       m.T12LeasesExpired AS T12Expired,
+       m.Delinquent,
+       m.MI AS MoveIns, m.MO AS MoveOuts,
+       m.Week3EndDate, m.Week3OccPercent AS Week3Occ,
+       m.Week4EndDate, m.Week4OccPercent AS Week4Occ,
+       m.Week7EndDate, m.Week7OccPercent AS Week7Occ,
+       m.Status, m.FinancingStatus,
+       m.City, m.State, m.Region, m.ReportDate
      FROM leasing.MMRData m
      INNER JOIN (
        SELECT Property, MAX(ReportDate) AS MaxDate
@@ -203,13 +234,13 @@ async function getPortfolioSummary() {
   return query(
     `SELECT
        COUNT(DISTINCT m.Property) AS PropertyCount,
-       SUM(m.[Total Units]) AS TotalUnits,
-       SUM(m.[Occ Units]) AS TotalOccupied,
-       AVG(m.[Occupancy %]) AS AvgOccupancyPct,
-       AVG(m.[Current Leased %]) AS AvgLeasedPct,
-       AVG(m.OccupiedRent) AS AvgRent,
-       AVG(m.BudgetedRent) AS AvgBudgetedRent,
-       SUM(m.Delinquent) AS TotalDelinquent
+       SUM(m.TotalUnits)             AS TotalUnits,
+       SUM(m.OccUnits)               AS TotalOccupied,
+       AVG(m.OccupancyPercent)       AS AvgOccupancyPct,
+       AVG(m.CurrentLeasedPercent)   AS AvgLeasedPct,
+       AVG(m.OccupiedRent)           AS AvgRent,
+       AVG(m.BudgetedRent)           AS AvgBudgetedRent,
+       SUM(m.Delinquent)             AS TotalDelinquent
      FROM leasing.MMRData m
      INNER JOIN (
        SELECT Property, MAX(ReportDate) AS MaxDate
@@ -279,13 +310,28 @@ async function getLoans(propertySearch = null) {
     ? { prop: { type: sql.NVarChar(256), value: `%${propertySearch}%` } }
     : {};
 
+  // All columns verified against banking.Loan / core.Bank / core.Project.
+  // banking.Loan has no Status/LenderName/OutstandingDate — we JOIN core.Bank
+  // for the lender name and use IsActive for the active-loan filter.
   return query(
-    `SELECT TOP 20 l.LoanId, p.ProjectName, l.LenderName, l.LoanAmount,
-       l.OutstandingBalance, l.InterestRate, l.MaturityDate,
-       l.LoanType, l.Status, l.OriginationDate
+    `SELECT TOP 200
+       l.LoanId,
+       p.ProjectName,
+       b.BankName                 AS LenderName,
+       l.LoanType,
+       l.LoanAmount               AS OriginalAmount,
+       l.CurrentBalance,
+       l.InterestRate,
+       l.MaturityDate,
+       l.LoanClosingDate          AS OriginationDate,
+       l.FinancingStage           AS Status,
+       CASE WHEN l.MaturityDate IS NOT NULL
+            THEN DATEDIFF(DAY, SYSUTCDATETIME(), l.MaturityDate)
+            ELSE NULL END         AS DaysToMaturity
      FROM banking.Loan l
-     LEFT JOIN core.Project p ON l.ProjectId = p.ProjectId
-     WHERE l.Status NOT IN ('Paid Off','Closed')  ${where}
+     LEFT JOIN core.Project p ON p.ProjectId = l.ProjectId
+     LEFT JOIN core.Bank    b ON b.BankId    = l.LenderId
+     WHERE l.IsActive = 1  ${where}
      ORDER BY l.MaturityDate`,
     inputs
   );
@@ -300,11 +346,21 @@ async function getPipelineDeals(statusFilter = null) {
     ? { stage: { type: sql.NVarChar(100), value: `%${statusFilter}%` } }
     : {};
 
+  // pipeline.DealPipeline stores UnitCount, LandPrice, ClosingDate, etc.
+  // Deal "name" lives on core.Project via ProjectId. We synthesize the
+  // surfaces the frontend expects (DealName, Units, AskingPrice, EstimatedCloseDate).
   return query(
-    `SELECT TOP 20 d.DealName, d.City, d.State, d.Units, d.Stage,
-       d.ProductType, d.Region, d.AskingPrice, d.EstimatedCloseDate,
+    `SELECT TOP 200
+       d.DealPipelineId,
+       p.ProjectName       AS DealName,
+       p.City, p.State, p.Region, p.ProductType,
+       d.UnitCount         AS Units,
+       d.ListingStatus     AS Stage,
+       d.LandPrice         AS AskingPrice,
+       COALESCE(d.ClosingDate, d.ExecutionDate) AS EstimatedCloseDate,
        d.CreatedAt
      FROM pipeline.DealPipeline d
+     LEFT JOIN core.Project p ON p.ProjectId = d.ProjectId
      ${where}
      ORDER BY d.CreatedAt DESC`,
     inputs
@@ -323,11 +379,11 @@ async function getMMRHistory(propertySearch, months = 6) {
 
   return query(
     `SELECT m.Property, m.ReportDate,
-       m.[Occupancy %]      AS OccupancyPct,
-       m.[Current Leased %] AS LeasedPct,
-       m.[Occ Units]        AS OccupiedUnits,
-       m.[Total Units]      AS TotalUnits,
-       m.OccupiedRent       AS AvgRent,
+       m.OccupancyPercent       AS OccupancyPct,
+       m.CurrentLeasedPercent   AS LeasedPct,
+       m.OccUnits               AS OccupiedUnits,
+       m.TotalUnits,
+       m.OccupiedRent           AS AvgRent,
        m.BudgetedRent,
        m.MI AS MoveIns,
        m.MO AS MoveOuts,
@@ -671,6 +727,91 @@ async function ping() {
   }
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// DSCR covenants — banking.Covenant holds projected DSCR vs requirement
+// per project. Status derived from projected vs required ratio.
+async function getDSCRCovenants() {
+  return query(
+    `SELECT p.ProjectName,
+            c.ProjectedDSCR,
+            c.DSCRRequirement,
+            c.DSCRTestDate,
+            c.CovenantType,
+            CASE
+              WHEN c.ProjectedDSCR IS NULL OR c.DSCRRequirement IS NULL THEN NULL
+              WHEN c.ProjectedDSCR >= c.DSCRRequirement THEN 'Pass'
+              ELSE 'Fail'
+            END AS DSCRStatus
+       FROM banking.Covenant c
+       INNER JOIN core.Project p ON p.ProjectId = c.ProjectId
+      WHERE c.ProjectedDSCR IS NOT NULL OR c.DSCRRequirement IS NOT NULL
+      ORDER BY p.ProjectName`
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// LTV rows — banking.Loan joined with core.Project's appraisal/cost.
+// LTV = balance / appraised value (ValuationWhenComplete)
+// LTC = stored on core.Project as LTCOriginal (loan-to-cost at origination).
+async function getLTVRows() {
+  const rows = await query(
+    `SELECT p.ProjectName,
+            b.BankName AS LenderName,
+            l.CurrentBalance,
+            l.LoanAmount                     AS OriginalAmount,
+            p.ValuationWhenComplete,
+            p.LTCOriginal
+       FROM banking.Loan l
+       INNER JOIN core.Project p ON p.ProjectId = l.ProjectId
+       LEFT  JOIN core.Bank    b ON b.BankId    = l.LenderId
+      WHERE l.IsActive = 1
+      ORDER BY p.ProjectName`
+  );
+  return rows.map(r => {
+    const balance = Number(r.CurrentBalance ?? r.OriginalAmount ?? 0);
+    const value   = Number(r.ValuationWhenComplete ?? 0);
+    const ltv = value > 0 && balance > 0 ? balance / value : null;
+    return {
+      ProjectName:          r.ProjectName,
+      LenderName:           r.LenderName,
+      LTV:                  ltv,
+      LTC:                  r.LTCOriginal != null ? Number(r.LTCOriginal) : null,
+      ValuationWhenComplete: r.ValuationWhenComplete != null ? Number(r.ValuationWhenComplete) : null,
+      CurrentBalance:       balance || null,
+    };
+  });
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Equity commitments — aggregated per project. "Funded" = commitments with
+// a FundingDate on or before today (or explicitly paid off); the rest are
+// unfunded / undrawn.
+async function getEquityCommitments() {
+  const rows = await query(
+    `SELECT p.ProjectName,
+            e.Amount,
+            e.FundingDate,
+            e.IsPaidOff
+       FROM banking.EquityCommitment e
+       INNER JOIN core.Project p ON p.ProjectId = e.ProjectId
+      WHERE e.Amount IS NOT NULL`
+  );
+  const today = Date.now();
+  const byProject = new Map();
+  for (const r of rows) {
+    const key = r.ProjectName || 'Unknown';
+    const agg = byProject.get(key) || { ProjectName: key, TotalCommitment: 0, FundedAmount: 0, UnfundedAmount: 0 };
+    const amt = Number(r.Amount) || 0;
+    agg.TotalCommitment += amt;
+    const funded = r.IsPaidOff === true || r.IsPaidOff === 1 ||
+      (r.FundingDate && new Date(r.FundingDate).getTime() <= today);
+    if (funded) agg.FundedAmount += amt;
+    else        agg.UnfundedAmount += amt;
+    byProject.set(key, agg);
+  }
+  return Array.from(byProject.values()).sort((a, b) => b.TotalCommitment - a.TotalCommitment);
+}
+
 module.exports = {
   detectStoaIntent,
   buildStoaContext,
@@ -684,6 +825,9 @@ module.exports = {
   getRenewalData,
   getLoans,
   getPipelineDeals,
+  getDSCRCovenants,
+  getLTVRows,
+  getEquityCommitments,
   getExpiringContracts,
   ping,
 };

@@ -1093,17 +1093,38 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
       systemContent += '\n\n[iMessage DATA] iMessage service is not available. Tell the user to ensure the iMessageService.js module is installed.';
     }
 
+    // ── Source-preference override (non-stream path) ──
+    const sourcePref = (() => {
+      const t = userText.toLowerCase();
+      const excl = new Set(); const only = new Set();
+      if (/\b(not|no|don'?t\s+use|skip|without|exclude|avoid)\s+(tenantcloud|tc)\b/.test(t)) excl.add('tc');
+      if (/\b(not|no|don'?t\s+use|skip|without|exclude|avoid)\s+stoa\b/.test(t))             excl.add('stoa');
+      if (/\b(from|use|only|via)\s+stoa\b|\bstoa\s+only\b|\bstoa\s+data\b/.test(t)) only.add('stoa');
+      if (/\b(from|use|only|via)\s+tenantcloud\b|\btenantcloud\s+only\b/.test(t))   only.add('tc');
+      return { excluded: excl, onlyThese: only };
+    })();
+    const allowStoa = !sourcePref.excluded.has('stoa') && (sourcePref.onlyThese.size === 0 || sourcePref.onlyThese.has('stoa'));
+    const allowTC   = !sourcePref.excluded.has('tc')   && (sourcePref.onlyThese.size === 0 || sourcePref.onlyThese.has('tc'));
+
     // ── STOA RAG: inject live database context before LLM call ──
     // Detects property/leasing/deal questions and pulls real numbers from
     // Azure SQL — this prevents hallucination by grounding the LLM in facts.
-    try {
-      const stoaCtx = await stoaQuery.buildStoaContext(userText);
-      if (stoaCtx) {
-        systemContent += '\n\n' + stoaCtx;
-        console.log('[STOA RAG] Injected live data for:', userText.slice(0, 60));
+    // STOA has source precedence (H1) — when STOA has data, overlapping TC intents
+    // are suppressed unless the user explicitly asked for TenantCloud.
+    let stoaFired = false;
+    if (allowStoa) {
+      try {
+        const stoaCtx = await stoaQuery.buildStoaContext(userText);
+        if (stoaCtx) {
+          systemContent += '\n\n' + stoaCtx;
+          console.log('[STOA RAG] Injected live data for:', userText.slice(0, 60));
+          stoaFired = true;
+        }
+      } catch (stoaErr) {
+        console.warn('[STOA RAG] Failed (non-critical):', stoaErr.message?.slice(0, 80));
       }
-    } catch (stoaErr) {
-      console.warn('[STOA RAG] Failed (non-critical):', stoaErr.message?.slice(0, 80));
+    } else {
+      console.log('[STOA RAG] Skipped — user excluded stoa or requested other source');
     }
 
     // ── GitHub RAG: inject recent commits/repos ───────────────────
@@ -1231,8 +1252,12 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     }
 
     // ── TenantCloud RAG: inject property management data ──────────
-    const tcIntent = /tenantcloud|\b(tenant|rent|payment|overdue|maintenance|lease|property|properties|unit|units|inquiry|inquiries|renter|move.?out|move.?in|vacancy|vacant|occupan|evict)\b/i.test(userText);
-    if (tcIntent) {
+    // Precedence: TC only fires when user didn't exclude it, and STOA didn't
+    // already handle an overlapping intent (unless user explicitly asked for TC).
+    const tcExplicit = sourcePref.onlyThese.has('tc') || /\btenantcloud\b/i.test(userText);
+    const tcIntent = /\b(tenants?|rent|payments?|overdue|maintenance|leases?|property|properties|units?|inquiry|inquiries|renters?|move.?out|move.?in|vacancy|vacant|occupan|evict)\b/i.test(userText);
+    const tcShouldFire = allowTC && tcIntent && (tcExplicit || !stoaFired);
+    if (tcShouldFire) {
       try {
         let tcCtx = '';
 
@@ -1549,16 +1574,43 @@ const chatStreamHandler = async (req, res) => {
       }
     }
 
+    // ── Source-preference override (parses "from stoa", "not tenantcloud", etc.) ──
+    // Hard rule: when the user explicitly names a source, ONLY that source fires.
+    // When the user excludes a source ("not tenantcloud"), that source is gated off
+    // regardless of keyword matches.
+    const sourcePref = (() => {
+      const t = userText.toLowerCase();
+      const excl = new Set();
+      const only = new Set();
+      // "not tenantcloud", "don't use tc", "skip tenantcloud"
+      if (/\b(not|no|don'?t\s+use|skip|without|exclude|avoid)\s+(tenantcloud|tc)\b/.test(t)) excl.add('tc');
+      if (/\b(not|no|don'?t\s+use|skip|without|exclude|avoid)\s+stoa\b/.test(t))             excl.add('stoa');
+      // "from stoa data", "use stoa", "stoa only"
+      if (/\b(from|use|only|via)\s+stoa\b|\bstoa\s+only\b|\bstoa\s+data\b/.test(t)) only.add('stoa');
+      if (/\b(from|use|only|via)\s+tenantcloud\b|\btenantcloud\s+only\b/.test(t))   only.add('tc');
+      return { excluded: excl, onlyThese: only };
+    })();
+    const allowStoa = !sourcePref.excluded.has('stoa') && (sourcePref.onlyThese.size === 0 || sourcePref.onlyThese.has('stoa'));
+    const allowTC   = !sourcePref.excluded.has('tc')   && (sourcePref.onlyThese.size === 0 || sourcePref.onlyThese.has('tc'));
+
     // ── STOA RAG: inject live database context ────────────────
-    try {
-      const stoaCtx = await stoaQuery.buildStoaContext(userText);
-      if (stoaCtx) {
-        systemContent += '\n\n' + stoaCtx;
-        res.write('data: {"token":"📊 Loading live STOA portfolio data…\\n"}\n\n');
-        console.log('[STOA RAG stream] Injected live data for:', userText.slice(0, 60));
+    // STOA has source precedence (per hard rule H1) — when STOA returns data,
+    // TenantCloud is suppressed for overlapping intents (property/lease/unit/contract).
+    let stoaFired = false;
+    if (allowStoa) {
+      try {
+        const stoaCtx = await stoaQuery.buildStoaContext(userText);
+        if (stoaCtx) {
+          systemContent += '\n\n' + stoaCtx;
+          res.write('data: {"token":"📊 Loading live STOA portfolio data…\\n"}\n\n');
+          console.log('[STOA RAG stream] Injected live data for:', userText.slice(0, 60));
+          stoaFired = true;
+        }
+      } catch (stoaErr) {
+        console.warn('[STOA RAG stream] Failed (non-critical):', stoaErr.message?.slice(0, 80));
       }
-    } catch (stoaErr) {
-      console.warn('[STOA RAG stream] Failed (non-critical):', stoaErr.message?.slice(0, 80));
+    } else {
+      console.log('[STOA RAG stream] Skipped — user excluded stoa or requested other source');
     }
 
     // ── GitHub RAG + Actions trigger (stream) ─────────────────
@@ -1683,10 +1735,16 @@ const chatStreamHandler = async (req, res) => {
     }
 
     // ── TenantCloud RAG (stream) ────────────────────────────────
-    const tcIntentStream = /tenantcloud|\b(tenant|rent|payment|overdue|maintenance|lease|property|properties|unit|units|inquiry|inquiries|renter|move.?out|move.?in|vacancy|vacant|occupan|evict)\b/i.test(userText);
-    if (tcIntentStream) {
+    // Precedence rule: TC only fires when (a) the user didn't exclude it,
+    // (b) STOA didn't already inject data for an overlapping property/lease
+    // intent (unless the user explicitly asked for TenantCloud), and
+    // (c) something is actually available to load — the "Loading…" token
+    // is emitted AFTER we confirm a cache hit or scraper, not before.
+    const tcExplicit = sourcePref.onlyThese.has('tc') || /\btenantcloud\b/i.test(userText);
+    const tcIntentStream = /\b(tenants?|rent|payments?|overdue|maintenance|leases?|property|properties|units?|inquiry|inquiries|renters?|move.?out|move.?in|vacancy|vacant|occupan|evict)\b/i.test(userText);
+    const tcShouldFire = allowTC && tcIntentStream && (tcExplicit || !stoaFired);
+    if (tcShouldFire) {
       try {
-        res.write('data: {"token":"🏠 Loading TenantCloud rentals data…\\n"}\n\n');
         let tcCtx = '';
 
         // Try browser-relay cache first (most reliable — real data from authenticated browser)
@@ -1720,10 +1778,19 @@ const chatStreamHandler = async (req, res) => {
           console.log('[TenantCloud RAG stream] Injected via Puppeteer scraper');
         }
 
-        if (tcCtx) systemContent += '\n\n' + tcCtx;
+        if (tcCtx) {
+          // Only stream the loading status once we actually have data — avoids
+          // the "🏠 Loading TenantCloud rentals data…" ghost token with no payload.
+          res.write('data: {"token":"🏠 Loading TenantCloud rentals data…\\n"}\n\n');
+          systemContent += '\n\n' + tcCtx;
+        }
       } catch (tcErr) {
         console.warn('[TenantCloud RAG stream] Failed (non-critical):', tcErr.message?.slice(0, 80));
       }
+    } else if (tcIntentStream && !allowTC) {
+      console.log('[TenantCloud RAG stream] Suppressed — user excluded TC or requested stoa-only');
+    } else if (tcIntentStream && stoaFired && !tcExplicit) {
+      console.log('[TenantCloud RAG stream] Suppressed — STOA took precedence for overlapping intent');
     }
 
     // ── Vercel RAG (stream) ───────────────────────────────────
