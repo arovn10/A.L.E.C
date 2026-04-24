@@ -1,8 +1,12 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import StatCard from '../components/dashboard/StatCard';
-import { getLoans, getDSCR, getLTV, downloadReport } from '../api/reports';
+import { getLoans, getDSCR, getLTV, getProjects, downloadReport } from '../api/reports';
 import { getQueue } from '../api/review';
+import MLCard from '../components/ml/MLCard';
+import AlertsCard from '../components/ml/AlertsCard';
+import WhatsNewCard from '../components/ml/WhatsNewCard';
 
 function formatMillions(total) {
   if (total == null || isNaN(total)) return '--';
@@ -40,9 +44,13 @@ export default function Dashboard() {
     avgDscr: null,
     avgLtv: null,
     maturingSoon: null,
+    activeProperties: null,
+    totalUnits: null,
+    pipelineDeals: null,
   });
   const [activity, setActivity] = useState([]);
   const [syncing, setSyncing] = useState(false);
+  const [reportRunning, setReportRunning] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -50,10 +58,11 @@ export default function Dashboard() {
     async function load() {
       setLoading(true);
       try {
-        const [loans, dscr, ltv, queue] = await Promise.all([
+        const [loans, dscr, ltv, projects, queue] = await Promise.all([
           getLoans().catch(() => []),
           getDSCR().catch(() => []),
           getLTV().catch(() => []),
+          getProjects().catch(() => []),
           getQueue().catch(() => []),
         ]);
 
@@ -70,8 +79,24 @@ export default function Dashboard() {
           ? loans.filter((l) => Number(l.daysToMaturity) < 90).length
           : null;
 
-        setStats({ totalExposure, avgDscr, avgLtv, maturingSoon });
-        setActivity(Array.isArray(queue) ? queue.slice(0, 5) : []);
+        const PORTFOLIO_STAGES = ['Under Construction', 'Lease-Up', 'Stabilized'];
+        const PIPELINE_STAGES  = ['Under Contract', 'LOI', 'Under Review'];
+        const activeProperties = Array.isArray(projects)
+          ? projects.filter((p) => PORTFOLIO_STAGES.includes(p.stage)).length
+          : null;
+        const totalUnits = Array.isArray(projects)
+          ? projects
+              .filter((p) => PORTFOLIO_STAGES.includes(p.stage))
+              .reduce((s, p) => s + (p.units ?? 0), 0)
+          : null;
+        const pipelineDeals = Array.isArray(projects)
+          ? projects.filter((p) => PIPELINE_STAGES.includes(p.stage)).length
+          : null;
+
+        setStats({ totalExposure, avgDscr, avgLtv, maturingSoon, activeProperties, totalUnits, pipelineDeals });
+        // getQueue returns { items: [...] } — extract the array
+        const queueItems = Array.isArray(queue) ? queue : (queue?.items ?? []);
+        setActivity(queueItems.slice(0, 5));
       } catch {
         // individual fetches already caught; stats stay null → show "--"
       } finally {
@@ -85,13 +110,24 @@ export default function Dashboard() {
 
   async function handleSync() {
     setSyncing(true);
-    const toastId = toast.loading('Syncing STOA Brain...');
+    const t0 = Date.now();
+    const toastId = toast.loading('Syncing STOA Brain…');
     try {
       const res = await fetch('/api/webhooks/github/sync', { method: 'POST' });
-      if (!res.ok) throw new Error('Sync failed');
-      toast.success('Sync complete', { id: toastId });
-    } catch {
-      toast.error('Sync failed', { id: toastId });
+      const body = await res.json().catch(() => ({}));
+      const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+
+      if (!res.ok || body.error) {
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+
+      // stoaBrainSync.fullSync() returns { indexed, skipped, ... }
+      const indexed = body.indexed ?? 0;
+      const skipped = body.skipped ?? 0;
+      const detail = `${indexed} indexed, ${skipped} skipped · ${elapsed}s`;
+      toast.success(`Sync complete — ${detail}`, { id: toastId, duration: 5000 });
+    } catch (err) {
+      toast.error(`Sync failed: ${err.message}`, { id: toastId, duration: 6000 });
     } finally {
       setSyncing(false);
     }
@@ -101,7 +137,7 @@ export default function Dashboard() {
     <div className="p-6 space-y-8 max-w-5xl mx-auto">
       <h1 className="text-xl font-semibold text-white">Dashboard</h1>
 
-      {/* Stat cards */}
+      {/* Stat cards — row 1: financing */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <StatCard
           label="Total Loan Exposure"
@@ -126,15 +162,58 @@ export default function Dashboard() {
         />
       </div>
 
+      {/* Stat cards — row 2: portfolio */}
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+        <StatCard
+          label="Active Properties"
+          value={loading ? null : (stats.activeProperties ?? '--')}
+          loading={loading}
+        />
+        <StatCard
+          label="Total Units"
+          value={loading ? null : (stats.totalUnits != null ? stats.totalUnits.toLocaleString() : '--')}
+          loading={loading}
+        />
+        <StatCard
+          label="Pipeline Deals"
+          value={loading ? null : (stats.pipelineDeals ?? '--')}
+          loading={loading}
+        />
+      </div>
+
       {/* Quick actions */}
       <div>
         <h2 className="text-sm uppercase tracking-widest text-gray-400 mb-3">Quick Actions</h2>
         <div className="flex gap-3 flex-wrap">
-          <button
-            onClick={() => downloadReport('loans')}
+          <Link
+            to="/deals"
             className="px-4 py-2 rounded-lg bg-alec-700 hover:bg-alec-accent/80 text-white text-sm transition-colors"
           >
-            Run Loans Report
+            View Portfolio
+          </Link>
+          <Link
+            to="/finance"
+            className="px-4 py-2 rounded-lg bg-alec-700 hover:bg-alec-accent/80 text-white text-sm transition-colors"
+          >
+            Finance Details
+          </Link>
+          <button
+            onClick={async () => {
+              setReportRunning(true);
+              const toastId = toast.loading('Generating Loans report…');
+              try {
+                await downloadReport('loans');
+                toast.success('Report ready', { id: toastId });
+              } catch (err) {
+                toast.error(`Report failed: ${err.message}`, { id: toastId });
+              } finally {
+                setReportRunning(false);
+              }
+            }}
+            disabled={reportRunning}
+            className="px-4 py-2 rounded-lg bg-alec-700 hover:bg-alec-accent/80 text-white text-sm transition-colors disabled:opacity-50"
+          >
+            {reportRunning ? 'Generating…' : 'Run Loans Report'}
           </button>
           <button
             onClick={handleSync}
@@ -144,6 +223,17 @@ export default function Dashboard() {
             {syncing ? 'Syncing…' : 'Sync STOA Brain'}
           </button>
         </div>
+      </div>
+
+      {/* Nightly ML predictions */}
+      <div>
+        <MLCard />
+      </div>
+
+      {/* ML alerts + what's new */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <AlertsCard />
+        <WhatsNewCard />
       </div>
 
       {/* Activity feed */}
