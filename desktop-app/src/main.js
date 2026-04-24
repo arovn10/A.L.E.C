@@ -43,7 +43,7 @@ let mainWindow    = null;
 let tray          = null;
 let statusTimer   = null;
 let logBuffer     = [];
-const MAX_LOG_LINES = 500;
+const MAX_LOG_LINES = 5000;
 
 // ── Prevent second instance ──────────────────────────────────────
 if (!app.requestSingleInstanceLock()) {
@@ -979,6 +979,34 @@ function pushLog(level, text) {
   if (logBuffer.length > MAX_LOG_LINES) logBuffer.shift();
   if (mainWindow) mainWindow.webContents.send('log', entry);
 }
+
+// One-click "dump everything to Desktop and reveal in Finder" — bypasses
+// clipboard entirely, which is important for crash-loop floods where
+// the real root-cause line may be thousands of rows above the current view.
+ipcMain.handle('logs:save', async () => {
+  try {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const outPath = path.join(app.getPath('desktop'), `alec-logs-${stamp}.txt`);
+    const header = [
+      `A.L.E.C. Desktop log snapshot`,
+      `Taken:   ${new Date().toString()}`,
+      `Version: ${app.getVersion()}`,
+      `Lines:   ${logBuffer.length}`,
+      `─────────────────────────────────────────────────`,
+      '',
+    ].join('\n');
+    const body = logBuffer
+      .map(e => `${e.ts}  [${(e.level || 'info').toUpperCase().padEnd(5)}] ${e.text}`)
+      .join('\n');
+    fs.writeFileSync(outPath, header + body + '\n', 'utf8');
+    shell.showItemInFinder(outPath);
+    pushLog('info', `💾 Logs saved → ${outPath}`);
+    return { ok: true, path: outPath, lines: logBuffer.length };
+  } catch (err) {
+    pushLog('error', `✖ Log save failed: ${err.message}`);
+    return { ok: false, error: err.message };
+  }
+});
 
 // ── HTTP helper ───────────────────────────────────────────────────
 function httpGet(url) {

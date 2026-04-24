@@ -58,6 +58,7 @@ contextBridge.exposeInMainWorld('alec', {
   onHealth:   (fn) => ipcRenderer.on('health',    (_, v) => fn(v)),
   onLog:      (fn) => ipcRenderer.on('log',       (_, v) => fn(v)),
   onLogBatch: (fn) => ipcRenderer.on('log-batch', (_, v) => fn(v)),
+  saveLogs:   () => ipcRenderer.invoke('logs:save'),
 
   // ── S7.6 Desktop Control ────────────────────────────────────────
   desktop: {

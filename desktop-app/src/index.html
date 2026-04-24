@@ -3,101 +3,232 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>A.L.E.C. Control Center</title>
+<title>A.L.E.C.</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  :root { --bg:#0f172a; --surface:#1e293b; --border:#334155; --accent:#06b6d4; --green:#10b981; --yellow:#f59e0b; --red:#ef4444; --text:#e2e8f0; --muted:#94a3b8; }
-  body { background:var(--bg); color:var(--text); font-family:"SF Pro Display","Helvetica Neue",Arial,sans-serif; height:100vh; display:flex; flex-direction:column; overflow:hidden; -webkit-user-select:none; user-select:none; }
-  .titlebar { height:52px; -webkit-app-region:drag; display:flex; align-items:center; padding:0 20px; border-bottom:1px solid var(--border); flex-shrink:0; background:linear-gradient(180deg,#1a2540 0%,var(--bg) 100%); }
-  .titlebar-logo { font-size:15px; font-weight:700; color:var(--accent); letter-spacing:.12em; margin:0 auto; }
-  .statusbar { display:flex; align-items:center; gap:12px; padding:14px 20px; background:var(--surface); border-bottom:1px solid var(--border); flex-shrink:0; }
-  .status-dot { width:10px; height:10px; border-radius:50%; background:var(--red); transition:background .3s; }
-  .status-dot.running  { background:var(--green);  box-shadow:0 0 8px var(--green);  }
-  .status-dot.starting { background:var(--yellow); box-shadow:0 0 8px var(--yellow); animation:pulse 1s infinite; }
-  .status-dot.stopped  { background:var(--red); }
+  :root {
+    --bg: #0f172a; --surface: #1e293b; --border: #334155;
+    --accent: #06b6d4; --green: #10b981; --yellow: #f59e0b; --red: #ef4444;
+    --text: #e2e8f0; --muted: #94a3b8;
+  }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
+    -webkit-user-select: none; user-select: none;
+  }
+
+  /* ── Title / drag bar ─────────────────────────────────────────── */
+  .titlebar {
+    height: 38px; -webkit-app-region: drag;
+    display: flex; align-items: center; padding: 0 16px 0 86px;
+    border-bottom: 1px solid var(--border); flex-shrink: 0;
+    background: linear-gradient(180deg, #1a2540, var(--bg));
+    font-size: 12px; color: var(--muted); letter-spacing: .08em;
+  }
+  .tb-logo { color: var(--accent); font-weight: 700; letter-spacing: .12em; }
+  .tb-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); margin: 0 6px 0 12px; transition: background .3s; }
+  .tb-dot.running  { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .tb-dot.starting { background: var(--yellow); animation: pulse 1s infinite; }
+  .tb-status { font-size: 11px; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
-  .status-label { font-size:13px; font-weight:600; }
-  .status-model { font-size:11px; color:var(--muted); }
-  .status-latency { font-size:11px; color:var(--muted); margin-left:auto; }
-  .controls { display:flex; gap:8px; padding:12px 20px; border-bottom:1px solid var(--border); flex-shrink:0; flex-wrap:wrap; }
-  .btn { padding:7px 16px; border-radius:8px; border:1px solid var(--border); background:var(--surface); color:var(--text); font-size:13px; font-weight:500; cursor:pointer; transition:all .15s; -webkit-app-region:no-drag; }
-  .btn:hover { background:#2d3f5c; border-color:var(--accent); }
-  .btn:active { transform:scale(.97); }
-  .btn:disabled { opacity:.4; cursor:not-allowed; transform:none; }
-  .btn.primary { background:var(--accent); border-color:var(--accent); color:#0f172a; font-weight:700; }
-  .btn.primary:hover { background:#0891b2; }
-  .btn.danger { border-color:var(--red); color:var(--red); }
-  .btn.danger:hover { background:rgba(239,68,68,.12); }
-  .metrics { display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--border); border-bottom:1px solid var(--border); flex-shrink:0; }
-  .metric { background:var(--bg); padding:12px 16px; text-align:center; }
-  .metric-val { font-size:22px; font-weight:700; color:var(--accent); }
-  .metric-lbl { font-size:10px; color:var(--muted); margin-top:2px; text-transform:uppercase; letter-spacing:.08em; }
-  .log-header { display:flex; align-items:center; padding:8px 20px; border-bottom:1px solid var(--border); flex-shrink:0; }
-  .log-header h3 { font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.1em; }
-  .log-toggle { margin-left:auto; display:flex; gap:4px; }
-  .log-toggle button { padding:3px 10px; border-radius:5px; border:1px solid var(--border); background:transparent; color:var(--muted); font-size:11px; cursor:pointer; -webkit-app-region:no-drag; }
-  .log-toggle button.active { background:var(--border); color:var(--text); }
-  #log-container { flex:1; overflow-y:auto; padding:8px 0; font-family:"SF Mono","Fira Code",Monaco,monospace; font-size:11.5px; line-height:1.5; }
-  #log-container::-webkit-scrollbar { width:4px; }
-  #log-container::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
-  .log-line { padding:1px 20px; white-space:pre-wrap; word-break:break-all; }
-  .log-ts { color:var(--muted); margin-right:8px; }
-  .log-line.info  { color:#cbd5e1; }
-  .log-line.warn  { color:var(--yellow); }
-  .log-line.error { color:var(--red); }
-  #models-panel { display:none; flex:1; overflow-y:auto; padding:16px 20px; }
-  #models-panel.visible { display:block; }
-  #log-container.hidden { display:none; }
-  .model-card { display:flex; align-items:center; gap:12px; padding:12px 16px; border:1px solid var(--border); border-radius:10px; margin-bottom:8px; background:var(--surface); }
-  .model-name { font-size:13px; font-weight:600; }
-  .model-size { font-size:11px; color:var(--muted); }
-  .model-active { margin-left:auto; font-size:11px; color:var(--green); font-weight:600; }
+
+  /* ── Quick-controls strip ─────────────────────────────────────── */
+  .controls {
+    display: flex; align-items: center; gap: 6px; padding: 6px 14px;
+    border-bottom: 1px solid var(--border); background: var(--surface);
+    flex-shrink: 0; -webkit-app-region: no-drag;
+  }
+  .btn {
+    padding: 5px 11px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); font-size: 12px; cursor: pointer;
+    transition: all .12s;
+  }
+  .btn:hover:not(:disabled) { background: #2d3f5c; border-color: var(--accent); }
+  .btn:active { transform: scale(.97); }
+  .btn:disabled { opacity: .35; cursor: not-allowed; }
+  .btn.primary { background: var(--accent); color: #0f172a; border-color: var(--accent); font-weight: 600; }
+  .btn.primary:hover:not(:disabled) { background: #0891b2; }
+  .btn.danger { border-color: var(--red); color: var(--red); }
+  .btn.danger:hover:not(:disabled) { background: rgba(239, 68, 68, .12); }
+  .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+  .btn.ghost:hover { color: var(--text); background: var(--border); }
+  .spacer { flex: 1; }
+  .metric-pill {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 14px;
+    font-size: 11px; color: var(--muted);
+  }
+  .metric-pill strong { color: var(--text); font-weight: 600; }
+
+  /* ── Main area: SPA webview ───────────────────────────────────── */
+  #stage { flex: 1; position: relative; background: var(--bg); }
+  webview { width: 100%; height: 100%; display: inline-flex; }
+
+  /* Loading splash until backend reachable */
+  #splash {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 14px;
+    background: var(--bg); z-index: 10;
+  }
+  #splash.hidden { display: none; }
+  #splash .logo { font-size: 30px; font-weight: 800; color: var(--accent); letter-spacing: .15em; }
+  #splash .msg { font-size: 13px; color: var(--muted); }
+  .spinner {
+    width: 28px; height: 28px;
+    border: 3px solid var(--border); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Drawer (logs + models) ───────────────────────────────────── */
+  #drawer {
+    position: absolute; right: 0; top: 0; bottom: 0; width: 420px;
+    background: var(--surface); border-left: 1px solid var(--border);
+    box-shadow: -8px 0 24px rgba(0,0,0,.35);
+    transform: translateX(100%); transition: transform .22s ease;
+    display: flex; flex-direction: column; z-index: 20;
+  }
+  #drawer.open { transform: translateX(0); }
+  .drawer-head {
+    display: flex; align-items: center; padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .drawer-tabs { display: flex; gap: 4px; }
+  .drawer-tabs button {
+    padding: 4px 12px; border-radius: 5px; border: 1px solid var(--border);
+    background: transparent; color: var(--muted); font-size: 12px; cursor: pointer;
+  }
+  .drawer-tabs button.active { background: var(--border); color: var(--text); }
+  .drawer-close {
+    margin-left: auto; background: transparent; border: none; color: var(--muted);
+    font-size: 18px; cursor: pointer;
+  }
+  .drawer-close:hover { color: var(--text); }
+  #logs-panel, #models-panel {
+    flex: 1; overflow-y: auto; padding: 6px 0;
+    font-family: "SF Mono", Monaco, monospace; font-size: 11.5px; line-height: 1.5;
+    /* Allow selecting and copying log lines */
+    user-select: text; -webkit-user-select: text; cursor: text;
+  }
+  #logs-panel.hidden, #models-panel.hidden { display: none; }
+  .log-line {
+    padding: 1px 14px; white-space: pre-wrap; word-break: break-all;
+    user-select: text; -webkit-user-select: text;
+  }
+  .log-actions {
+    display: flex; gap: 6px; padding: 6px 14px; border-bottom: 1px solid var(--border);
+    background: var(--surface); position: sticky; top: 0; z-index: 2;
+  }
+  .log-actions button {
+    flex: 1; font-size: 11px; padding: 4px 8px; border-radius: 5px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text);
+    cursor: pointer;
+  }
+  .log-actions button:hover { background: var(--border); }
+  .toast {
+    position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+    background: #10b981; color: white; padding: 8px 14px; border-radius: 8px;
+    font-size: 12px; font-weight: 600; z-index: 100;
+    opacity: 0; transition: opacity .2s;
+    pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+  .log-ts { color: var(--muted); margin-right: 6px; }
+  .log-line.info  { color: #cbd5e1; }
+  .log-line.warn  { color: var(--yellow); }
+  .log-line.error { color: var(--red); }
+  #models-panel { padding: 12px 14px; }
+  .model-card {
+    display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+    border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px;
+    background: var(--bg);
+  }
+  .model-name { font-size: 12px; font-weight: 600; }
+  .model-size { font-size: 10.5px; color: var(--muted); }
+  .model-active { margin-left: auto; font-size: 10px; color: var(--green); font-weight: 600; }
 </style>
 </head>
 <body>
 
+<!-- Drag bar -->
 <div class="titlebar">
-  <span class="titlebar-logo">⬡ A.L.E.C.</span>
+  <span class="tb-logo">⬡ ALEC</span>
+  <span class="tb-dot stopped" id="tb-dot"></span>
+  <span class="tb-status" id="tb-status">Stopped</span>
 </div>
 
-<div class="statusbar">
-  <div class="status-dot stopped" id="status-dot"></div>
-  <span class="status-label" id="status-label">Stopped</span>
-  <span class="status-model" id="status-model"></span>
-  <span class="status-latency" id="status-latency"></span>
-</div>
-
+<!-- Controls -->
 <div class="controls">
   <button class="btn primary" id="btn-start"   onclick="doStart()">▶ Start</button>
   <button class="btn danger"  id="btn-stop"    onclick="doStop()"    disabled>⏹ Stop</button>
   <button class="btn"         id="btn-restart" onclick="doRestart()" disabled>🔄 Restart</button>
-  <button class="btn"         onclick="window.alec.openBrowser()">🌐 Open</button>
-  <button class="btn"         id="btn-update"  onclick="doUpdate()">⬆ Update</button>
+  <button class="btn ghost"   onclick="reloadSpa()">↻ Reload UI</button>
+  <button class="btn ghost"   onclick="window.alec.openBrowser()">🌐 Browser</button>
+
+  <span class="spacer"></span>
+
+  <span class="metric-pill">Uptime <strong id="m-uptime">—</strong></span>
+  <span class="metric-pill">Mem <strong id="m-mem">—</strong></span>
+  <span class="metric-pill">Model <strong id="m-model">—</strong></span>
+
+  <button class="btn ghost" id="btn-neural" onclick="toggleNeural()">🧠 Neural: —</button>
+  <button class="btn ghost" onclick="doTraining()">🏋 Train</button>
+  <button class="btn ghost" onclick="toggleDrawer()">📋 Logs</button>
+  <button class="btn ghost" id="btn-update" onclick="doUpdate()">⬆ Update</button>
 </div>
 
-<div class="metrics">
-  <div class="metric"><div class="metric-val" id="m-uptime">—</div><div class="metric-lbl">Uptime</div></div>
-  <div class="metric"><div class="metric-val" id="m-mem">—</div><div class="metric-lbl">Memory</div></div>
-  <div class="metric"><div class="metric-val" id="m-sessions">—</div><div class="metric-lbl">Sessions</div></div>
-  <div class="metric"><div class="metric-val" id="m-model">—</div><div class="metric-lbl">Model</div></div>
-</div>
-
-<div class="log-header">
-  <h3>Server Logs</h3>
-  <div class="log-toggle">
-    <button id="tab-logs"   class="active" onclick="showTab('logs')">Logs</button>
-    <button id="tab-models"               onclick="showTab('models')">Models</button>
+<!-- SPA stage -->
+<div id="stage">
+  <div id="splash">
+    <div class="logo">⬡ A.L.E.C.</div>
+    <div class="spinner"></div>
+    <div class="msg" id="splash-msg">Starting backend…</div>
   </div>
-</div>
 
-<div id="log-container"></div>
-<div id="models-panel"></div>
+  <webview
+    id="spa"
+    src="about:blank"
+    allowpopups="true"
+    style="display:none"
+    partition="persist:alec"
+  ></webview>
+
+  <!-- Logs / models slide-over drawer -->
+  <aside id="drawer">
+    <div class="drawer-head">
+      <div class="drawer-tabs">
+        <button id="tab-logs"   class="active" onclick="showTab('logs')">Logs</button>
+        <button id="tab-models"               onclick="showTab('models')">Models</button>
+      </div>
+      <button class="drawer-close" onclick="toggleDrawer()">✕</button>
+    </div>
+    <div id="logs-panel">
+      <div class="log-actions">
+        <button onclick="copyAllLogs()" title="Copy all log text (⌘⇧C)">📋 Copy all</button>
+        <button onclick="copySelectedLogs()" title="Copy highlighted lines only">✂ Copy selection</button>
+        <button onclick="saveLogsToFile()" title="Write full log buffer to ~/Desktop and reveal in Finder">💾 Save</button>
+        <button onclick="clearLogs()" title="Clear log buffer (⌘K)">🗑 Clear</button>
+        <button onclick="toggleAutoScroll()" id="btn-autoscroll" title="Toggle auto-scroll on new lines">⬇ Auto-scroll: on</button>
+      </div>
+      <div id="logs-body"></div>
+    </div>
+    <div id="models-panel" class="hidden"></div>
+  </aside>
+  <div id="toast" class="toast">Copied to clipboard</div>
+</div>
 
 <script>
-  // ── Init ─────────────────────────────────────────────────────────
-  let startTime = null, uptimeTimer = null, autoScroll = true;
-  const logEl = document.getElementById('log-container');
+  // ── State ────────────────────────────────────────────────────────
+  const ALEC_URL = 'http://localhost:3001';
+  const spa = document.getElementById('spa');
+  const splash = document.getElementById('splash');
+  const splashMsg = document.getElementById('splash-msg');
+  const logsEl = document.getElementById('logs-body');
+  let startTime = null, uptimeTimer = null, autoScroll = true, spaLoaded = false;
 
+  // ── IPC bindings ─────────────────────────────────────────────────
   window.alec.status().then(setStatus);
   window.alec.onStatus(setStatus);
   window.alec.onHealth(updateHealth);
@@ -105,42 +236,89 @@
   window.alec.onLogBatch(batch => batch.forEach(appendLog));
   window.alec.version().then(v => { document.title = 'A.L.E.C. v' + v; });
 
-  logEl.addEventListener('scroll', () => {
-    autoScroll = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 40;
+  // The logs PANEL (wrapping element) is what actually scrolls; logs-body
+  // is just the line container inside the sticky-header layout.
+  const logsScroller = document.getElementById('logs-panel');
+  logsScroller.addEventListener('scroll', () => {
+    autoScroll = logsScroller.scrollHeight - logsScroller.scrollTop - logsScroller.clientHeight < 40;
+    document.getElementById('btn-autoscroll').textContent = '⬇ Auto-scroll: ' + (autoScroll ? 'on' : 'off');
   });
 
-  // ── Status ────────────────────────────────────────────────────────
+  // ── Status handling ──────────────────────────────────────────────
   function setStatus(s) {
-    const dot   = document.getElementById('status-dot');
-    const label = document.getElementById('status-label');
-    dot.className = 'status-dot ' + s;
-    label.textContent = { running:'Running', stopped:'Stopped', starting:'Starting…', error:'Error' }[s] || s;
+    const dot   = document.getElementById('tb-dot');
+    const label = document.getElementById('tb-status');
+    dot.className = 'tb-dot ' + s;
+    label.textContent = { running: 'Running', stopped: 'Stopped', starting: 'Starting…', error: 'Error' }[s] || s;
+
     const running = s === 'running', stopped = s === 'stopped' || s === 'error';
     document.getElementById('btn-start').disabled   = !stopped;
     document.getElementById('btn-stop').disabled    = !running;
     document.getElementById('btn-restart').disabled = !running;
-    if (running && !startTime) { startTime = Date.now(); uptimeTimer = setInterval(tickUptime, 1000); }
-    if (!running) { startTime = null; clearInterval(uptimeTimer); document.getElementById('m-uptime').textContent = '—'; }
+
+    if (running) {
+      splashMsg.textContent = 'Loading A.L.E.C. interface…';
+      if (!spaLoaded) loadSpa();
+      if (!startTime) {
+        startTime = Date.now();
+        uptimeTimer = setInterval(tickUptime, 1000);
+      }
+    } else {
+      startTime = null;
+      clearInterval(uptimeTimer);
+      document.getElementById('m-uptime').textContent = '—';
+      if (s === 'starting') splashMsg.textContent = 'Starting backend…';
+      if (s === 'stopped')  splashMsg.textContent = 'Backend stopped. Click ▶ Start.';
+      if (s === 'error')    splashMsg.textContent = 'Backend error. Check Logs.';
+      splash.classList.remove('hidden');
+      spa.style.display = 'none';
+      spaLoaded = false;
+    }
   }
 
   function updateHealth(data) {
     if (data.llm) {
       const m = (data.llm.modelPath || data.llm.model || '').replace(/\..+$/, '');
-      document.getElementById('status-model').textContent = m;
-      document.getElementById('m-model').textContent = m.slice(0, 9) || '—';
+      document.getElementById('m-model').textContent = m.slice(0, 14) || '—';
     }
-    if (data.voice) document.getElementById('m-sessions').textContent = data.voice.activeSessions ?? '—';
-    if (data.memory) document.getElementById('m-mem').textContent = Math.round(data.memory.heapUsed / 1024 / 1024) + 'M';
+    if (data.memory) {
+      document.getElementById('m-mem').textContent =
+        Math.round(data.memory.heapUsed / 1024 / 1024) + 'M';
+    }
   }
 
   function tickUptime() {
     if (!startTime) return;
     const s = Math.floor((Date.now() - startTime) / 1000);
     const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
-    document.getElementById('m-uptime').textContent = h > 0 ? h + 'h' + m + 'm' : m > 0 ? m + 'm' + sec + 's' : sec + 's';
+    document.getElementById('m-uptime').textContent =
+      h > 0 ? h + 'h' + m + 'm' : m > 0 ? m + 'm' + sec + 's' : sec + 's';
   }
 
-  // ── Controls ──────────────────────────────────────────────────────
+  // ── SPA loading ──────────────────────────────────────────────────
+  function loadSpa() {
+    if (spaLoaded) return;
+    spaLoaded = true;
+    spa.src = ALEC_URL;
+    spa.addEventListener('dom-ready', () => {
+      splash.classList.add('hidden');
+      spa.style.display = 'inline-flex';
+    }, { once: true });
+    spa.addEventListener('did-fail-load', (e) => {
+      if (e.errorCode === -3) return; // aborted (navigation race)
+      splashMsg.textContent = `Load failed: ${e.errorDescription}`;
+      splash.classList.remove('hidden');
+      spaLoaded = false;
+    });
+  }
+
+  function reloadSpa() {
+    if (spa && spaLoaded) {
+      try { spa.reload(); } catch (_) { spa.src = ALEC_URL; }
+    }
+  }
+
+  // ── Controls ─────────────────────────────────────────────────────
   async function doStart()   { setStatus('starting'); await window.alec.start(); }
   async function doStop()    { await window.alec.stop(); }
   async function doRestart() { await window.alec.restart(); }
@@ -148,14 +326,27 @@
   async function doUpdate() {
     const btn = document.getElementById('btn-update');
     btn.disabled = true;
+    const orig = btn.textContent;
     btn.textContent = '⬆ Updating…';
     const r = await window.alec.update();
     btn.textContent = r.success ? '✅ Done' : '✖ Failed';
     btn.disabled = false;
-    setTimeout(() => { btn.textContent = '⬆ Update'; }, 4000);
+    setTimeout(() => { btn.textContent = orig; }, 4000);
   }
 
-  // ── Logs ──────────────────────────────────────────────────────────
+  // ── Drawer ───────────────────────────────────────────────────────
+  function toggleDrawer() {
+    document.getElementById('drawer').classList.toggle('open');
+  }
+  function showTab(tab) {
+    const isLog = tab === 'logs';
+    document.getElementById('logs-panel').classList.toggle('hidden', !isLog);
+    document.getElementById('models-panel').classList.toggle('hidden', isLog);
+    document.getElementById('tab-logs').classList.toggle('active', isLog);
+    document.getElementById('tab-models').classList.toggle('active', !isLog);
+    if (!isLog) loadModels();
+  }
+
   function appendLog(entry) {
     const div = document.createElement('div');
     div.className = 'log-line ' + (entry.level || 'info');
@@ -164,52 +355,331 @@
     ts.textContent = entry.ts;
     div.appendChild(ts);
     div.appendChild(document.createTextNode(entry.text || ''));
-    logEl.appendChild(div);
-    while (logEl.children.length > 500) logEl.removeChild(logEl.firstChild);
-    if (autoScroll) logEl.scrollTop = logEl.scrollHeight;
+    logsEl.appendChild(div);
+    while (logsEl.children.length > 5000) logsEl.removeChild(logsEl.firstChild);
+    if (autoScroll) logsScroller.scrollTop = logsScroller.scrollHeight;
   }
 
-  // ── Tabs ──────────────────────────────────────────────────────────
-  function showTab(tab) {
-    const isLog = tab === 'logs';
-    logEl.classList.toggle('hidden', !isLog);
-    document.getElementById('models-panel').classList.toggle('visible', !isLog);
-    document.getElementById('tab-logs').classList.toggle('active', isLog);
-    document.getElementById('tab-models').classList.toggle('active', !isLog);
-    if (!isLog) loadModels();
+  // ── Log controls (copy / clear / autoscroll) ─────────────────────
+  function getAllLogText() {
+    return Array.from(logsEl.querySelectorAll('.log-line'))
+      .map(line => {
+        const ts  = line.querySelector('.log-ts')?.textContent || '';
+        const txt = line.textContent.replace(ts, '').trim();
+        return `${ts} ${txt}`.trim();
+      })
+      .join('\n');
   }
+
+  async function copyAllLogs() {
+    const text = getAllLogText();
+    if (!text) return showToast('No logs to copy', '#ef4444');
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast(`Copied ${logsEl.children.length} lines`);
+    } catch (err) {
+      showToast('Copy failed: ' + err.message, '#ef4444');
+    }
+  }
+
+  async function saveLogsToFile() {
+    try {
+      const result = await window.alec.saveLogs();
+      if (result?.ok) {
+        showToast(`Saved ${result.lines} lines → Desktop`);
+      } else {
+        showToast('Save failed: ' + (result?.error || 'unknown'), '#ef4444');
+      }
+    } catch (err) {
+      showToast('Save failed: ' + err.message, '#ef4444');
+    }
+  }
+
+  async function copySelectedLogs() {
+    const sel = window.getSelection().toString();
+    if (!sel.trim()) return showToast('Nothing selected', '#ef4444');
+    try {
+      await navigator.clipboard.writeText(sel);
+      showToast('Copied selection');
+    } catch (err) {
+      showToast('Copy failed: ' + err.message, '#ef4444');
+    }
+  }
+
+  function clearLogs() {
+    logsEl.textContent = '';
+    showToast('Logs cleared');
+  }
+
+  function toggleAutoScroll() {
+    autoScroll = !autoScroll;
+    document.getElementById('btn-autoscroll').textContent = '⬇ Auto-scroll: ' + (autoScroll ? 'on' : 'off');
+    if (autoScroll) logsScroller.scrollTop = logsScroller.scrollHeight;
+  }
+
+  function showToast(msg, color) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    if (color) t.style.background = color; else t.style.background = '#10b981';
+    t.classList.add('show');
+    clearTimeout(showToast._h);
+    showToast._h = setTimeout(() => t.classList.remove('show'), 1800);
+  }
+
+  // Menu-driven actions (Cmd+Shift+C, Cmd+K, Cmd+L, Cmd+R from app menu)
+  window.alec.onMenuCopyLogs?.(copyAllLogs);
+  window.alec.onMenuClearLogs?.(clearLogs);
+  window.alec.onMenuToggleDrawer?.(toggleDrawer);
+  window.alec.onMenuReloadSpa?.(reloadSpa);
+
+  // ── DOM helpers (keeps us out of innerHTML / XSS risk) ─────────
+  function el(tag, props = {}, ...children) {
+    const node = document.createElement(tag);
+    for (const [k, v] of Object.entries(props)) {
+      if (k === 'style') Object.assign(node.style, v);
+      else if (k === 'class') node.className = v;
+      else if (k.startsWith('on')) node[k] = v;
+      else if (k === 'text') node.textContent = v;
+      else node.setAttribute(k, v);
+    }
+    for (const c of children) {
+      if (c == null || c === false) continue;
+      node.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+    }
+    return node;
+  }
+
+  const downloadCards = new Map(); // id → { progWrap, bar, text, button }
 
   async function loadModels() {
     const panel = document.getElementById('models-panel');
-    panel.textContent = 'Loading models…';
-    const models = await window.alec.listModels();
     panel.textContent = '';
-    if (!models.length) {
-      panel.textContent = 'No GGUF models found in ~/.lmstudio/models';
-      return;
+    panel.appendChild(el('div', {
+      style: { padding: '10px', color: 'var(--muted)', fontSize: '12px' },
+      text: 'Loading…',
+    }));
+
+    // Parallel fetches keep the drawer snappy.
+    const [installed, rec] = await Promise.all([
+      window.alec.listModels(),
+      window.alec.recommendModels(),
+    ]);
+    panel.textContent = '';
+
+    // ── Hardware banner ─────────────────────────────────────────────
+    const hw = rec.hw;
+    const banner = el('div', {
+      style: {
+        padding: '10px 12px', margin: '0 0 10px', border: '1px solid var(--border)',
+        borderRadius: '8px', background: 'linear-gradient(135deg,#0f172a,#1e293b)', fontSize: '11px',
+      },
+    },
+      el('div', { style: { color: 'var(--text)', fontWeight: '600', marginBottom: '4px' }, text: 'Your Mac' }),
+      el('div', { style: { color: 'var(--muted)', lineHeight: '1.5' } },
+        hw.chip,
+        el('br'),
+        el('span', { style: { color: 'var(--text)' }, text: `${hw.ramGb} GB RAM` }),
+        ` · ${hw.cores} cores · ${hw.arch}${hw.appleSilicon ? ' (Apple Silicon ✓)' : ''}`,
+      ),
+    );
+    panel.appendChild(banner);
+
+    // ── Installed models ────────────────────────────────────────────
+    panel.appendChild(sectionHeader('Installed models', `${installed.length} found`));
+    if (!installed.length) {
+      panel.appendChild(el('div', {
+        style: { padding: '8px 12px', color: 'var(--muted)', fontSize: '11px', fontStyle: 'italic' },
+        text: 'No GGUF models installed yet. Pick one below to download.',
+      }));
+    } else {
+      installed.forEach(m => panel.appendChild(renderInstalledCard(m)));
     }
-    models.forEach(m => {
-      const card = document.createElement('div');
-      card.className = 'model-card';
-      const info = document.createElement('div');
-      const name = document.createElement('div');
-      name.className = 'model-name';
-      name.textContent = m.name.replace('.gguf', '');
-      const size = document.createElement('div');
-      size.className = 'model-size';
-      size.textContent = m.sizeGB + ' GB  ·  ' + m.path;
-      info.appendChild(name);
-      info.appendChild(size);
-      card.appendChild(info);
-      if (m.name.includes('Nemotron-3-Nano-4B')) {
-        const badge = document.createElement('span');
-        badge.className = 'model-active';
-        badge.textContent = '✓ Active';
-        card.appendChild(badge);
-      }
-      panel.appendChild(card);
+
+    // ── Catalog / recommended ───────────────────────────────────────
+    const catHead = sectionHeader('Available base models', 'Pre-approved for A.L.E.C.');
+    catHead.style.marginTop = '14px';
+    panel.appendChild(catHead);
+
+    rec.models.forEach(m => {
+      const fam = m.id.split('-').slice(0, 2).join('-');
+      const alreadyInstalled = installed.some(i => (i.name || '').toLowerCase().includes(fam));
+      panel.appendChild(renderCatalogCard(m, m.id === rec.recommendedId, alreadyInstalled));
     });
   }
+
+  function sectionHeader(title, subtitle) {
+    return el('div', {
+      style: {
+        display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
+        padding: '6px 4px', borderBottom: '1px solid var(--border)', marginBottom: '6px',
+      },
+    },
+      el('span', {
+        style: { fontSize: '11px', fontWeight: '700', letterSpacing: '.5px', textTransform: 'uppercase', color: 'var(--text)' },
+        text: title,
+      }),
+      el('span', { style: { fontSize: '10px', color: 'var(--muted)' }, text: subtitle }),
+    );
+  }
+
+  function renderInstalledCard(m) {
+    const info = el('div', { style: { flex: '1' } },
+      el('div', { class: 'model-name', text: (m.name || '').replace('.gguf', '') }),
+      el('div', { class: 'model-size', text: `${m.sizeGB ?? '?'} GB  ·  ${m.source || ''}` }),
+    );
+    const action = el('button', {
+      class: 'btn primary',
+      style: { fontSize: '11px' },
+      text: m.active ? '✓ Active' : 'Activate',
+    });
+    action.disabled = !!m.active;
+    action.onclick = async () => {
+      action.disabled = true; action.textContent = 'Switching…';
+      const r = await window.alec.activateModel(m.path);
+      action.textContent = r.success ? '✓ Active' : '✖ Failed';
+      setTimeout(loadModels, 2500);
+    };
+    return el('div', { class: 'model-card' }, info, action);
+  }
+
+  function renderCatalogCard(m, isRecommended, alreadyInstalled) {
+    const card = el('div', {
+      class: 'model-card',
+      style: { flexDirection: 'column', alignItems: 'stretch', padding: '10px' },
+    });
+    if (isRecommended) {
+      card.style.borderColor = '#22d3ee';
+      card.style.boxShadow   = '0 0 0 1px rgba(34,211,238,.25), 0 4px 12px rgba(34,211,238,.12)';
+    }
+
+    const tag = isRecommended
+      ? el('span', {
+          style: {
+            background: '#22d3ee', color: '#0f172a', fontSize: '9px', fontWeight: '800',
+            padding: '2px 6px', borderRadius: '4px', marginRight: '6px', verticalAlign: 'middle',
+          },
+          text: 'RECOMMENDED',
+        })
+      : null;
+
+    const nameDiv = el('div', { class: 'model-name' });
+    if (tag) nameDiv.appendChild(tag);
+    nameDiv.appendChild(document.createTextNode(m.name));
+
+    const left = el('div', { style: { flex: '1' } },
+      nameDiv,
+      el('div', {
+        class: 'model-size',
+        text: `${m.sizeMb} MB  ·  min ${m.minRamGb} GB  ·  best ${m.recommendedRamGb}+ GB RAM`,
+      }),
+    );
+
+    const btn = el('button', {
+      class: 'btn primary',
+      style: { fontSize: '11px', whiteSpace: 'nowrap' },
+    });
+    if (alreadyInstalled) {
+      btn.textContent = 'Downloaded';
+      btn.disabled = true;
+    } else if (!m.fits) {
+      btn.textContent = 'Not enough RAM';
+      btn.disabled = true;
+      btn.style.opacity = '.5';
+    } else {
+      btn.textContent = 'Download';
+      btn.onclick = () => startDownload(m.id, btn);
+    }
+
+    const head = el('div', {
+      style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px' },
+    }, left, btn);
+    card.appendChild(head);
+
+    const fitColor = m.comfortable ? '#10b981' : m.fits ? '#f59e0b' : '#ef4444';
+    const fitLabel = m.comfortable ? '✓ Comfortable' : m.fits ? '⚠ Tight fit' : '✖ Too big';
+    card.appendChild(el('div', {
+      style: { display: 'flex', gap: '10px', fontSize: '10px', color: 'var(--muted)', marginTop: '6px' },
+    },
+      el('span', { text: `Speed: ${m.speed}` }),
+      el('span', { text: `Quality: ${m.quality}` }),
+      el('span', { style: { color: fitColor }, text: fitLabel }),
+    ));
+
+    card.appendChild(el('div', {
+      style: { fontSize: '11px', color: 'var(--text)', marginTop: '6px', lineHeight: '1.4', opacity: '.85' },
+      text: m.description,
+    }));
+
+    // Progress bar
+    const bar  = el('div', { class: 'dl-bar',  style: { height: '100%', width: '0%', background: 'linear-gradient(90deg,#22d3ee,#06b6d4)', transition: 'width .2s' } });
+    const text = el('div', { class: 'dl-text', style: { fontSize: '10px', color: 'var(--muted)', marginTop: '4px' }, text: '0%' });
+    const progWrap = el('div', { style: { marginTop: '8px', display: 'none' } },
+      el('div', { style: { height: '4px', background: 'var(--border)', borderRadius: '2px', overflow: 'hidden' } }, bar),
+      text,
+    );
+    card.appendChild(progWrap);
+
+    downloadCards.set(m.id, { progWrap, bar, text, button: btn });
+    return card;
+  }
+
+  async function startDownload(id, btn) {
+    btn.disabled = true;
+    btn.textContent = 'Starting…';
+    const entry = downloadCards.get(id);
+    if (entry) entry.progWrap.style.display = 'block';
+    const r = await window.alec.downloadModel(id);
+    if (r.success) {
+      btn.textContent = r.already ? 'Already there' : '✓ Installed';
+      setTimeout(loadModels, 1500);
+    } else {
+      btn.textContent = '✖ Failed';
+      btn.disabled = false;
+      if (entry) entry.text.textContent = r.error || 'error';
+    }
+  }
+
+  // Main process pushes download progress — wire once at startup.
+  window.alec.onDownloadProgress(({ id, pct, receivedMb, totalMb }) => {
+    const entry = downloadCards.get(id);
+    if (!entry) return;
+    entry.bar.style.width  = pct + '%';
+    entry.text.textContent = `${pct}%  ·  ${receivedMb}${totalMb ? ' / ' + totalMb : ''} MB`;
+    entry.button.textContent = pct < 100 ? 'Downloading…' : 'Finishing…';
+  });
+
+  // ── Neural engine controls ──────────────────────────────────────
+  async function refreshNeural() {
+    const s = await window.alec.neuralStatus();
+    const btn = document.getElementById('btn-neural');
+    btn.textContent = s.running ? '🧠 Neural: ON' : '🧠 Neural: OFF';
+    btn.dataset.running = s.running ? '1' : '0';
+  }
+  async function toggleNeural() {
+    const btn = document.getElementById('btn-neural');
+    const wasRunning = btn.dataset.running === '1';
+    btn.disabled = true;
+    btn.textContent = wasRunning ? '🧠 Stopping…' : '🧠 Booting…';
+    if (wasRunning) await window.alec.neuralStop();
+    else await window.alec.neuralStart();
+    btn.disabled = false;
+    refreshNeural();
+  }
+  refreshNeural();
+  setInterval(refreshNeural, 10000);
+
+  // ── Training ────────────────────────────────────────────────────
+  async function doTraining() {
+    if (!confirm('Kick off a base-training run? The neural engine must be running.')) return;
+    const r = await window.alec.trainingStart({});
+    alert(r.success ? 'Training started.' : `Training failed: ${r.error}`);
+  }
+
+  // ── Keyboard shortcuts ───────────────────────────────────────────
+  window.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'l') { e.preventDefault(); toggleDrawer(); }
+    if ((e.metaKey || e.ctrlKey) && e.key === 'r' && !e.shiftKey) { e.preventDefault(); reloadSpa(); }
+  });
 </script>
 </body>
 </html>
