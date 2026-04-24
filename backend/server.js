@@ -202,6 +202,78 @@ function enforceHardRules(responseText) {
  *   HomeAssistant → "[Home Assistant DATA"
  *   GitHub        → "[GitHub DATA"
  */
+/**
+ * Anti-hallucination guard for MCP/Zapier tool-execution narration.
+ *
+ * The local llama-metal engine frequently fabricates tool-call narratives
+ * ("I'll call execute_zapier_read_action on Zapier — Foo…") plus invented
+ * result blocks (fake Subject/Sender/Received-Date bullets) without ever
+ * actually invoking an MCP tool. That output is indistinguishable from
+ * real data to the user and is the single biggest trust killer.
+ *
+ * Two signals must combine to trigger the rewrite:
+ *   (a) response references an external MCP/Zapier execution the model
+ *       couldn't actually perform (no tool ran this turn), AND
+ *   (b) response contains structured result-shaped content (fake email
+ *       bullets, "Source: Zapier" footers, etc.) OR explicitly narrates
+ *       "I'll call X" without a real call happening.
+ *
+ * Discussing MCP architecture without faking execution is left untouched.
+ */
+// Implementation-level tool names that should NEVER appear in the user-facing
+// response. The model is supposed to call `mcp_call` (the meta-tool) to
+// dispatch these; if they're quoted by name in the output without a real
+// invocation, the model is narrating instead of acting.
+const HARD_LEAK_MARKERS = [
+  'execute_zapier_read_action',
+  'execute_zapier_write_action',
+  'list_enabled_zapier_actions',
+  'call_mcp_tool',
+];
+// Softer markers — need a second signal (fake result shape or narration verb)
+// to trigger a rewrite, since legitimate meta-discussion might mention them.
+const SOFT_TOOL_MARKERS = [
+  'mcp server', 'mcp servers',
+  'zapier server', 'zapier servers',
+  '— source: zapier', '— source: gmail', '— source: outlook',
+];
+const FAKE_RESULT_PATTERNS = [
+  /\bSubject:\s*["\w].*\n.*Sender:\s*\w/i,
+  /\bReceived Date:\s*\d{4}-\d{2}-\d{2}/i,
+  /\basOf=\d{4}-\d{2}-\d{2}/i,
+];
+// Broad narration detector: "I'll need to make N tool calls", "I'll call X",
+// "Let me execute", "I'm going to invoke", "I need to make the following …
+// tool calls", "Here are the queries I'll be executing", etc.
+const NARRATES_CALL = new RegExp([
+  "\\b(I'?ll|I will|Let me|I'?m going to|I need to)\\s+(call|execute|invoke|run|make|perform)\\b",
+  "\\bthe following\\s+\\d*\\s*tool\\s*call",
+  "\\bqueries I'?ll be executing",
+  "\\bI'?ll need to make",
+].join('|'), 'i');
+
+function detectFakeToolOutput(text, { toolsCalled = false } = {}) {
+  if (!text || toolsCalled) return false;
+  const low = text.toLowerCase();
+  // Hard rule: implementation-level tool names leaking into output without a
+  // real invocation ALWAYS means hallucination.
+  if (HARD_LEAK_MARKERS.some(m => low.includes(m))) return true;
+  // Softer markers need a second signal.
+  if (!SOFT_TOOL_MARKERS.some(m => low.includes(m))) return false;
+  return FAKE_RESULT_PATTERNS.some(p => p.test(text)) || NARRATES_CALL.test(text);
+}
+
+const MCP_REFUSAL = [
+  "I don't have direct access to Gmail, Outlook, or Zapier MCP servers from",
+  "the local llama-metal engine — external-service actions route through the",
+  "Node connector layer (Settings → Connectors), which I can't invoke from the",
+  "chat loop yet.",
+  "",
+  "What I can do right now: answer questions about your Stoa portfolio, deals,",
+  "loans, leasing, TenantCloud, or anything in the local knowledge base. Want",
+  "me to run one of those instead?",
+].join(' ').replace(/\s+/g, ' ').trim();
+
 function stripFalseSourceFooters(text, systemPrompt, { toolsCalled = false } = {}) {
   if (!text) return text;
   // If ANY live tool ran this turn (MCP/Zapier/native), every cited source is
@@ -2217,8 +2289,16 @@ Rules for this turn (MANDATORY):
       responseText = "Sorry — I hit a blank on that one. Mind asking again?";
     }
 
+    // Anti-hallucination guard: catch fabricated MCP/Zapier execution before
+    // it reaches the user. Replace fake output with an honest refusal.
+    const _toolsRan = (nsToolCalls?.length || 0) > 0;
+    if (detectFakeToolOutput(responseText, { toolsCalled: _toolsRan })) {
+      console.warn('[anti-hallu] rewrote fabricated MCP output:', responseText.slice(0, 120).replace(/\n/g, ' '));
+      responseText = MCP_REFUSAL;
+    }
+
     // Strip fabricated "Source: X" footers for sources that weren't injected.
-    responseText = stripFalseSourceFooters(responseText, systemContent, { toolsCalled: (nsToolCalls?.length || 0) > 0 });
+    responseText = stripFalseSourceFooters(responseText, systemContent, { toolsCalled: _toolsRan });
 
     // Async: extract and store facts from this exchange
     extractAndStoreFacts(userText, responseText).catch(() => {});
@@ -2885,7 +2965,15 @@ Rules for this turn (MANDATORY):
     // We can't retroactively edit tokens already streamed, but we MUST store
     // the corrected version so the model's next-turn context doesn't include
     // a phantom "Source: STOA" it can later be cross-examined on.
-    const correctedFull = stripFalseSourceFooters(fullResponse, systemContent, { toolsCalled: (streamToolCalls?.length || 0) > 0 });
+    const _streamToolsRan = (streamToolCalls?.length || 0) > 0;
+    let correctedFull = fullResponse;
+    if (detectFakeToolOutput(correctedFull, { toolsCalled: _streamToolsRan })) {
+      console.warn('[anti-hallu stream] fabricated MCP output detected; rewriting history.');
+      correctedFull = MCP_REFUSAL;
+      // Flag the SPA so it can replace what it streamed with the corrected text.
+      res.write(`data: ${JSON.stringify({ replaceFull: true, corrected: MCP_REFUSAL, reason: 'fabricated_mcp_output' })}\n\n`);
+    }
+    correctedFull = stripFalseSourceFooters(correctedFull, systemContent, { toolsCalled: _streamToolsRan });
     if (correctedFull !== fullResponse) {
       res.write(`data: ${JSON.stringify({ sourceCorrection: true, note: 'One or more source footers were unverified and have been relabeled in history.' })}\n\n`);
     }
