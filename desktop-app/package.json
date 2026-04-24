@@ -1,6 +1,6 @@
 {
   "name": "alec-desktop",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": "A.L.E.C. Desktop Control Center",
   "main": "src/main.js",
   "scripts": {
@@ -17,6 +17,7 @@
       "target": ["dmg", "zip"],
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
+      "identity": null,
       "icon": "assets/alec.icns"
     },
     "dmg": {
