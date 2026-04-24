@@ -1329,6 +1329,27 @@ app.post('/api/auth/login', express.json(), (req, res, next) => {
   } catch (e) { return next(e); }
 });
 
+// ── Legacy /api/auth/me shim ─────────────────────────────────────
+// Sprint-1's /api/auth/me requires an MSSQL-backed user record, which
+// isn't available on desktop installs that log in via the owner-bypass
+// or Python admin_users path. Mount this BEFORE the Sprint-1 router so
+// legacy JWTs (issued by server.js's owner/proxy login above) resolve
+// to a user and the SPA can hydrate AuthContext.
+app.get('/api/auth/me', (req, res) => {
+  try {
+    const hdr = req.headers['authorization'] || '';
+    const tok = hdr.startsWith('Bearer ') ? hdr.slice(7) : null;
+    if (!tok) return res.status(401).json({ error: 'Auth required' });
+    const claims = jwt.verify(tok, process.env.JWT_SECRET);
+    const userId = claims.sub || claims.userId || claims.email;
+    const email  = claims.email;
+    const role   = claims.role || 'viewer';
+    return res.json({ user: { userId, email, role, tokenType: claims.tokenType || null } });
+  } catch (e) {
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
+});
+
 // ── Sprint-1 auth routes (/api/auth/*, /api/admin/*) ────────────
 // Mounted before authenticateToken-protected routes so /login is reachable
 // without a bearer token. The router itself applies mw.authenticate on the
