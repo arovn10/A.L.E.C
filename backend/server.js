@@ -1303,29 +1303,52 @@ if (fs.existsSync(path.join(SPA_DIST, 'index.html'))) {
 app.use('/uploads', express.static(UPLOADS_DIR));
 
 // ── Local owner bypass mounted BEFORE authRoutes so MSSQL-less installs can log in
-app.post('/api/auth/login', express.json(), (req, res, next) => {
+// Desktop owner login. Verifies bcrypt hashes from the local admin_users
+// SQLite table — no plaintext comparison, no plaintext-in-env. If the email
+// isn't found here we fall through to the Sprint-1 / MSSQL router.
+app.post('/api/auth/login', express.json(), async (req, res, next) => {
   try {
     const { email, password } = req.body || {};
-    const ownerEmail = (process.env.ALEC_OWNER_EMAIL || 'alec@rovner.com').toLowerCase();
-    const ownerPass  = process.env.ALEC_OWNER_PASS  || 'alec2024';
     const emailLc = String(email || '').toLowerCase();
-    if (password === ownerPass && (emailLc === ownerEmail || emailLc === 'alec' || emailLc === 'owner')) {
-      const jwtLib = require('jsonwebtoken');
-      const access = jwtLib.sign(
-        { userId: 'alec-owner', email: ownerEmail, role: 'owner', tokenType: 'OWNER' },
-        process.env.JWT_SECRET || 'dev-secret',
-        { expiresIn: '30d' }
-      );
-      return res.json({
-        success: true,
-        token: access,
-        access,
-        tokenType: 'OWNER',
-        user: { userId: 'alec-owner', email: ownerEmail, role: 'owner' },
-        expiresInSec: 30 * 24 * 3600,
-      });
+    if (!emailLc || !password) return res.status(400).json({ error: 'Email and password are required' });
+
+    const Database = require('better-sqlite3');
+    const bcrypt   = require('bcryptjs');
+    const jwtLib   = require('jsonwebtoken');
+    const candidates = [
+      path.join(require('os').homedir(), 'Library/Application Support/alec-desktop/alec-data/alec.db'),
+      path.join(__dirname, '..', 'data', 'alec.db'),
+    ];
+    for (const dbPath of candidates) {
+      if (!fs.existsSync(dbPath)) continue;
+      let db;
+      try {
+        db = new Database(dbPath, { readonly: true, fileMustExist: true });
+        const row = db.prepare('SELECT email, password_hash, role FROM admin_users WHERE lower(email) = ?').get(emailLc);
+        db.close();
+        if (!row) continue;
+        const ok = await bcrypt.compare(password, row.password_hash);
+        if (!ok) return res.status(401).json({ error: 'Invalid email or password' });
+        const role = row.role || 'admin';
+        const access = jwtLib.sign(
+          { userId: 'alec-owner', email: row.email, role, tokenType: 'OWNER' },
+          process.env.JWT_SECRET || 'dev-secret',
+          { expiresIn: '30d' }
+        );
+        return res.json({
+          success: true,
+          token: access,
+          access,
+          tokenType: 'OWNER',
+          user: { userId: 'alec-owner', email: row.email, role },
+          expiresInSec: 30 * 24 * 3600,
+        });
+      } catch (e) {
+        try { db && db.close(); } catch {}
+        console.warn('[auth] admin_users lookup failed on', dbPath, e.message);
+      }
     }
-    return next(); // fall through to authRoutes (MSSQL path)
+    return next(); // fall through to Sprint-1 / MSSQL router
   } catch (e) { return next(e); }
 });
 
