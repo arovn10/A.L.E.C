@@ -667,17 +667,24 @@ ipcMain.handle('server:update', () => new Promise((resolve) => {
   });
 }));
 
-// Run an update check shortly after launch (packaged only). Quiet — if there's
-// nothing new, no UI. If there's an update, it downloads in the background and
-// installs on next quit via autoInstallOnAppQuit. The user can also click
-// "Update" to force an immediate quit+install.
+// Auto-update is GATED behind ALEC_ENABLE_AUTOUPDATE=1. The unsigned DMG/ZIP
+// pipeline fails Squirrel's signature check (`code has no resources but
+// signature indicates they must be present`), which loops forever and
+// eventually kills the backend respawn budget. Until we ship a properly
+// codesigned+notarized build, updates must be installed manually by
+// re-downloading the DMG. Users can still trigger a manual check via the
+// `run-update-check` IPC; it just won't fire automatically.
 app.whenReady().then(() => {
   if (!autoUpdater || !app.isPackaged) return;
+  if (process.env.ALEC_ENABLE_AUTOUPDATE !== '1') {
+    pushLog('info', 'ℹ Auto-update disabled (unsigned builds). Set ALEC_ENABLE_AUTOUPDATE=1 to re-enable.');
+    return;
+  }
   setTimeout(() => {
     try { autoUpdater.checkForUpdatesAndNotify(); } catch (e) {
       console.warn('[updater] startup check failed:', e.message);
     }
-  }, 8000); // let the server finish its own boot first
+  }, 8000);
 });
 
 ipcMain.handle('model:list', async () => {

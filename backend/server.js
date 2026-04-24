@@ -1303,54 +1303,11 @@ if (fs.existsSync(path.join(SPA_DIST, 'index.html'))) {
 app.use('/uploads', express.static(UPLOADS_DIR));
 
 // ── Local owner bypass mounted BEFORE authRoutes so MSSQL-less installs can log in
-// Desktop owner login. Verifies bcrypt hashes from the local admin_users
-// SQLite table — no plaintext comparison, no plaintext-in-env. If the email
-// isn't found here we fall through to the Sprint-1 / MSSQL router.
-app.post('/api/auth/login', express.json(), async (req, res, next) => {
-  try {
-    const { email, password } = req.body || {};
-    const emailLc = String(email || '').toLowerCase();
-    if (!emailLc || !password) return res.status(400).json({ error: 'Email and password are required' });
-
-    const Database = require('better-sqlite3');
-    const bcrypt   = require('bcryptjs');
-    const jwtLib   = require('jsonwebtoken');
-    const candidates = [
-      path.join(require('os').homedir(), 'Library/Application Support/alec-desktop/alec-data/alec.db'),
-      path.join(__dirname, '..', 'data', 'alec.db'),
-    ];
-    for (const dbPath of candidates) {
-      if (!fs.existsSync(dbPath)) continue;
-      let db;
-      try {
-        db = new Database(dbPath, { readonly: true, fileMustExist: true });
-        const row = db.prepare('SELECT email, password_hash, role FROM admin_users WHERE lower(email) = ?').get(emailLc);
-        db.close();
-        if (!row) continue;
-        const ok = await bcrypt.compare(password, row.password_hash);
-        if (!ok) return res.status(401).json({ error: 'Invalid email or password' });
-        const role = row.role || 'admin';
-        const access = jwtLib.sign(
-          { userId: 'alec-owner', email: row.email, role, tokenType: 'OWNER' },
-          process.env.JWT_SECRET || 'dev-secret',
-          { expiresIn: '30d' }
-        );
-        return res.json({
-          success: true,
-          token: access,
-          access,
-          tokenType: 'OWNER',
-          user: { userId: 'alec-owner', email: row.email, role },
-          expiresInSec: 30 * 24 * 3600,
-        });
-      } catch (e) {
-        try { db && db.close(); } catch {}
-        console.warn('[auth] admin_users lookup failed on', dbPath, e.message);
-      }
-    }
-    return next(); // fall through to Sprint-1 / MSSQL router
-  } catch (e) { return next(e); }
-});
+// Login is handled downstream by the Python neural engine at :8000, which
+// verifies bcrypt password_hash from its own admin_users SQLite table.
+// Passwords are NEVER compared in plaintext and NEVER read from env — the
+// only credential rotation path is UPDATE admin_users ... in that DB.
+// See the /api/auth/login handler near line 1690 (proxyToNeural call).
 
 // ── Legacy /api/auth/me shim ─────────────────────────────────────
 // Sprint-1's /api/auth/me requires an MSSQL-backed user record, which
