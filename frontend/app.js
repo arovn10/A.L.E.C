@@ -1634,6 +1634,21 @@ async function sendMessage() {
           if (parsed.done && parsed.conversation_id) {
             state.currentConversationId = parsed.conversation_id;
           }
+          // Phase events signal tool-use without polluting the bubble.
+          // Rendered as a plain-text italic hint; wiped when the first real
+          // token arrives. No HTML injection — textContent is XSS-safe.
+          if (parsed.phase === 'tools' && !fullText) {
+            while (bubbleEl.firstChild) bubbleEl.removeChild(bubbleEl.firstChild);
+            const hint = document.createElement('span');
+            hint.className = 'phase-hint';
+            hint.textContent = 'using tools…';
+            bubbleEl.appendChild(hint);
+            scrollToBottom();
+          }
+          // tool_calls events are debug-only; keep them in console, not chat.
+          if (parsed.tool_calls) {
+            try { console.debug('[chat] tool_calls', parsed.tool_calls); } catch {}
+          }
           if (parsed.token) {
             fullText += parsed.token;
             bubbleEl.innerHTML = renderMarkdown(fullText);

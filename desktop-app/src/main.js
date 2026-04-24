@@ -6,13 +6,26 @@
  * streaming.  Also shows a menu-bar status icon for quick access.
  */
 
-const { app, BrowserWindow, Tray, Menu, nativeImage, shell, ipcMain, safeStorage } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, shell, ipcMain, safeStorage, dialog } = require('electron');
 const { spawn, execFile } = require('child_process');
 const path  = require('path');
 const http  = require('http');
 const https = require('https');
 const os    = require('os');
 const fs    = require('fs');
+
+// ── electron-updater (lazy-required so `npm start` in dev still runs if
+//    the package isn't installed yet). Provides real .dmg/.zip auto-update
+//    against GitHub Releases (configured under `build.publish` in package.json).
+let autoUpdater = null;
+try {
+  autoUpdater = require('electron-updater').autoUpdater;
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+} catch (e) {
+  // Dev mode without the dep: `server:update` falls back to a "not available" reply.
+  console.warn('[updater] electron-updater not installed:', e.message);
+}
 
 // ── Config ───────────────────────────────────────────────────────
 // In dev:  <repo>/desktop-app/src/main.js  →  repo root is ../../
@@ -511,22 +524,161 @@ ipcMain.handle('token:delete', async (_e, { key }) => {
   } catch (e) { return { ok: false, error: e.message }; }
 });
 
+// Update: `git pull --ff-only` only makes sense when ALEC_ROOT is a live git
+// checkout (dev mode). In the packaged bundle, ALEC_ROOT is a read-only
+// copy inside the .app and is NOT a git repo — hitting Update there would
+// fail with "fatal: not a git repository" AND leave the backend stopped
+// because stopServer() already fired. Fix: in packaged mode, skip the git
+// pull entirely, keep the backend running, and surface a clear message.
+// Update strategy:
+//   • Dev (ALEC_ROOT is a git repo)  → `git pull --ff-only` in place.
+//   • Packaged install               → pull the developer worktree, then rsync
+//     the updated backend/ services/ scripts/ .env over the bundled copy so
+//     the running app picks up the changes after a backend restart. The dev
+//     worktree lives at ~/Desktop/App Development/A.L.E.C by default; override
+//     with ALEC_DEV_ROOT env or the alec-settings.json `devRoot` key.
+function resolveDevRoot() {
+  try {
+    const s = readUserSettings() || {};
+    if (s.devRoot && fs.existsSync(path.join(s.devRoot, '.git'))) return s.devRoot;
+  } catch {}
+  if (process.env.ALEC_DEV_ROOT && fs.existsSync(path.join(process.env.ALEC_DEV_ROOT, '.git'))) {
+    return process.env.ALEC_DEV_ROOT;
+  }
+  const home = app.getPath('home');
+  const candidates = [
+    path.join(home, 'Desktop', 'App Development', 'A.L.E.C'),
+    path.join(home, 'A.L.E.C'),
+    path.join(home, 'src', 'A.L.E.C'),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(path.join(c, '.git'))) return c;
+  }
+  return null;
+}
+
+// ── Update the whole .app ───────────────────────────────────────────
+// Priority order:
+//   1. Packaged build + electron-updater available → check GitHub Releases,
+//      download a signed/unsigned .dmg, quitAndInstall. THIS IS THE NORMAL PATH.
+//   2. Dev mode inside a git repo → `git pull --ff-only` in place.
+//   3. Packaged but electron-updater missing AND a dev worktree is configured
+//      (legacy escape hatch) → rsync the dev worktree into the bundle.
+// Everything else reports a clear reason rather than silently "failing".
 ipcMain.handle('server:update', () => new Promise((resolve) => {
-  stopServer();
-  setTimeout(() => {
-    // Use execFile for safety — no shell injection possible
-    execFile('git', ['pull', '--ff-only'], { cwd: ALEC_ROOT }, (err, stdout, stderr) => {
-      const msg = err ? (stderr || err.message) : stdout.trim();
-      if (!err) {
-        pushLog('info', '✅ Update: ' + msg);
-        setTimeout(() => startServer(), 500);
-      } else {
-        pushLog('error', '✖ Update failed: ' + msg);
-      }
-      resolve({ success: !err, message: msg });
+  const isDev = !app.isPackaged;
+  const gitDir = path.join(ALEC_ROOT, '.git');
+  const isGitRepo = fs.existsSync(gitDir);
+
+  // (1) Packaged → electron-updater path.
+  if (!isDev && autoUpdater) {
+    pushLog('info', '🔄 Checking GitHub Releases for a newer ALEC build…');
+
+    // Fresh listeners each click so we don't stack handlers.
+    autoUpdater.removeAllListeners('update-available');
+    autoUpdater.removeAllListeners('update-not-available');
+    autoUpdater.removeAllListeners('download-progress');
+    autoUpdater.removeAllListeners('update-downloaded');
+    autoUpdater.removeAllListeners('error');
+
+    autoUpdater.on('update-available', (info) =>
+      pushLog('info', `🔄 Update ${info?.version || ''} available — downloading…`));
+    autoUpdater.on('update-not-available', (info) => {
+      const msg = `You're on the latest version (${info?.version || app.getVersion()}).`;
+      pushLog('info', '✅ ' + msg);
+      resolve({ success: true, updated: false, message: msg });
     });
-  }, 2000);
+    autoUpdater.on('download-progress', (p) => {
+      if (p && typeof p.percent === 'number') {
+        pushLog('info', `🔄 Downloading update: ${p.percent.toFixed(0)}%`);
+      }
+    });
+    autoUpdater.on('update-downloaded', (info) => {
+      const v = info?.version || '';
+      pushLog('info', `✅ Update ${v} downloaded. Relaunching…`);
+      resolve({ success: true, updated: true, message: `Update ${v} downloaded.` });
+      setTimeout(() => {
+        try { stopServer(); } catch {}
+        try {
+          autoUpdater.quitAndInstall(true /* isSilent */, true /* forceRunAfter */);
+        } catch (e) {
+          pushLog('error', '✖ quitAndInstall threw: ' + e.message);
+        }
+      }, 750);
+    });
+    autoUpdater.on('error', (err) => {
+      const msg = (err && err.message) ? err.message : String(err);
+      pushLog('error', '✖ Update failed: ' + msg);
+      resolve({ success: false, message: msg });
+    });
+
+    try {
+      autoUpdater.checkForUpdates();
+    } catch (err) {
+      pushLog('error', '✖ Update check threw: ' + err.message);
+      resolve({ success: false, message: err.message });
+    }
+    return;
+  }
+
+  // (2) Dev mode in a git checkout.
+  if (isDev && isGitRepo) {
+    stopServer();
+    setTimeout(() => {
+      execFile('git', ['pull', '--ff-only'], { cwd: ALEC_ROOT }, (err, stdout, stderr) => {
+        const msg = err ? (stderr || err.message) : stdout.trim();
+        pushLog(err ? 'error' : 'info', (err ? '✖ Update failed: ' : '✅ Update: ') + msg);
+        setTimeout(() => startServer(), 500);
+        resolve({ success: !err, message: msg });
+      });
+    }, 2000);
+    return;
+  }
+
+  // (3) Legacy fallback: packaged but no updater → rsync from a dev worktree.
+  const devRoot = resolveDevRoot();
+  if (!devRoot) {
+    const msg = 'Auto-update unavailable and no dev worktree configured. Install electron-updater in the desktop-app package or set ALEC_DEV_ROOT.';
+    pushLog('warn', 'ℹ Update skipped: ' + msg);
+    return resolve({ success: false, packaged: true, message: msg });
+  }
+
+  pushLog('info', `↻ Legacy update path: pulling ${devRoot}`);
+  execFile('git', ['pull', '--ff-only'], { cwd: devRoot }, (pullErr, pullOut, pullErrStr) => {
+    if (pullErr) {
+      const msg = pullErrStr || pullErr.message;
+      pushLog('error', '✖ git pull failed: ' + msg);
+      return resolve({ success: false, message: msg });
+    }
+    pushLog('info', '✓ git pull: ' + (pullOut.trim() || 'already up to date'));
+
+    stopServer();
+    const syncTargets = ['backend', 'services', 'scripts', '.env'];
+    const existing = syncTargets.filter(t => fs.existsSync(path.join(devRoot, t)));
+    const rsyncArgs = ['-a', '--delete', ...existing.map(t => path.join(devRoot, t)), ALEC_ROOT + path.sep];
+    setTimeout(() => {
+      execFile('rsync', rsyncArgs, (rsErr, rsOut, rsErrStr) => {
+        const msg = rsErr ? (rsErrStr || rsErr.message) : `synced ${existing.join(', ')} → bundle`;
+        pushLog(rsErr ? 'error' : 'info', (rsErr ? '✖ rsync failed: ' : '✅ Update: ') + msg);
+        setTimeout(() => startServer(), 500);
+        resolve({ success: !rsErr, message: msg });
+      });
+    }, 1500);
+  });
 }));
+
+// Run an update check shortly after launch (packaged only). Quiet — if there's
+// nothing new, no UI. If there's an update, it downloads in the background and
+// installs on next quit via autoInstallOnAppQuit. The user can also click
+// "Update" to force an immediate quit+install.
+app.whenReady().then(() => {
+  if (!autoUpdater || !app.isPackaged) return;
+  setTimeout(() => {
+    try { autoUpdater.checkForUpdatesAndNotify(); } catch (e) {
+      console.warn('[updater] startup check failed:', e.message);
+    }
+  }, 8000); // let the server finish its own boot first
+});
 
 ipcMain.handle('model:list', async () => {
   try {

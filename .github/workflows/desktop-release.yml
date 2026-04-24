@@ -1,0 +1,45 @@
+# ═══════════════════════════════════════════════════════════════════
+#  ALEC Desktop Release — builds + publishes the macOS .dmg/.zip to
+#  GitHub Releases whenever a `v*` tag is pushed. electron-updater in
+#  the installed app polls this same feed.
+#
+#  Release flow:
+#    1. Bump desktop-app/package.json's "version"
+#    2. git tag vX.Y.Z && git push --tags
+#    3. This workflow runs, builds an unsigned .dmg (A2 path), and
+#       uploads the artifacts + latest-mac.yml to the tag's Release.
+# ═══════════════════════════════════════════════════════════════════
+
+name: desktop-release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install root deps
+        run: npm ci --omit=optional
+
+      - name: Install desktop-app deps
+        working-directory: desktop-app
+        run: npm ci --include=dev
+
+      - name: Build + publish DMG to GitHub Releases
+        working-directory: desktop-app
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run release

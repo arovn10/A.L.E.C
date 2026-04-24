@@ -202,8 +202,12 @@ function enforceHardRules(responseText) {
  *   HomeAssistant → "[Home Assistant DATA"
  *   GitHub        → "[GitHub DATA"
  */
-function stripFalseSourceFooters(text, systemPrompt) {
+function stripFalseSourceFooters(text, systemPrompt, { toolsCalled = false } = {}) {
   if (!text) return text;
+  // If ANY live tool ran this turn (MCP/Zapier/native), every cited source is
+  // by definition real — do not rewrite footers. The model's own citation
+  // (connector + tool + timestamp) is the source of truth.
+  if (toolsCalled) return text;
   const injected = {
     STOA:          /\[STOA DATA|## Live Leasing & Occupancy Data|## Project Details|## Occupancy & Rent Trend/i.test(systemPrompt),
     TenantCloud:   /\[TenantCloud DATA/i.test(systemPrompt),
@@ -216,6 +220,11 @@ function stripFalseSourceFooters(text, systemPrompt) {
   return text.replace(FOOTER_RE, (match, pre, source) => {
     const key = Object.keys(injected).find(k => k.toLowerCase() === source.toLowerCase());
     if (key && injected[key]) return match; // legitimate — keep
+    // Zapier / MCP / Web footers without a tool-call this turn look like
+    // hallucinations — downgrade them to an honest "Model" footer.
+    if (/^(Zapier|MCP|Web|Gmail|Outlook|Microsoft|Google)/i.test(source)) {
+      return `${pre}— Source: Model (tool was not called this turn)`;
+    }
     return `${pre}— Source: Model (no live data injected — numbers above may be estimates)`;
   });
 }
@@ -272,12 +281,25 @@ function buildSystemPrompt() {
   if (process.env.MS_TENANT_ID) caps.push('✅ Microsoft 365 — SharePoint, OneDrive, Outlook/calendar');
   else caps.push('⚠️  Microsoft 365 — not configured');
 
+  // Live view of connectors-v2 + MCP servers from data/local-alec.db. This is
+  // the source of truth for what ALEC can actually do *right now* — the env
+  // checks above are legacy fallbacks for services not yet migrated.
+  let capabilityBlock = '';
+  try {
+    const { buildCapabilityBlock } = require('./services/capabilityContext.js');
+    capabilityBlock = buildCapabilityBlock();
+  } catch (e) {
+    console.warn('[server] capabilityContext unavailable:', e.message);
+  }
+
   return `${directiveSection}You are Alec (A.L.E.C.), Alec Rovner's personal AI executive assistant running locally on his Mac.
 You use a local LLaMA 3.1 8B model (Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf) running on Apple Silicon via node-llama-cpp with Metal GPU acceleration. You do NOT call any external AI API — you run entirely on this Mac.
 Current date and time: ${dateStr} at ${timeStr}.
 
-## Your Real Capabilities (configured services)
+## Your Real Capabilities (legacy env-var view)
 ${caps.join('\n')}
+
+${capabilityBlock}
 
 ## Critical Rules — NEVER Violate These
 1. **NEVER fabricate data.** If real data is injected above (marked [STOA DATA], [iMessage DATA], etc.), use ONLY that. If no real data is available, say so honestly.
@@ -288,6 +310,7 @@ ${caps.join('\n')}
 3d. **Home Assistant HARD RULE: If you do NOT see "[Home Assistant DATA" in this prompt, you have no device state information. Never guess whether lights are on/off or locks are locked/unlocked.**
 3e. **Stock prices / market data HARD RULE: You have NO real-time market data. NEVER quote a specific stock price, index level, or crypto price from memory — your training data is outdated and prices change every second. If asked for a current stock price: (1) attempt a web search if search results appear above, (2) if search results contain a price, report it with the timestamp. If search results are absent or don't contain a current price, say: "I don't have real-time market data — check Yahoo Finance, Google Finance, or Bloomberg for the current price."**
 4. **NEVER claim you can't do something you CAN do** (GitHub, iMessage, STOA queries, Excel exports, research, SMS). Check the capabilities list above.
+4a. **Connector + MCP awareness — MANDATORY first step on every turn.** Before answering any question about data, tools, or capabilities, scan the "Live connectors" and "Live MCP servers" blocks above. If a ✅-marked connector or a running MCP server can answer the question (or produce the action), reference it by name in your plan. Example: "Render shows connected → I can pull deploy status." Do not fall back to reasoning, web search, or 'I don't have that' until you've confirmed nothing in those two live blocks covers it.
 5. **SMS/Texting**: If Twilio is ✅ and the owner asks you to text them, the server automatically sends the text — just confirm you're doing it and describe what the message will say.
 6. **Google Reviews / resident feedback**: The STOA database does NOT contain Google review text. If asked for reviews, say: "The STOA database doesn't include Google review text — I can see Google ratings if they're in the data, but not individual reviews. I can do a web search for recent reviews if you'd like."
 7. **Excel exports**: Only generate Excel files for data you actually have (STOA leasing data). Don't offer to generate "top 100 negative reviews" — that data doesn't exist in STOA.
@@ -298,8 +321,14 @@ ${caps.join('\n')}
    - **Forward occupancy (4/7/8 wk)** = projected future occupancy after scheduled NTVs and move-ins — a forecast, not today.
    When asked "what's the occupancy today?" the ONLY valid answer is the Occupancy field. Never substitute Leased % or a forward projection. If you report any number, label it explicitly: "Occupancy today is 93.6% (292/312). Leased stands at 95%. Forward 4-week projection is 92.6%." If data is injected with multiple fields, reproduce them all with their labels.
 10. **Conversation continuity — NEVER deny prior statements.** If [PRIOR TURNS] context shows you said something in this session, own it. If you misspoke, correct yourself and explain the error. Do NOT claim "I didn't say that" when the transcript shows you did.
-11. **Source attribution on data answers.** When you give a specific number (occupancy, rent, pipeline count, balance, etc.), append a 1-line source footer at the bottom of the response in the form: "— Source: STOA · <property or query> · asOf=YYYY-MM-DD" (or TenantCloud / Weaviate / Web / Model). If no data was injected, say so and cite "Model" (meaning you are answering from reasoning alone).
-12. Be direct, smart, and friendly. Use markdown for clarity. Refer to yourself as "Alec" in casual replies.`;
+11. **Source attribution on data answers.** When you give a specific number (occupancy, rent, pipeline count, balance, etc.), append a 1-line source footer at the bottom of the response in the form: "— Source: STOA · <property or query> · asOf=YYYY-MM-DD" (or TenantCloud / Weaviate / Web / Zapier · <connector> / Model). If you actually called a Zapier/MCP tool this turn, cite the real connector + tool name — NEVER write "Source: Model" when a tool ran.
+12. **Affirmations execute the last proposal.** When the user replies with a bare affirmation — "yes", "go ahead", "do it", "continue", "proceed", "confirmed" — re-read YOUR most recent message in [PRIOR TURNS] and execute the action you proposed there. Do NOT reset, summarize unrelated data, or ask the user to re-state the plan. If you proposed "Shall I start with Option A?", a "yes" means start Option A now.
+13. **Option letters refer to YOUR options.** When the user replies with single letters ("A and D", "B, C") or numbers ("1 and 3"), those ALWAYS reference the lettered/numbered options YOU offered in your immediately prior message. NEVER interpret "A" as "Amazon" or "B" as "Booking.com" — look at your last turn and execute the options the user selected.
+14. **Take initiative — stop asking for permission you already have.** If a tool is available and the user's request implies an action ("clean up my gmail", "summarize my emails", "check stoa"), EXECUTE. Make a reasonable default choice for ambiguous parameters (e.g. "recent" → last 30 days; "cleanup" → start with Promotions category). Only ask ONE clarifying question if the action is truly destructive or the default could go wrong. Otherwise: act, then report.
+15. **Multi-step work batches tool calls.** Cleanup / inbox-triage / multi-inbox summaries legitimately need 5–15 tool calls. Keep calling tools until you have the data, then answer. When you hit the per-turn tool budget, DO NOT ask "shall I continue?" — summarize what you pulled, then tell the user "I'll continue with [next step] — say 'keep going' to proceed."
+16. **Conversational follow-through.** You are the executive assistant. The user expects continuity across turns. If turn N proposed a plan and turn N+1 is "yes", the session state says EXECUTE, not RESTART. Trust your prior turn.
+
+Be direct, smart, and friendly. Use markdown for clarity. Refer to yourself as "Alec" in casual replies.`;
 }
 
 // Keep a static alias for backward compat with any code referencing ALEC_SYSTEM_PROMPT directly
@@ -310,6 +339,34 @@ const ALEC_SYSTEM_PROMPT = buildSystemPrompt();
  * Fixes the gaslighting bug: without this, the LLM forgets what it just said.
  * Cheap (SQLite read) — safe to call per-turn.
  */
+/**
+ * Resume the user's most-recent chat if the frontend forgot to echo back
+ * conversation_id. Without this, every turn creates a brand-new chat row
+ * and buildPriorTurnsBlock only sees the current user message — meaning
+ * ALEC loses all continuity turn-to-turn (the "you said yes to what?" bug).
+ *
+ * Window: 30 minutes. If the user has been idle longer than that, start
+ * a fresh chat — matches how humans expect conversational memory to work.
+ */
+function resolveStickyConvId(explicitConvId, userId) {
+  if (explicitConvId) return explicitConvId;
+  if (!chatHistory || !userId) return null;
+  try {
+    const recent = chatHistory.listConversations(userId) || [];
+    if (!recent.length) return null;
+    const mostRecent = recent[0];
+    // updated_at is SQLite 'YYYY-MM-DD HH:MM:SS' UTC; treat as UTC.
+    const lastMs = Date.parse((mostRecent.updated_at || '').replace(' ', 'T') + 'Z');
+    if (!Number.isFinite(lastMs)) return null;
+    const ageMin = (Date.now() - lastMs) / 60000;
+    if (ageMin <= 30) return mostRecent.id;
+    return null;
+  } catch (e) {
+    console.warn('[stickyConv]', e.message);
+    return null;
+  }
+}
+
 function buildPriorTurnsBlock(convId, maxTurns = 12) {
   if (!chatHistory || !convId) return '';
   try {
@@ -401,13 +458,662 @@ async function* callClaudeStream(messages, voiceMode = false) {
   }
 }
 
+// ── Anthropic Claude + MCP tool-use loop ────────────────────────
+// Gives the LLM ONE meta-tool (`mcp_call`) that can dispatch to any tool on
+// any running MCP server. The capability block already lists the real tool
+// names; the model picks one and we dispatch via callHttpTool. This avoids
+// the 100-tool Anthropic cap that would otherwise break with ~450 Zapier
+// tools across 4 servers.
+const MCP_CALL_TOOL = {
+  name: 'mcp_call',
+  description:
+    'Invoke a tool on one of the running MCP servers listed in the system ' +
+    'prompt. Use the EXACT tool name from the capability block ' +
+    '(e.g. "gmail_find_email", "microsoft_outlook_find_emails", ' +
+    '"google_sheets_get_spreadsheet_by_id"). Returns the tool result JSON. ' +
+    'Prefer this over narrating what you would do — actually call it. ' +
+    'NOTE: For Stoa Group portfolio/leasing/loan/covenant/pipeline/DSCR/LTV/equity ' +
+    'questions, use the `stoa_query` tool instead — that data lives in Azure SQL, ' +
+    'not an MCP server.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      server_id: {
+        type: 'string',
+        description:
+          'MCP server id (e.g. "zapier-alec-personal", "zapier-campusrentals", ' +
+          '"zapier-abodingo", "zapier-stoagroup"). If you do not know the id, ' +
+          'pass the display name; the backend will resolve it.',
+      },
+      tool_name: {
+        type: 'string',
+        description: 'The exact tool name (e.g. "gmail_find_email").',
+      },
+      arguments: {
+        type: 'object',
+        description: 'Arguments object for the tool (shape depends on the tool).',
+        additionalProperties: true,
+      },
+    },
+    required: ['server_id', 'tool_name'],
+  },
+};
+
+// Second chat-tool: direct query against the Stoa Group Azure SQL connector.
+// ALEC has a v2 `stoa` connector wired to Azure SQL, but the model only had
+// `mcp_call` — Azure SQL isn't behind an MCP server, so portfolio/leasing/loan
+// data was unreachable from chat. This exposes a whitelisted set of native
+// stoaQueryService methods that already back /api/finance/* and /api/portfolio/*
+// so the model can fetch real Stoa data without us duplicating business logic.
+const STOA_QUERY_TOOL = {
+  name: 'stoa_query',
+  description:
+    'Query the Stoa Group Azure SQL database (real portfolio, leasing, loan, ' +
+    'covenant data). Use this INSTEAD of mcp_call when the user asks about ' +
+    'Stoa properties, occupancy, leasing, rents, loans, DSCR, LTV, equity, ' +
+    'covenants, pipeline, or maturity. Returns JSON rows from the real DB.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      query: {
+        type: 'string',
+        enum: [
+          'portfolio_summary', 'find_projects', 'get_mmr', 'get_unit_details',
+          'get_renewals', 'get_loans', 'get_pipeline', 'get_dscr',
+          'get_ltv', 'get_equity', 'get_expiring_contracts', 'get_portfolio_rent_growth',
+        ],
+        description:
+          'Which query to run. portfolio_summary = top-line KPIs. find_projects = project list (supports search). ' +
+          'get_mmr = monthly market rent per property. get_unit_details = units per property. ' +
+          'get_renewals = lease renewal pipeline. get_loans = all debt. get_pipeline = deal pipeline. ' +
+          'get_dscr = debt-service covenants. get_ltv = loan-to-value. get_equity = equity commitments. ' +
+          'get_expiring_contracts = leases/contracts expiring soon. get_portfolio_rent_growth = rent growth trend.',
+      },
+      search: { type: 'string', description: 'Optional property name search for find_projects/get_mmr/get_unit_details/get_renewals' },
+      property: { type: 'string', description: 'Optional property filter for get_loans' },
+      status: { type: 'string', description: 'Optional deal stage filter for get_pipeline' },
+      days_ahead: { type: 'number', description: 'Look-ahead window for get_expiring_contracts (default 90)' },
+    },
+    required: ['query'],
+  },
+};
+
+async function dispatchStoaQuery({ query, search, property, status, days_ahead }) {
+  try {
+    const svc = require('../services/stoaQueryService.js');
+    switch (query) {
+      case 'portfolio_summary':    return { ok: true, data: await svc.getPortfolioSummary() };
+      case 'find_projects':        return { ok: true, data: await svc.findProjects(search || '') };
+      case 'get_mmr':              return { ok: true, data: await svc.getMMRData(search || null) };
+      case 'get_unit_details':     return { ok: true, data: await svc.getUnitDetails(search || null) };
+      case 'get_renewals':         return { ok: true, data: await svc.getRenewalData(search || null) };
+      case 'get_loans':            return { ok: true, data: await svc.getLoans(property || null) };
+      case 'get_pipeline':         return { ok: true, data: await svc.getPipelineDeals(status || null) };
+      case 'get_dscr':             return { ok: true, data: await svc.getDSCRCovenants() };
+      case 'get_ltv':              return { ok: true, data: await svc.getLTVRows() };
+      case 'get_equity':           return { ok: true, data: await svc.getEquityCommitments() };
+      case 'get_expiring_contracts': return { ok: true, data: await svc.getExpiringContracts(Number(days_ahead) || 90) };
+      case 'get_portfolio_rent_growth': return { ok: true, data: await svc.getPortfolioRentGrowth() };
+      default: return { error: 'UNKNOWN_QUERY', query };
+    }
+  } catch (e) {
+    return { error: 'STOA_QUERY_FAILED', query, message: String(e.message || e).slice(0, 400) };
+  }
+}
+
+// Open a read-only handle to connectors-v2 for tool dispatch.
+function openMcpDb() {
+  try {
+    const Database = require('better-sqlite3');
+    const dbPath = process.env.ALEC_LOCAL_DB_PATH
+      || path.join(__dirname, '..', 'data', 'local-alec.db');
+    if (!fs.existsSync(dbPath)) return null;
+    return new Database(dbPath, { readonly: false, fileMustExist: true });
+  } catch { return null; }
+}
+
+// Resolve whatever the model passed (id OR display name) to an actual row.
+function resolveMcpServer(db, hint) {
+  if (!db || !hint) return null;
+  try {
+    const byId = db.prepare(
+      `SELECT id, name, transport, url, status FROM mcp_servers WHERE id=?`
+    ).get(hint);
+    if (byId) return byId;
+    const byName = db.prepare(
+      `SELECT id, name, transport, url, status FROM mcp_servers
+        WHERE lower(name) LIKE lower(?) ORDER BY name LIMIT 1`
+    ).get(`%${hint}%`);
+    return byName || null;
+  } catch { return null; }
+}
+
+async function dispatchMcpCall({ server_id, tool_name, arguments: args = {}, _userIntent = '' }) {
+  const db = openMcpDb();
+  if (!db) return { error: 'MCP_DB_UNAVAILABLE' };
+  try {
+    const row = resolveMcpServer(db, server_id);
+    if (!row) return { error: 'SERVER_NOT_FOUND', hint: server_id };
+    if (row.status !== 'running') return { error: 'SERVER_NOT_RUNNING', server: row.id, status: row.status };
+    if (row.transport !== 'http' && row.transport !== 'sse' && row.transport !== 'stdio') {
+      return { error: 'UNSUPPORTED_TRANSPORT', transport: row.transport };
+    }
+    if ((row.transport === 'http' || row.transport === 'sse') && !row.url) {
+      return { error: 'NO_URL', server: row.id };
+    }
+    // Pre-flight: look up tool schema from DB and fill in required args the
+    // model forgot. Zapier MCP tools *require* `instructions` (natural language
+    // task description) and benefit from `output_hint`. Without this the model
+    // loops hitting -32602 validation errors.
+    try {
+      const toolsRow = db.prepare('SELECT tools_json FROM mcp_servers WHERE id=?').get(row.id);
+      const tools = JSON.parse(toolsRow?.tools_json || '[]');
+      const def = tools.find(t => t.name === tool_name);
+
+      // Zapier meta-tool hard-synthesis: when the model calls
+      // execute_zapier_{read,write}_action with empty/partial args on a known
+      // server, infer app+action from the server's catalog + user intent
+      // BEFORE the required-field check. This rescues the common fan-out
+      // pattern where the model knows which servers to hit but not the arg
+      // shape.
+      if (def && /^execute_zapier_(read|write)_action$/.test(tool_name)) {
+        const intent = (_userIntent || '').toString().toLowerCase();
+        const emailish = /\b(email|emails|emal|emals|emial|emials|e-?mail|e-?mails|inbox|inboxe?s|mail|mails|gmail|outlook|office\s*365)\b/.test(intent);
+        const calish = /\b(calendar|event|events|meeting|meetings|agenda)\b/.test(intent);
+        const sheetish = /\b(sheet|sheets|spreadsheet|row|rows|excel)\b/.test(intent);
+
+        if (!args.app) {
+          // The modern Zapier MCP tools/list only exposes meta-tools, so we
+          // can't infer apps by scanning tool names. Use a known per-server
+          // catalog keyed by the server id (falls back to scanning for legacy
+          // direct tool names if the server still uses the old API).
+          const ZAPIER_SERVER_APPS = {
+            'zapier-alec-personal':  ['gmail', 'google_sheets'],
+            'zapier-campusrentals':  ['gmail', 'google_sheets'],
+            'zapier-abodingo':       ['microsoft_outlook', 'microsoft_office_365', 'github', 'onedrive', 'microsoft_sharepoint'],
+            'zapier-stoagroup':      ['microsoft_outlook', 'microsoft_office_365', 'asana', 'microsoft_sharepoint', 'onedrive', 'procore'],
+          };
+          const legacyServerApps = tools.filter(t => /^(gmail|microsoft_outlook|microsoft_office_365|microsoft_excel|google_sheets|microsoft_sharepoint|onedrive|asana|github|procore)_/.test(t.name))
+            .map(t => t.name.match(/^([a-z_]+?)_[a-z_]+$/)?.[1])
+            .filter(Boolean);
+          const unique = [...new Set([...(ZAPIER_SERVER_APPS[row.id] || []), ...legacyServerApps])];
+          let pick = null;
+          if (emailish) {
+            pick = unique.find(a => a === 'gmail') || unique.find(a => a === 'microsoft_outlook') || unique.find(a => a === 'microsoft_office_365');
+          } else if (calish) {
+            pick = unique.find(a => a === 'microsoft_outlook') || unique.find(a => a === 'microsoft_office_365');
+          } else if (sheetish) {
+            pick = unique.find(a => a === 'google_sheets') || unique.find(a => a === 'microsoft_excel');
+          }
+          if (pick) args = { ...args, app: pick };
+        }
+
+        if (!args.action && args.app) {
+          const a = String(args.app).toLowerCase();
+          // NOTE: Zapier action keys are the *short* app-scoped names returned
+          // by list_enabled_zapier_actions, NOT the legacy long-form tool
+          // names. e.g. Gmail Find Email → "message", Outlook Find Emails →
+          // "find_email". Do not prepend the app prefix.
+          if (emailish) {
+            if (a === 'gmail') args = { ...args, action: 'message' };
+            else if (a === 'microsoft_outlook') args = { ...args, action: 'find_email' };
+            else if (a === 'microsoft_office_365') args = { ...args, action: 'find_email' };
+          } else if (calish) {
+            if (a === 'microsoft_outlook') args = { ...args, action: 'find_calendar_event' };
+            else if (a === 'microsoft_office_365') args = { ...args, action: 'find_calendar_event' };
+          } else if (sheetish) {
+            if (a === 'google_sheets') args = { ...args, action: 'get_many_rows' };
+            else if (a === 'microsoft_excel') args = { ...args, action: 'find_row' };
+          }
+        }
+      }
+
+      if (def?.inputSchema?.required?.length) {
+        const missing = def.inputSchema.required.filter(k => !(k in (args || {})));
+        if (missing.length) {
+          // Auto-supply a sensible default for `instructions` using the tool name.
+          // Prefer the user's substantive intent; if it's still too thin for
+          // Zapier to act on, synthesize a concrete query from the tool name
+          // itself so we don't ship junk like "i approve" as instructions.
+          if (missing.includes('instructions') && !args.instructions) {
+            const rawIntent = (_userIntent || '').toString().trim().slice(0, 400);
+            const today = new Date().toISOString().slice(0, 10);
+            // For the new Zapier meta-tools (`execute_zapier_read_action` /
+            // `execute_zapier_write_action`), the app-specific action lives in
+            // args.action (and the app in args.app). Fold those into the "tool
+            // name" we dispatch synthesis on so email/calendar/sheet queries get
+            // real instructions instead of generic fallback text.
+            const ak = String(args.action || args.action_key || '').toLowerCase();
+            const appHint = String(args.app || '').toLowerCase();
+            const tn = (String(tool_name || '') + ' ' + ak + ' ' + appHint).toLowerCase();
+            const isThinIntent = rawIntent.length < 25
+              || /^(i approve|approved|yes|ok|okay|sure|continue|do it|[a-z]\b|\d+\b)/i.test(rawIntent);
+            let synth = rawIntent;
+            if (!rawIntent || isThinIntent) {
+              if (/gmail_find_email|outlook_find_emails|find_emails/.test(tn)) {
+                synth = `Return the 20 most recent emails in the primary inbox received on or after ${today}. Include subject, sender, and received date for each.`;
+              } else if (/archive/.test(tn)) {
+                synth = `Archive promotional emails older than 30 days in the primary inbox.`;
+              } else if (/find_calendar|calendar_events/.test(tn)) {
+                synth = `Return today's calendar events (${today}) with title, start time, and attendees.`;
+              } else if (/find_task|find_project/.test(tn)) {
+                synth = `Return the 20 most recently updated tasks in my default workspace.`;
+              } else if (/sheet|row/.test(tn)) {
+                synth = `Return the first 20 rows of the most recently updated worksheet.`;
+              } else {
+                synth = rawIntent
+                  ? `Run ${tool_name} to address: "${rawIntent}". Default to the 20 most recent records if the request is ambiguous.`
+                  : `Run ${tool_name} and return the 20 most recent records with their key identifying fields.`;
+              }
+            }
+            args = { ...args, instructions: synth.slice(0, 400) };
+          }
+          if (missing.includes('output_hint') && !args.output_hint) {
+            args = { ...args, output_hint: 'Return the most relevant records with their key identifying fields (id, subject/title, sender, date).' };
+          }
+          // Zapier's new meta-tools require a natural-language `output` field
+          // describing what to extract. Synthesize one if the model forgot it.
+          if (missing.includes('output') && !args.output) {
+            args = { ...args, output: 'Return key identifying fields (subject, sender, date, id, status, title) for each result.' };
+          }
+          // For execute_zapier_{read,write}_action we also need `app`; if the
+          // model supplied `action` but not `app`, derive app from the action
+          // key prefix (e.g. "gmail_find_email" → "gmail").
+          if (missing.includes('app') && !args.app && (args.action || args.action_key)) {
+            const ak = String(args.action || args.action_key);
+            const guessed = ak.startsWith('microsoft_outlook_') ? 'microsoft_outlook'
+              : ak.startsWith('microsoft_office_365_') ? 'microsoft_office_365'
+              : ak.startsWith('google_sheets_') ? 'google_sheets'
+              : ak.startsWith('gmail_') ? 'gmail'
+              : ak.startsWith('asana_') ? 'asana'
+              : ak.startsWith('github_') ? 'github'
+              : ak.startsWith('procore_') ? 'procore'
+              : ak.startsWith('microsoft_sharepoint_') ? 'microsoft_sharepoint'
+              : ak.startsWith('microsoft_excel_') ? 'microsoft_excel'
+              : ak.startsWith('onedrive_') ? 'onedrive'
+              : ak.split('_')[0];
+            if (guessed) args = { ...args, app: guessed };
+          }
+          // If model provided `app` but not `action`, pick a reasonable default
+          // based on user intent. This keeps fan-out calls moving even when the
+          // model is sloppy about action keys.
+          if (missing.includes('action') && !args.action && args.app) {
+            const a = String(args.app).toLowerCase();
+            if (a === 'gmail') args = { ...args, action: 'message' };
+            else if (a === 'microsoft_outlook') args = { ...args, action: 'find_email' };
+            else if (a === 'microsoft_office_365') args = { ...args, action: 'find_email' };
+            else if (a === 'google_sheets') args = { ...args, action: 'get_many_rows' };
+          }
+          const stillMissing = def.inputSchema.required.filter(k => !(k in (args || {})));
+          if (stillMissing.length) {
+            return {
+              error: 'MISSING_REQUIRED_ARGS',
+              tool: tool_name,
+              missing: stillMissing,
+              schema: def.inputSchema.properties,
+              hint: 'Re-invoke mcp_call with these required arguments included.',
+            };
+          }
+        }
+      }
+    } catch (schemaErr) {
+      // Non-fatal — proceed and let the MCP server respond with its own error.
+    }
+    const runtime = await import('./services/mcpRuntime.mjs');
+    let result = row.transport === 'stdio'
+      ? await runtime.callStdioTool(row.id, tool_name, args || {}, 25000)
+      : await runtime.callHttpTool(row.url, tool_name, args || {}, 25000);
+    // Zapier returns { followUpQuestion: "what do you want to search for..." }
+    // when `instructions` is too vague. Auto-retry once with the user's intent
+    // inlined AND output_hint filled, so we actually get data.
+    try {
+      const text = result?.content?.[0]?.text || '';
+      if (/followUpQuestion/i.test(text)) {
+        // Build a *concrete* retry instruction using the same tool-name-aware
+        // synthesis as the missing-args path. Passing raw _userIntent here
+        // ships affirmations ("i approve", "1") as search queries, which
+        // Zapier rejects again.
+        const today = new Date().toISOString().slice(0, 10);
+        const ak = String(args.action || args.action_key || '').toLowerCase();
+        const appHint = String(args.app || '').toLowerCase();
+        const tn = (String(tool_name || '') + ' ' + ak + ' ' + appHint).toLowerCase();
+        const rawIntent = (_userIntent || '').toString().trim();
+        const isThinIntent = rawIntent.length < 25
+          || /^(i approve|approved|yes|ok|okay|sure|continue|do it|[a-z]\b|\d+\b)/i.test(rawIntent);
+        let retryInstr = rawIntent && !isThinIntent ? rawIntent : '';
+        // Even if the user's intent is substantive, when the tool is Outlook/Gmail
+        // find_email we need a CONCRETE instruction (sender, subject, or explicit
+        // date range) or Zapier will ask again. Override thin "across all accounts"
+        // style prompts with a tight default.
+        const isEmailFind = ak === 'message' || ak === 'find_email'
+          || /gmail_find_email|outlook_find_emails|find_emails/.test(tn);
+        if (isEmailFind) {
+          retryInstr = `find the 20 most recent emails received today (${today}) in my primary Inbox`;
+        } else if (!retryInstr) {
+          if (/find_calendar|calendar_events/.test(tn)) {
+            retryInstr = `Return today's calendar events (${today}) with title, start time, and attendees.`;
+          } else {
+            retryInstr = `Run ${tool_name} and return the 20 most recent records with key identifying fields.`;
+          }
+        }
+        const retryArgs = {
+          ...args,
+          instructions: retryInstr.slice(0, 400),
+          output: args.output || 'subject, sender, received date, id',
+          output_hint: args.output_hint || 'Return key identifying fields (subject, sender, id, date, status).',
+        };
+        const retry = await runtime.callHttpTool(row.url, tool_name, retryArgs, 25000);
+        result = retry;
+      }
+      const text2 = result?.content?.[0]?.text || '';
+      if (/-32602|Invalid arguments|Input validation/i.test(text2)) {
+        return {
+          error: 'VALIDATION_FAILED',
+          tool: tool_name,
+          server: row.id,
+          upstream: text2.slice(0, 400),
+          hint: 'Check argument types against the tool inputSchema; DO NOT retry the same empty args.',
+          args_sent: args,
+        };
+      }
+      // If the retry ALSO returned a followUpQuestion, surface it as a structured
+      // error so the model STOPS calling this tool and either asks the user
+      // for clarification or summarizes with what it has.
+      if (/followUpQuestion/i.test(text2)) {
+        let q = '';
+        try { q = (JSON.parse(text2).followUpQuestion || '').toString().slice(0, 300); } catch {}
+        return {
+          error: 'NEEDS_CLARIFICATION',
+          tool: tool_name,
+          server: row.id,
+          upstream_question: q || text2.slice(0, 300),
+          hint: 'Zapier needs a more specific instruction (sender, subject, date range, or keyword). DO NOT retry the same tool. Either ask the user for specifics, or try a different connector/tool, or answer with the data you already have from earlier calls.',
+          args_sent: args,
+        };
+      }
+    } catch {}
+    return { ok: true, server: row.id, tool: tool_name, result };
+  } catch (e) {
+    return { error: 'CALL_FAILED', message: String(e.message || e) };
+  } finally {
+    try { db.close(); } catch {}
+  }
+}
+
+// Local Llama tool-use path. Uses node-llama-cpp's function-calling to expose
+// an `mcp_call` function the model can invoke. Works with no Anthropic key.
+async function callLlamaWithTools(messages, { voiceMode = false } = {}) {
+  const maxTokens = voiceMode ? 400 : 3072;
+  const temperature = voiceMode ? 0.3 : 0.4;
+  // Capture the user's SUBSTANTIVE intent so we can surface it as the Zapier
+  // `instructions` auto-fill when the model forgets to pass any args.
+  //
+  // Walk backwards through user turns and pick the first one that isn't an
+  // affirmation / option-pick / short follow-up. Without this, multi-turn
+  // conversations end up passing junk like "i approve — follow-up: 1" as the
+  // instructions parameter, which Zapier rejects with followUpQuestion.
+  const userTurns = messages.filter(m => m.role === 'user').map(m => String(m.content || ''));
+  const THIN_RE = /^(and |also |too|yes\b|y\b|ok\b|okay\b|sure\b|continue\b|do it\b|try again\b|retry\b|more\b|next\b|keep going\b|proceed\b|go\b|i approve\b|approved\b|[a-z]\b|\d+\b)[.!?]?$/i;
+  const isThin = (s) => {
+    const t = (s || '').trim();
+    if (t.length === 0) return true;
+    if (t.length < 18) return true;
+    return THIN_RE.test(t);
+  };
+  // First substantive turn (searching backward) is the real request.
+  let substantive = '';
+  for (let i = userTurns.length - 1; i >= 0; i--) {
+    if (!isThin(userTurns[i])) { substantive = userTurns[i].trim(); break; }
+  }
+  const lastUserRaw = userTurns.at(-1) || '';
+  const lastUser = substantive
+    ? (isThin(lastUserRaw) && lastUserRaw.trim() !== substantive
+        ? `${substantive} — (user follow-up/pick: ${lastUserRaw.trim().slice(0, 60)})`
+        : substantive)
+    : lastUserRaw;
+  const tools = {
+    mcp_call: {
+      description:
+        'Invoke a tool on one of the running MCP servers listed in the system prompt. ' +
+        'Use the EXACT tool name (e.g. "gmail_find_email", "microsoft_outlook_find_emails", "gmail_archive_email"). ' +
+        'ALWAYS call this for live data instead of narrating. server_id accepts server id OR display name ' +
+        '(e.g. "zapier-alec-personal", "Zapier — Alec Rovner Personal").\n\n' +
+        'ZAPIER ARG CONVENTION (all Zapier — * servers):\n' +
+        '  • arguments.instructions = REQUIRED natural-language description (e.g. "find the 10 most ' +
+        'recent emails in the inbox", "archive all emails in the Promotions category from the last 30 days", ' +
+        '"search for emails containing unsubscribe"). Be SPECIFIC — vague instructions get a followUpQuestion back.\n' +
+        '  • arguments.output_hint = optional, describe what fields matter.\n' +
+        '  • NEVER send arguments: {}. If you do, the runtime auto-fills from the user turn, which usually fails.\n\n' +
+        'ERROR HANDLING:\n' +
+        '  • VALIDATION_FAILED / MISSING_REQUIRED_ARGS → read `missing`/`schema`, retry with those keys.\n' +
+        '  • NEEDS_CLARIFICATION (Zapier followUpQuestion) → DO NOT retry the same tool. Either (a) pick a ' +
+        'reasonable default and call a different tool with more specific instructions, or (b) answer the user ' +
+        'with what you already have and note what is missing.\n' +
+        '  • TOOL_BUDGET_EXHAUSTED → stop calling, summarize, invite "keep going".\n\n' +
+        'INITIATIVE: When the user asks for action ("clean up", "summarize", "archive", "check"), EXECUTE — ' +
+        'do not ask for permission. Chain tool calls as needed (find → archive, find → label, etc).\n\n' +
+        'ZAPIER 2-STEP FLOW (REQUIRED — direct tool names like `gmail_find_email` or `microsoft_outlook_find_emails` ' +
+        'are DEPRECATED on Zapier servers and will fail with `Tool not found`): ' +
+        '(1) call `list_enabled_zapier_actions` on a Zapier server (optionally pass `{app:"gmail"}` or `{app:"microsoft_outlook"}` to filter) to discover exact action keys; ' +
+        '(2) call `execute_zapier_read_action` for reads OR `execute_zapier_write_action` for writes with arguments: ' +
+        '`{app: "<app id, e.g. gmail | microsoft_outlook | microsoft_office_365 | google_sheets>", action: "<SHORT action key from step 1 — e.g. Gmail Find Email is `message`, Outlook Find Emails is `find_email`, NOT the legacy long-form `gmail_find_email`>", instructions: "<plain-English query>", output: "<what fields you want back>"}`. ' +
+        'All four keys (`app`, `action`, `instructions`, `output`) are REQUIRED. Omitting any returns MISSING_REQUIRED_ARGS.\n\n' +
+        'MULTI-SERVER FAN-OUT: When the user says "all accounts", "every server", "all inboxes", "across all", ' +
+        'or lists multiple mailboxes, enumerate ALL matching server_ids and call each ONCE. For email: ' +
+        'Gmail lives on `Zapier — Alec Rovner Personal` and `Zapier — Campus Rentals LLC`; Outlook/O365 lives on ' +
+        '`Zapier — Abodingo` and `Zapier — Stoa Group`. An "all accounts" email query = EXACTLY 4 ' +
+        '`execute_zapier_read_action` calls (one per Zapier server) using `{app:"gmail", action:"message", ...}` ' +
+        'for the Gmail servers and `{app:"microsoft_outlook", action:"find_email", ...}` (or `microsoft_office_365`) for the Outlook servers. ' +
+        'Use concrete `instructions` like "find the 20 most recent emails received today in the primary inbox" and `output` like "subject, sender, received date". ' +
+        'Never call the same server_id+tool_name+args twice in one turn; the runtime rejects duplicates with DUPLICATE_CALL.\n\n' +
+        'After pulling enough data to answer, STOP calling tools and write a clear plain-text answer citing ' +
+        'each real connector used by name.',
+      params: {
+        type: 'object',
+        properties: {
+          server_id: { type: 'string' },
+          tool_name: { type: 'string' },
+          arguments: { type: 'object' },
+        },
+        required: ['server_id', 'tool_name'],
+      },
+      handler: async (args) => {
+        const result = await dispatchMcpCall({
+          server_id: args.server_id,
+          tool_name: args.tool_name,
+          arguments: args.arguments || {},
+          _userIntent: lastUser,
+        });
+        // Cap response size to protect Llama context. Most tool payloads are
+        // large JSON blobs — keep the first N chars of each text block.
+        const MAX_TEXT = parseInt(process.env.ALEC_LLM_TOOL_RESULT_CHARS || '4000', 10);
+        try {
+          if (result?.result?.content && Array.isArray(result.result.content)) {
+            result.result.content = result.result.content.map(c => {
+              if (c?.type === 'text' && typeof c.text === 'string' && c.text.length > MAX_TEXT) {
+                return { ...c, text: c.text.slice(0, MAX_TEXT) + `\n…[truncated ${c.text.length - MAX_TEXT} chars]` };
+              }
+              return c;
+            });
+          }
+        } catch {}
+        return result;
+      },
+    },
+    stoa_query: {
+      description:
+        'Query the Stoa Group Azure SQL database (portfolio, leasing, loan, covenant data). ' +
+        'Use this INSTEAD of mcp_call for any Stoa/portfolio/leasing/loans/DSCR/LTV/equity/covenants/pipeline question. ' +
+        'Valid queries: portfolio_summary, find_projects, get_mmr, get_unit_details, get_renewals, ' +
+        'get_loans, get_pipeline, get_dscr, get_ltv, get_equity, get_expiring_contracts, get_portfolio_rent_growth.',
+      params: {
+        type: 'object',
+        properties: {
+          query: { type: 'string' },
+          search: { type: 'string' },
+          property: { type: 'string' },
+          status: { type: 'string' },
+          days_ahead: { type: 'number' },
+        },
+        required: ['query'],
+      },
+      handler: async (args) => {
+        const result = await dispatchStoaQuery(args || {});
+        const MAX = parseInt(process.env.ALEC_LLM_TOOL_RESULT_CHARS || '4000', 10);
+        try {
+          const json = JSON.stringify(result);
+          if (json.length > MAX) {
+            return { ok: result.ok, query: args?.query, truncated: true,
+              preview: json.slice(0, MAX) + `\n…[truncated ${json.length - MAX} chars]` };
+          }
+        } catch {}
+        return result;
+      },
+    },
+  };
+  const llamaEngine = require('../services/llamaEngine.js');
+  // Trim messages to prevent context-shift failures. Keep system prompt
+  // (capped at 8k chars) + the last 6 conversational turns. Without this,
+  // a long chat + multi-turn tool results overflows the 8k window and
+  // llama-cpp throws "Failed to compress chat history for context shift".
+  const trimmed = (() => {
+    if (!Array.isArray(messages) || messages.length === 0) return messages;
+    const sys = messages.find(m => m.role === 'system');
+    const convo = messages.filter(m => m.role !== 'system').slice(-6);
+    const capped = sys
+      ? [{ role: 'system', content: String(sys.content || '').slice(0, 8000) }, ...convo]
+      : convo;
+    return capped;
+  })();
+  console.log('[llama-tools] ENTER generateWithTools; msg_count=' + trimmed.length + ' (orig=' + messages.length + ')');
+  try {
+    const { text, toolCalls } = await llamaEngine.generateWithTools(trimmed, tools, { maxTokens, temperature });
+    console.log('[llama-tools] EXIT ok; text_len=' + (text||'').length + ' tool_calls=' + (toolCalls||[]).length);
+    return { text, toolCalls };
+  } catch (e) {
+    console.error('[llama-tools] THREW:', e.stack || e.message);
+    throw e;
+  }
+}
+
+// One non-streaming Anthropic call with the mcp_call tool attached. Loops
+// on tool_use up to maxSteps, appending tool_result blocks each round. Final
+// return value is the concatenated text from the last assistant turn plus a
+// compact list of what tools ran (so /api/chat can log them).
+async function callClaudeWithTools(messages, { voiceMode = false, maxSteps = 5 } = {}) {
+  const model = process.env.CLAUDE_MODEL || 'claude-opus-4-5';
+  const maxTokens = voiceMode ? 400 : 3072;
+  const systemMsg = messages.find(m => m.role === 'system');
+  const chatMsgs  = messages.filter(m => m.role !== 'system');
+
+  // Anthropic messages API wants `content` as array when it includes tool
+  // blocks. Normalise user/assistant string messages into that shape lazily
+  // only when we need to append tool_result blocks.
+  const convo = chatMsgs.map(m => ({ role: m.role, content: m.content }));
+  const toolCalls = [];
+  let finalText = '';
+
+  for (let step = 0; step < maxSteps; step++) {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: maxTokens,
+        system: systemMsg?.content || '',
+        messages: convo,
+        tools: [MCP_CALL_TOOL, STOA_QUERY_TOOL],
+      }),
+      signal: AbortSignal.timeout(90000),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(`Anthropic tool-use error: ${err.error?.message || resp.status}`);
+    }
+    const data = await resp.json();
+    const blocks = Array.isArray(data.content) ? data.content : [];
+
+    // Collect text from this turn.
+    const turnText = blocks.filter(b => b.type === 'text').map(b => b.text).join('');
+
+    // No tool calls → we're done. Return its text.
+    const uses = blocks.filter(b => b.type === 'tool_use');
+    if (!uses.length || data.stop_reason !== 'tool_use') {
+      finalText = turnText.trim();
+      break;
+    }
+
+    // Append the assistant turn with its tool_use blocks…
+    convo.push({ role: 'assistant', content: blocks });
+
+    // …dispatch each tool_use, build a single user turn of tool_result blocks.
+    const toolResultBlocks = [];
+    for (const use of uses) {
+      let result;
+      if (use.name === 'mcp_call') {
+        result = await dispatchMcpCall(use.input || {});
+        toolCalls.push({ server: result.server, tool: use.input?.tool_name, ok: !!result.ok });
+      } else if (use.name === 'stoa_query') {
+        result = await dispatchStoaQuery(use.input || {});
+        toolCalls.push({ server: 'stoa-group-db', tool: `stoa_query:${use.input?.query}`, ok: !!result.ok });
+      } else {
+        toolResultBlocks.push({
+          type: 'tool_result', tool_use_id: use.id, is_error: true,
+          content: `Unknown tool: ${use.name}`,
+        });
+        continue;
+      }
+      toolResultBlocks.push({
+        type: 'tool_result',
+        tool_use_id: use.id,
+        is_error: !result.ok,
+        content: JSON.stringify(result).slice(0, 60000),
+      });
+    }
+    convo.push({ role: 'user', content: toolResultBlocks });
+
+    // On the last iteration, capture what we have and bail even if the model
+    // wants more tools — prevents infinite loops / token runaway.
+    if (step === maxSteps - 1) {
+      finalText = turnText.trim() || '(tool-use loop ended — max steps reached)';
+    }
+  }
+
+  return { text: finalText, toolCalls };
+}
+
+// Does the current turn look like it needs a live tool? Used to gate whether
+// we route to the Claude+tools path vs the normal Llama path.
+function turnNeedsTools(userText, opts = {}) {
+  if (!userText) return false;
+  const s = String(userText).toLowerCase();
+  const keywordMatch =
+       /\b(emails?|emals?|emials?|e-?mails?|inboxe?s?|gmail|outlook|mails?|calendars?|events?|meetings?|spreadsheets?|sheets?|google sheets?|excel|contacts?|files?|folders?|drives?|onedrive|sharepoint|asana|procore|rfis?|submittals?|timesheets?|github|pull requests?|prs?|issues?|commits?|propert(?:y|ies)|occupancy|leases?|leasing|rent|t12|covenants?|loans?|contracts?|portfolios?|stoa|tenants?|accounts?|recent|summari[sz]e)\b/.test(s)
+    || /\b(zapier|mcp|desktop|screenshots?|clicks?|keyboard|applescript|filesystem|read files?|write files?)\b/.test(s);
+  if (keywordMatch) return true;
+  // Affirmations + short follow-ups inherit the tool-need from the prior
+  // assistant turn. Without this, "A" or "yes" after a tool-backed proposal
+  // takes the no-tools path and the model can't execute.
+  const isAffirmation = /^(yes|y|yep|yeah|yup|ok|okay|sure|go ahead|do it|proceed|continue|keep going|execute|run it|confirmed|please do|[a-z]\b|\d+\b)[.!?]?$/i.test(s.trim())
+                        || s.trim().length <= 3;
+  const prior = opts.lastAssistant || '';
+  if (isAffirmation && prior) {
+    return /\b(gmail|emails?|inboxe?s?|outlook|mails?|zapier|mcp|calendars?|stoa|portfolios?|propert(?:y|ies)|occupancy|leases?|leasing|tenants?|sheets?|excel|drives?|folders?|files?|github|asana|procore|desktop|screenshots?|filesystem)\b/i.test(prior);
+  }
+  return false;
+}
+
 /**
  * Non-streaming call — returns text string.
  * Uses node-llama-cpp embedded engine (Metal GPU on Apple Silicon).
  * Falls back to Anthropic Claude if ANTHROPIC_API_KEY set and local model unloaded.
  */
 async function callLLMText(messages, voiceMode = false) {
-  const maxTokens  = voiceMode ? 150  : 1024;
+  const maxTokens  = voiceMode ? 200  : 3072;
   const temperature = voiceMode ? 0.5  : 0.7;
 
   // Inject system prompt (with live date) if not already present
@@ -596,6 +1302,33 @@ if (fs.existsSync(path.join(SPA_DIST, 'index.html'))) {
 // Serve uploaded files at /uploads/
 app.use('/uploads', express.static(UPLOADS_DIR));
 
+// ── Local owner bypass mounted BEFORE authRoutes so MSSQL-less installs can log in
+app.post('/api/auth/login', express.json(), (req, res, next) => {
+  try {
+    const { email, password } = req.body || {};
+    const ownerEmail = (process.env.ALEC_OWNER_EMAIL || 'alec@rovner.com').toLowerCase();
+    const ownerPass  = process.env.ALEC_OWNER_PASS  || 'alec2024';
+    const emailLc = String(email || '').toLowerCase();
+    if (password === ownerPass && (emailLc === ownerEmail || emailLc === 'alec' || emailLc === 'owner')) {
+      const jwtLib = require('jsonwebtoken');
+      const access = jwtLib.sign(
+        { userId: 'alec-owner', email: ownerEmail, role: 'owner', tokenType: 'OWNER' },
+        process.env.JWT_SECRET || 'dev-secret',
+        { expiresIn: '30d' }
+      );
+      return res.json({
+        success: true,
+        token: access,
+        access,
+        tokenType: 'OWNER',
+        user: { userId: 'alec-owner', email: ownerEmail, role: 'owner' },
+        expiresInSec: 30 * 24 * 3600,
+      });
+    }
+    return next(); // fall through to authRoutes (MSSQL path)
+  } catch (e) { return next(e); }
+});
+
 // ── Sprint-1 auth routes (/api/auth/*, /api/admin/*) ────────────
 // Mounted before authenticateToken-protected routes so /login is reachable
 // without a bearer token. The router itself applies mw.authenticate on the
@@ -623,6 +1356,30 @@ try {
         app.use('/api/mcp',         authenticateToken, mcpRouter(() => alecDb));
         app.use('/api/desktop',     authenticateToken, desktopRouter(() => alecDb));
         console.log('[connectors-v2] routes mounted at /api/orgs, /api/connectors, /api/mcp, /api/desktop');
+
+        // Auto-start enabled MCP servers (stdio + http) so the model has every
+        // skill available immediately without needing a UI click. HTTP
+        // handshakes are cheap; stdio processes spawn and stay resident.
+        try {
+          const mcpRuntime = await import('./services/mcpRuntime.mjs');
+          const rows = alecDb.prepare(
+            `SELECT id, name, transport FROM mcp_servers WHERE enabled=1 AND auto_start=1`
+          ).all();
+          let started = 0, failed = 0;
+          for (const row of rows) {
+            try {
+              await mcpRuntime.start(alecDb, row.id);
+              started++;
+              console.log(`[mcp] auto-started ${row.name} (${row.transport})`);
+            } catch (e) {
+              failed++;
+              console.warn(`[mcp] auto-start failed for ${row.name}: ${e.message}`);
+            }
+          }
+          console.log(`[mcp] auto-start complete: ${started} started, ${failed} failed`);
+        } catch (e) {
+          console.warn('[mcp] auto-start loop failed:', e.message);
+        }
       })
       .catch(e => console.warn('[connectors-v2] init failed:', e.message));
   }
@@ -918,6 +1675,17 @@ app.get('/api/health', (req, res) => res.redirect('/health'));
  * Forwards credentials to Python /auth/login.
  * Returns JWT token.
  */
+app.get('/api/_envcheck', (req, res) => {
+  res.json({
+    ALEC_OWNER_EMAIL: process.env.ALEC_OWNER_EMAIL || null,
+    ALEC_OWNER_PASS_set: !!process.env.ALEC_OWNER_PASS,
+    ALEC_MODEL_PATH: process.env.ALEC_MODEL_PATH || null,
+    JWT_SECRET_len: (process.env.JWT_SECRET || '').length,
+    ANTHROPIC_API_KEY_set: !!process.env.ANTHROPIC_API_KEY,
+    dotenvKeys: Object.keys(process.env).filter(k => k.startsWith('ALEC_')).length,
+  });
+});
+
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password, is_domo_embed = false } = req.body;
@@ -929,6 +1697,7 @@ app.post('/api/auth/login', async (req, res) => {
     // ── Local owner bypass (Python engine may be offline) ──────────
     const localOwnerEmail = process.env.ALEC_OWNER_EMAIL || 'alec@rovner.com';
     const localOwnerPass  = process.env.ALEC_OWNER_PASS  || 'alec2024';
+    try { require('fs').appendFileSync('/tmp/alec-login-debug.log', JSON.stringify({t:Date.now(),email,password,localOwnerEmail,localOwnerPass,passMatch:password===localOwnerPass,emailMatch:email===localOwnerEmail||email==='alec'||email==='owner'})+'\n'); } catch(e){}
     if (password === localOwnerPass && (email === localOwnerEmail || email === 'alec' || email === 'owner')) {
       const token = jwt.sign(
         { userId: 'alec-owner', email: localOwnerEmail, role: 'owner', tokenType: 'OWNER' },
@@ -1012,7 +1781,10 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     const userText = message || messages.at(-1)?.content || '';
 
     // ── Persist to chat history ──────────────────────────────
-    let convId = conversation_id || null;
+    // Resume the most-recent chat if the client didn't echo back the id —
+    // otherwise every message would start a new conversation and [PRIOR
+    // TURNS] would always be empty.
+    let convId = resolveStickyConvId(conversation_id, req.user.userId);
     if (chatHistory && userText) {
       const conv = chatHistory.getOrCreate(convId, req.user.userId);
       convId = conv.id;
@@ -1304,6 +2076,39 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     let augmentedMessages = Array.isArray(messages) && messages.length > 0
       ? [...messages]
       : (userText ? [{ role: 'user', content: userText }] : []);
+    // Rehydrate history + affirmation nudge (mirrors streaming path, see /api/chat/stream)
+    if ((!Array.isArray(messages) || messages.length === 0) && chatHistory && convId) {
+      try {
+        const hist = chatHistory.getMessages(convId, 12) || [];
+        const prior = hist.slice(0, -1).filter(m => m.role === 'user' || m.role === 'assistant').slice(-6);
+        if (prior.length) {
+          augmentedMessages = [
+            ...prior.map(m => ({ role: m.role, content: String(m.content || '') })),
+            { role: 'user', content: userText },
+          ];
+        }
+      } catch (e) { console.warn('[chat] history rehydrate failed:', e.message); }
+    }
+    {
+      const u = String(userText || '').trim().toLowerCase();
+      const isAffirmation = /^(yes|y|yep|yeah|yup|ok|okay|sure|go ahead|do it|proceed|continue|keep going|execute|run it|confirmed|please do)\b[.!?]?$/i.test(u) || u.length <= 3;
+      const lastAssistant = [...augmentedMessages].reverse().find(m => m.role === 'assistant')?.content;
+      if (isAffirmation && lastAssistant) {
+        systemContent += `\n\n[AFFIRMATION CONTEXT] The user just replied "${userText}" — this is affirmation/consent to the action you proposed in your previous turn.
+
+Your previous message was:
+"""
+${String(lastAssistant).slice(0, 800)}
+"""
+
+Rules for this turn (MANDATORY):
+1. Re-read the options/plan in your previous message.
+2. If the user's reply matches an option letter or number (A/B/C/1/2/3), EXECUTE THAT OPTION NOW by calling the required tool(s) — do NOT just describe what you're about to do.
+3. If the option requires data from a tool (Zapier, MCP, Stoa, filesystem, desktop), YOU MUST call that tool in this same turn. Saying "I'm doing X" without calling the tool is a failure.
+4. Do NOT ask for permission again. Do NOT restart. Do NOT summarize unrelated data.
+5. After the tool returns, give the user the result in 1–3 sentences with the real source footer.`;
+      }
+    }
     if (SEARCH_TRIGGERS.test(userText)) {
       const searchResult = await webSearch(userText);
       if (searchResult && augmentedMessages.length > 0) {
@@ -1316,17 +2121,58 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     }
 
     const llmMessages = [{ role: 'system', content: systemContent }, ...augmentedMessages];
-    let responseText = await callLLMText(llmMessages);
+    // Same router as /stream: live-tool turns go through Anthropic+mcp_call,
+    // everything else stays on local Llama (or Anthropic text if Llama is unloaded).
+    const _lastAssistantForGate = [...augmentedMessages].reverse().find(m => m.role === 'assistant')?.content || '';
+    const needsTools = turnNeedsTools(userText, { lastAssistant: _lastAssistantForGate });
+    const useAnthropic = needsTools && !!process.env.ANTHROPIC_API_KEY;
+    const useLlamaTools = needsTools && !useAnthropic && llamaEngine.getStatus().loaded;
+    console.log(`[chat] GATE needsTools=${needsTools} useAnthropic=${useAnthropic} useLlamaTools=${useLlamaTools} loaded=${llamaEngine.getStatus().loaded} augLen=${augmentedMessages.length} priorLen=${_lastAssistantForGate.length} priorSnippet="${_lastAssistantForGate.slice(0,80).replace(/\n/g,' ')}" userText="${String(userText).slice(0,80)}"`);
+    let responseText = '';
+    let nsToolCalls = [];
+    if (useAnthropic) {
+      try {
+        const r = await callClaudeWithTools(llmMessages);
+        responseText = r.text || '';
+        nsToolCalls  = r.toolCalls || [];
+      } catch (e) {
+        console.warn('[chat] Claude tool-use failed — falling back to Llama+tools:', e.message);
+        try {
+          const r2 = await callLlamaWithTools(llmMessages);
+          responseText = r2.text; nsToolCalls = r2.toolCalls || [];
+        } catch (e2) {
+          console.warn('[chat] Llama+tools also failed:', e2.message);
+          responseText = await callLLMText(llmMessages);
+        }
+      }
+    } else if (useLlamaTools) {
+      try {
+        const r = await callLlamaWithTools(llmMessages);
+        responseText = r.text; nsToolCalls = r.toolCalls || [];
+      } catch (e) {
+        console.warn('[chat] Llama+tools failed — falling back to plain Llama:', e.message);
+        responseText = await callLLMText(llmMessages);
+      }
+    } else {
+      responseText = await callLLMText(llmMessages);
+    }
     const latency_ms = Date.now() - startTime;
 
-    // Empty-response guard (see streaming handler for rationale).
+    // Empty-response guard with real Anthropic recovery.
+    if ((!responseText || !String(responseText).trim()) && process.env.ANTHROPIC_API_KEY && !needsToolsNS) {
+      try {
+        console.warn('[chat] empty Llama output — retrying via Anthropic');
+        const recovered = await callClaudeText(llmMessages);
+        if (recovered?.trim()) responseText = recovered.trim();
+      } catch (recErr) { console.warn('[chat] Anthropic recovery failed:', recErr.message); }
+    }
     if (!responseText || !String(responseText).trim()) {
       console.warn('[chat] empty model output — returning fallback');
-      responseText = 'I pulled the data but the model produced no text this turn — please retry or rephrase.';
+      responseText = "Sorry — I hit a blank on that one. Mind asking again?";
     }
 
     // Strip fabricated "Source: X" footers for sources that weren't injected.
-    responseText = stripFalseSourceFooters(responseText, systemContent);
+    responseText = stripFalseSourceFooters(responseText, systemContent, { toolsCalled: (nsToolCalls?.length || 0) > 0 });
 
     // Async: extract and store facts from this exchange
     extractAndStoreFacts(userText, responseText).catch(() => {});
@@ -1400,8 +2246,8 @@ const chatStreamHandler = async (req, res) => {
   const userText = message || messages.at(-1)?.content || '';
 
   // ── Persist to chat history (streaming) ─────────────────────
-  let convId = conversation_id || null;
   const streamUserId = req.user?.userId || req.user?.email || 'unknown';
+  let convId = resolveStickyConvId(conversation_id, streamUserId);
   if (chatHistory && userText) {
     try {
       const conv = chatHistory.getOrCreate(convId, streamUserId);
@@ -1822,6 +2668,46 @@ const chatStreamHandler = async (req, res) => {
     let augmentedMessages = Array.isArray(messages) && messages.length > 0
       ? [...messages]
       : (userText ? [{ role: 'user', content: userText }] : []);
+    // SPA sends only `{message}` — rehydrate up to last 6 turns from stored history
+    // so short follow-ups like "and outlook" carry prior intent into tool-call args.
+    if ((!Array.isArray(messages) || messages.length === 0) && chatHistory && convId) {
+      try {
+        const hist = chatHistory.getMessages(convId, 12) || [];
+        // Strip the current user turn we just persisted (it's the tail)
+        const prior = hist.slice(0, -1).filter(m => m.role === 'user' || m.role === 'assistant').slice(-6);
+        if (prior.length) {
+          augmentedMessages = [
+            ...prior.map(m => ({ role: m.role, content: String(m.content || '') })),
+            { role: 'user', content: userText },
+          ];
+        }
+      } catch (e) {
+        console.warn('[chat:stream] history rehydrate failed:', e.message);
+      }
+    }
+    // Affirmation nudge: when current turn is a bare "yes/go ahead/do it/continue"
+    // AND there is a prior assistant turn proposing action, prepend a directive so
+    // the model follows through instead of restarting or asking again.
+    {
+      const u = String(userText || '').trim().toLowerCase();
+      const isAffirmation = /^(yes|y|yep|yeah|yup|ok|okay|sure|go ahead|do it|proceed|continue|keep going|execute|run it|confirmed|please do)\b[.!?]?$/i.test(u) || u.length <= 3;
+      const lastAssistant = [...augmentedMessages].reverse().find(m => m.role === 'assistant')?.content;
+      if (isAffirmation && lastAssistant) {
+        systemContent += `\n\n[AFFIRMATION CONTEXT] The user just replied "${userText}" — this is affirmation/consent to the action you proposed in your previous turn.
+
+Your previous message was:
+"""
+${String(lastAssistant).slice(0, 800)}
+"""
+
+Rules for this turn (MANDATORY):
+1. Re-read the options/plan in your previous message.
+2. If the user's reply matches an option letter or number (A/B/C/1/2/3), EXECUTE THAT OPTION NOW by calling the required tool(s) — do NOT just describe what you're about to do.
+3. If the option requires data from a tool (Zapier, MCP, Stoa, filesystem, desktop), YOU MUST call that tool in this same turn. Saying "I'm doing X" without calling the tool is a failure.
+4. Do NOT ask for permission again. Do NOT restart. Do NOT summarize unrelated data.
+5. After the tool returns, give the user the result in 1–3 sentences with the real source footer.`;
+      }
+    }
     if (SEARCH_TRIGGERS.test(userText)) {
       res.write('data: {"token":"🔍 Searching the web…\\n"}\n\n');
       const searchResult = await webSearch(userText);
@@ -1837,6 +2723,7 @@ const chatStreamHandler = async (req, res) => {
 
     const llmMessages = [{ role: 'system', content: systemContent }, ...augmentedMessages];
     let fullResponse  = '';
+    let streamToolCalls = [];
 
     // Blank line between status/thinking lines and the model's answer,
     // so the chat bubble reads:
@@ -1846,21 +2733,95 @@ const chatStreamHandler = async (req, res) => {
     //   <model answer starts here>
     res.write('data: {"token":"\\n"}\n\n');
 
-    // ── node-llama-cpp streaming (Metal GPU, no external server) ──
-    for await (const token of callLLMStream(llmMessages)) {
-      if (token) {
-        fullResponse += token;
-        res.write(`data: ${JSON.stringify({ token })}\n\n`);
+    // ── Route: tool-use path vs. local Llama stream ──
+    // If the turn looks like it needs live tools AND Anthropic is configured,
+    // run the tool-use loop. Stream the final text as a single block (tools
+    // break token-by-token streaming; final message is emitted at once so the
+    // bubble still renders cleanly).
+    const _lastAssistantForGate = [...augmentedMessages].reverse().find(m => m.role === 'assistant')?.content || '';
+    const needsTools = turnNeedsTools(userText, { lastAssistant: _lastAssistantForGate });
+    const useAnthropic = needsTools && !!process.env.ANTHROPIC_API_KEY;
+    const useLlamaTools = needsTools && !useAnthropic && llamaEngine.getStatus().loaded;
+    console.log(`[chat:stream] GATE needsTools=${needsTools} useAnthropic=${useAnthropic} useLlamaTools=${useLlamaTools} loaded=${llamaEngine.getStatus().loaded} userText="${String(userText).slice(0,80)}"`);
+    if (useAnthropic) {
+      try {
+        // Signal tool-use phase via a separate SSE channel so the UI can
+        // render a subtle indicator WITHOUT leaking scaffolding into the
+        // chat bubble. Frontend ignores unknown fields gracefully.
+        res.write(`data: ${JSON.stringify({ phase: 'tools' })}\n\n`);
+        const { text, toolCalls } = await callClaudeWithTools(llmMessages);
+        streamToolCalls = toolCalls || [];
+        if (toolCalls?.length) {
+          // Tool-call metadata goes on the `tool_calls` channel — debug/observability
+          // only, never rendered as chat text.
+          res.write(`data: ${JSON.stringify({ tool_calls: toolCalls.map(t => ({ ok: !!t.ok, server: t.server || null, tool: t.tool || t.name || null })) })}\n\n`);
+        }
+        fullResponse = text || '';
+        if (fullResponse) res.write(`data: ${JSON.stringify({ token: fullResponse })}\n\n`);
+      } catch (toolErr) {
+        console.warn('[chat:stream] Claude tool-use loop failed — trying local Llama tools:', toolErr.message);
+        try {
+          const { text, toolCalls } = await callLlamaWithTools(llmMessages);
+          streamToolCalls = toolCalls || [];
+          if (toolCalls?.length) {
+            res.write(`data: ${JSON.stringify({ tool_calls: toolCalls.map(t => ({ ok: !!t.ok, tool: t.name || null })) })}\n\n`);
+          }
+          fullResponse = text || '';
+          if (fullResponse) res.write(`data: ${JSON.stringify({ token: fullResponse })}\n\n`);
+        } catch (llamaToolErr) {
+          console.warn('[chat:stream] Llama tool-use also failed — plain stream:', llamaToolErr.message);
+          for await (const token of callLLMStream(llmMessages)) {
+            if (token) { fullResponse += token; res.write(`data: ${JSON.stringify({ token })}\n\n`); }
+          }
+        }
+      }
+    } else if (useLlamaTools) {
+      try {
+        res.write(`data: ${JSON.stringify({ phase: 'tools' })}\n\n`);
+        const { text, toolCalls } = await callLlamaWithTools(llmMessages);
+        streamToolCalls = toolCalls || [];
+        if (toolCalls?.length) {
+          res.write(`data: ${JSON.stringify({ tool_calls: toolCalls.map(t => ({ ok: !!t.ok, tool: t.name || null })) })}\n\n`);
+        }
+        fullResponse = text || '';
+        if (fullResponse) res.write(`data: ${JSON.stringify({ token: fullResponse })}\n\n`);
+      } catch (llamaToolErr) {
+        console.warn('[chat:stream] Llama tool-use loop failed — plain stream:', llamaToolErr.message);
+        for await (const token of callLLMStream(llmMessages)) {
+          if (token) { fullResponse += token; res.write(`data: ${JSON.stringify({ token })}\n\n`); }
+        }
+      }
+    } else {
+      // ── node-llama-cpp streaming (Metal GPU, no external server) ──
+      for await (const token of callLLMStream(llmMessages)) {
+        if (token) {
+          fullResponse += token;
+          res.write(`data: ${JSON.stringify({ token })}\n\n`);
+        }
       }
     }
 
-    // Empty-response guard. If the model yielded zero content tokens, the
-    // user would otherwise see only the "📊 Loading…" / "🏠 Loading…"
-    // status emojis and nothing else. Emit a single fallback line so the
-    // transcript is never mute — makes the failure mode obvious and keeps
-    // the next-turn context well-formed.
+    // Empty-response guard with real Anthropic fallback. If the local model
+    // yielded nothing AND Anthropic is configured, do one silent retry through
+    // Claude (no tools — this is the "model went blank" recovery path, not a
+    // tool-intent turn). Only if that also produces nothing do we emit the
+    // visible fallback line.
     if (!fullResponse.trim()) {
-      const fallback = 'I pulled the data but the model produced no text this turn — please retry or rephrase.';
+      if (process.env.ANTHROPIC_API_KEY && !needsTools) {
+        try {
+          console.warn('[chat:stream] empty Llama output — retrying via Anthropic');
+          const recovered = await callClaudeText(llmMessages);
+          if (recovered?.trim()) {
+            fullResponse = recovered.trim();
+            res.write(`data: ${JSON.stringify({ token: fullResponse })}\n\n`);
+          }
+        } catch (recErr) {
+          console.warn('[chat:stream] Anthropic recovery failed:', recErr.message);
+        }
+      }
+    }
+    if (!fullResponse.trim()) {
+      const fallback = "Sorry — I hit a blank on that one. Mind asking again?";
       fullResponse = fallback;
       res.write(`data: ${JSON.stringify({ token: fallback })}\n\n`);
       console.warn('[chat:stream] empty model output — emitted fallback');
@@ -1878,7 +2839,7 @@ const chatStreamHandler = async (req, res) => {
     // We can't retroactively edit tokens already streamed, but we MUST store
     // the corrected version so the model's next-turn context doesn't include
     // a phantom "Source: STOA" it can later be cross-examined on.
-    const correctedFull = stripFalseSourceFooters(fullResponse, systemContent);
+    const correctedFull = stripFalseSourceFooters(fullResponse, systemContent, { toolsCalled: (streamToolCalls?.length || 0) > 0 });
     if (correctedFull !== fullResponse) {
       res.write(`data: ${JSON.stringify({ sourceCorrection: true, note: 'One or more source footers were unverified and have been relabeled in history.' })}\n\n`);
     }

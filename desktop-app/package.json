@@ -1,27 +1,36 @@
 {
   "name": "alec-desktop",
-  "version": "1.0.0",
+  "version": "2.0.1",
   "description": "A.L.E.C. Desktop Control Center",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
     "build": "electron-builder --mac",
-    "build:dmg": "electron-builder --mac dmg"
+    "build:dmg": "electron-builder --mac dmg",
+    "release": "electron-builder --mac --publish always"
   },
   "build": {
     "appId": "com.rovner.alec",
-    "productName": "A.L.E.C.",
+    "productName": "ALEC",
     "mac": {
       "category": "public.app-category.productivity",
-      "icon": "assets/alec.icns",
       "target": ["dmg", "zip"],
       "hardenedRuntime": false,
-      "gatekeeperAssess": false
-    },
-    "dmg": {
-      "title": "A.L.E.C. Installer",
+      "gatekeeperAssess": false,
       "icon": "assets/alec.icns"
     },
+    "dmg": {
+      "title": "ALEC Installer",
+      "icon": "assets/alec.icns"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "arovn10",
+        "repo": "A.L.E.C",
+        "releaseType": "release"
+      }
+    ],
     "files": [
       "src/**/*",
       "assets/**/*",
@@ -33,13 +42,24 @@
         "to": "alec",
         "filter": [
           "backend/**/*",
-          "frontend/**/*",
+          "frontend/dist/**/*",
+          "frontend/package.json",
           "services/**/*",
-          "data/**/*",
+          "!services/neural/__pycache__/**",
+          "!services/neural/.venv/**",
+          "!services/neural/data/**",
+          "routes/**/*",
+          "dataConnectors/**/*",
+          "config/**/*",
+          "scripts/restart-neural.sh",
+          "data/alec-brain.db",
           ".env",
           "package.json",
           "package-lock.json",
-          "node_modules/**/*"
+          "node_modules/**/*",
+          "!**/*.map",
+          "!**/*.log",
+          "!**/.DS_Store"
         ]
       }
     ]
@@ -49,6 +69,7 @@
     "electron-builder": "^25.0.0"
   },
   "dependencies": {
+    "electron-updater": "^6.3.9",
     "node-fetch": "^3.3.2"
   }
 }
