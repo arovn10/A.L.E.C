@@ -1,6 +1,6 @@
 {
   "name": "alec-desktop",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "description": "A.L.E.C. Desktop Control Center",
   "main": "src/main.js",
   "scripts": {

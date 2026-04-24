@@ -1,7 +1,26 @@
 // services/pdfIngestionService.js
 'use strict';
 
-const pdfParse = require('pdf-parse');
+// Lazy-loaded: pdf-parse@2 performs top-level work that requires `DOMMatrix`
+// (a browser global normally polyfilled by @napi-rs/canvas). If the native
+// canvas binding fails to load in the packaged desktop bundle, requiring
+// pdf-parse at module scope crashes the entire server on boot. Moving the
+// require inside `ingest()` lets the server start healthy and only fail
+// this one feature if/when a PDF is actually uploaded.
+let _pdfParse = null;
+function getPdfParse() {
+  if (_pdfParse) return _pdfParse;
+  try {
+    _pdfParse = require('pdf-parse');
+  } catch (err) {
+    const hint = err && err.message && err.message.includes('DOMMatrix')
+      ? ' (native canvas binding missing — install @napi-rs/canvas for your platform)'
+      : '';
+    throw new Error(`PDF ingestion unavailable: ${err.message}${hint}`);
+  }
+  return _pdfParse;
+}
+
 const axios = require('axios');
 const weaviateService = require('./weaviateService');
 
@@ -43,6 +62,7 @@ async function embed(text) {
  * @returns {Promise<{ docUuid: string, chunkCount: number, pageCount: number }>}
  */
 async function ingest(buffer, filename) {
+  const pdfParse = getPdfParse();
   const parsed = await pdfParse(buffer);
   const { text, numpages } = parsed;
 
