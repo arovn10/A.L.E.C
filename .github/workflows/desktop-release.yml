@@ -37,6 +37,14 @@ jobs:
         working-directory: desktop-app
         run: npm ci --include=dev
 
+      # Vite builds frontend/dist/ which electron-builder bundles as
+      # extraResources. frontend/dist is gitignored, so CI must build it
+      # fresh — otherwise the packaged app ships without the SPA and the
+      # embedded webview shows "Cannot GET /".
+      - name: Install + build frontend SPA
+        working-directory: frontend
+        run: npm ci && npm run build
+
       - name: Build + publish DMG to GitHub Releases
         working-directory: desktop-app
         env:
