@@ -1331,15 +1331,47 @@ app.get('/api/auth/me', (req, res) => {
 });
 
 // ── Sprint-1 auth routes (/api/auth/*, /api/admin/*) ────────────
-// Mounted before authenticateToken-protected routes so /login is reachable
-// without a bearer token. The router itself applies mw.authenticate on the
-// endpoints that need it.
+// MSSQL-backed. Only mount when STOA_DB_HOST is configured — otherwise the
+// routes' synchronous mssql connection attempts throw uncaught exceptions
+// that crash Node (and the desktop auto-respawn supervisor). Dev/desktop
+// installs fall through to the Python-neural-engine proxy at line ~1690
+// for /api/auth/login and the /api/auth/me shim above for session restore.
 try {
   const { ensureAuthSchema, runBootstrap } = require('./auth/bootstrap');
-  ensureAuthSchema().catch(e => console.warn('[auth] bootstrap skipped:', e.message));
-  const authRoutes = require('./auth/routes');
-  app.use('/api', authRoutes);
-  console.log('[auth] Sprint-1 routes mounted at /api/auth and /api/admin');
+  const _sprint1Enabled = !!(process.env.STOA_DB_HOST && process.env.STOA_DB_NAME);
+  if (_sprint1Enabled) {
+    ensureAuthSchema().catch(e => console.warn('[auth] bootstrap skipped:', e.message));
+    const authRoutes = require('./auth/routes');
+    app.use('/api', authRoutes);
+    console.log('[auth] Sprint-1 routes mounted at /api/auth and /api/admin');
+  } else {
+    console.log('[auth] Sprint-1 routes DISABLED (no STOA_DB_HOST) — using Python-proxy auth');
+    // Minimal stubs so the SPA's auto-refresh/logout calls don't 404 or
+    // hit any handler that touches MSSQL.
+    app.post('/api/auth/refresh', (req, res) => {
+      // Stateless refresh: verify whichever JWT is presented (bearer or body.refresh)
+      // and mint a fresh one. The desktop "refresh token" is just another JWT.
+      try {
+        const bodyTok = (req.body && req.body.refresh) || null;
+        const hdr = req.headers['authorization'] || '';
+        const bearer = hdr.startsWith('Bearer ') ? hdr.slice(7) : null;
+        const tok = bodyTok || bearer;
+        if (!tok) return res.status(401).json({ error: 'No refresh token' });
+        const claims = jwt.verify(tok, process.env.JWT_SECRET);
+        const payload = {
+          userId: claims.sub || claims.userId || claims.email,
+          email: claims.email,
+          role: claims.role || 'viewer',
+          tokenType: claims.tokenType || 'STOA_ACCESS',
+        };
+        const access = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
+        return res.json({ access, refresh: access, expiresInSec: 7 * 24 * 60 * 60 });
+      } catch (e) {
+        return res.status(401).json({ error: 'Invalid or expired refresh token' });
+      }
+    });
+    app.post('/api/auth/logout',  (req, res) => res.json({ ok: true }));
+  }
 
   // ── Connectors v2: SQLite bootstrap + /api/orgs, /api/connectors, /api/mcp ──
   // Default: ON. Set ALEC_CONNECTORS_V2=0 to force the legacy surface.
@@ -1705,7 +1737,15 @@ app.post('/api/auth/login', async (req, res) => {
         process.env.JWT_SECRET,
         { expiresIn: '30d' }
       );
-      return res.json({ success: true, token, tokenType: 'OWNER', user: { email: localOwnerEmail, role: 'owner' } });
+      return res.json({
+        access: token,
+        refresh: token,
+        expiresInSec: 30 * 24 * 60 * 60,
+        success: true,
+        token,
+        tokenType: 'OWNER',
+        user: { email: localOwnerEmail, role: 'owner' },
+      });
     }
 
     const data = await proxyToNeural('/auth/login', {
@@ -1746,6 +1786,11 @@ app.post('/api/auth/login', async (req, res) => {
     } catch {} // Non-critical
 
     res.json({
+      // Sprint-1 / frontend contract shape (client.js expects r.access / r.refresh)
+      access: token,
+      refresh: token, // same JWT acts as both in local-desktop mode
+      expiresInSec: 7 * 24 * 60 * 60,
+      // Legacy fields retained for callers that read them directly
       success: true,
       token,
       tokenType,
@@ -1753,7 +1798,7 @@ app.post('/api/auth/login', async (req, res) => {
       access_level: data.access_level,
       email: jwtPayload.email,
       role: jwtPayload.role,
-      user: user,
+      user: { ...(user || {}), email: jwtPayload.email, role: jwtPayload.role },
       expiresIn: '7d',
     });
   } catch (error) {
