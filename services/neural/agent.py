@@ -36,6 +36,56 @@ logger = logging.getLogger("alec.agent")
 MAX_AGENT_STEPS = 5  # Max tool calls per message (3 steps = read + edit + commit)
 
 
+# ── Anti-hallucination heuristics ──────────────────────────────────
+# Phrases that strongly indicate the model fabricated a tool-execution
+# narrative instead of emitting a real TOOL_CALL. These are sources/tools
+# that live in the Node backend (MCP, Zapier) and are NOT callable from
+# the Python agent — so any claim of having executed them here is fake.
+_FAKE_TOOL_MARKERS = (
+    "execute_zapier_read_action",
+    "execute_zapier_write_action",
+    "call_mcp_tool",
+    "mcp server",
+    "mcp servers",
+    "zapier server",
+    "zapier servers",
+    # Fabricated result framings the model tends to emit:
+    "— source: zapier",
+    "— source: gmail",
+    "— source: outlook",
+)
+
+# Structural patterns that look like invented tool output (fake JSON-ish
+# bullet lists with Subject/Sender/Received Date, etc.)
+_FAKE_RESULT_PATTERNS = (
+    re.compile(r"\bSubject:\s*\w.*\n.*Sender:\s*\w", re.IGNORECASE),
+    re.compile(r"\bReceived Date:\s*\d{4}-\d{2}-\d{2}", re.IGNORECASE),
+    re.compile(r"\basOf=\d{4}-\d{2}-\d{2}", re.IGNORECASE),
+)
+
+
+def _looks_like_fake_tool_output(text: str) -> bool:
+    """Return True when the response appears to fabricate tool execution.
+
+    Two signals must combine: (a) the model references an external tool
+    it cannot actually invoke, and (b) it produces structured result-
+    shaped content. Either alone is not enough — legitimate discussion
+    of MCP might mention 'zapier' without faking execution.
+    """
+    if not text:
+        return False
+    low = text.lower()
+    mentions_external_tool = any(m in low for m in _FAKE_TOOL_MARKERS)
+    if not mentions_external_tool:
+        return False
+    looks_like_results = any(p.search(text) for p in _FAKE_RESULT_PATTERNS)
+    # Also trigger on the specific "calling X with {…}" narration pattern
+    narrates_call = bool(re.search(
+        r"\b(I'?ll|I will|Let me)\s+call\s+\w+", text, re.IGNORECASE
+    ))
+    return looks_like_results or narrates_call
+
+
 class AgentTool:
     """Base class for agent tools."""
     name: str = ""
@@ -1031,7 +1081,24 @@ class ALECAgent:
             tool_call = self._parse_tool_call(response_text)
 
             if not tool_call:
-                # No tool call — this is the final response
+                # Anti-hallucination guard: if the model fabricated a tool-execution
+                # narrative (talks about calling execute_zapier_read_action, MCP
+                # servers, or renders fake "Result: …" blocks) without ever issuing
+                # a real TOOL_CALL, replace the response with an honest refusal.
+                # MCP/Zapier tools live in the Node backend, not in this Python
+                # agent — so any claim of having executed them here is fabricated.
+                if _looks_like_fake_tool_output(response_text) and not tool_calls_log:
+                    response_text = (
+                        "I don't have direct access to Gmail, Outlook, or Zapier MCP "
+                        "servers from this local model. Email and external-service "
+                        "actions need to be routed through the Node backend's "
+                        "connector layer (Settings → Connectors), which I can't "
+                        "invoke from here yet.\n\n"
+                        "What I *can* do right now: answer questions about your Stoa "
+                        "portfolio, deals, loans, leasing, or anything in the local "
+                        "knowledge base. Want me to run one of those instead?"
+                    )
+
                 return {
                     "text": response_text,
                     "tool_calls": tool_calls_log,

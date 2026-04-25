@@ -64,6 +64,8 @@ const scheduler    = (() => { try { return require('../services/taskScheduler.js
 const github       = (() => { try { return require('../services/githubService.js');   } catch { return null; } })();
 const vsCode       = (() => { try { return require('../services/vsCodeController.js');} catch { return null; } })();
 const msGraph      = (() => { try { return require('../services/microsoftGraphService.js'); } catch { return null; } })();
+const gmailSvc     = (() => { try { return require('../services/gmailService.js');         } catch { return null; } })();
+const emailFiling  = (() => { try { return require('../services/emailFilingService.js');   } catch { return null; } })();
 const vercelSvc    = (() => { try { return require('../services/vercelService.js');   } catch { return null; } })();
 const tenantCloud  = (() => { try { return require('../services/tenantCloudService.js'); } catch { return null; } })();
 const awsSvc       = (() => { try { return require('../services/awsService.js');      } catch { return null; } })();
@@ -202,6 +204,78 @@ function enforceHardRules(responseText) {
  *   HomeAssistant → "[Home Assistant DATA"
  *   GitHub        → "[GitHub DATA"
  */
+/**
+ * Anti-hallucination guard for MCP/Zapier tool-execution narration.
+ *
+ * The local llama-metal engine frequently fabricates tool-call narratives
+ * ("I'll call execute_zapier_read_action on Zapier — Foo…") plus invented
+ * result blocks (fake Subject/Sender/Received-Date bullets) without ever
+ * actually invoking an MCP tool. That output is indistinguishable from
+ * real data to the user and is the single biggest trust killer.
+ *
+ * Two signals must combine to trigger the rewrite:
+ *   (a) response references an external MCP/Zapier execution the model
+ *       couldn't actually perform (no tool ran this turn), AND
+ *   (b) response contains structured result-shaped content (fake email
+ *       bullets, "Source: Zapier" footers, etc.) OR explicitly narrates
+ *       "I'll call X" without a real call happening.
+ *
+ * Discussing MCP architecture without faking execution is left untouched.
+ */
+// Implementation-level tool names that should NEVER appear in the user-facing
+// response. The model is supposed to call `mcp_call` (the meta-tool) to
+// dispatch these; if they're quoted by name in the output without a real
+// invocation, the model is narrating instead of acting.
+const HARD_LEAK_MARKERS = [
+  'execute_zapier_read_action',
+  'execute_zapier_write_action',
+  'list_enabled_zapier_actions',
+  'call_mcp_tool',
+];
+// Softer markers — need a second signal (fake result shape or narration verb)
+// to trigger a rewrite, since legitimate meta-discussion might mention them.
+const SOFT_TOOL_MARKERS = [
+  'mcp server', 'mcp servers',
+  'zapier server', 'zapier servers',
+  '— source: zapier', '— source: gmail', '— source: outlook',
+];
+const FAKE_RESULT_PATTERNS = [
+  /\bSubject:\s*["\w].*\n.*Sender:\s*\w/i,
+  /\bReceived Date:\s*\d{4}-\d{2}-\d{2}/i,
+  /\basOf=\d{4}-\d{2}-\d{2}/i,
+];
+// Broad narration detector: "I'll need to make N tool calls", "I'll call X",
+// "Let me execute", "I'm going to invoke", "I need to make the following …
+// tool calls", "Here are the queries I'll be executing", etc.
+const NARRATES_CALL = new RegExp([
+  "\\b(I'?ll|I will|Let me|I'?m going to|I need to)\\s+(call|execute|invoke|run|make|perform)\\b",
+  "\\bthe following\\s+\\d*\\s*tool\\s*call",
+  "\\bqueries I'?ll be executing",
+  "\\bI'?ll need to make",
+].join('|'), 'i');
+
+function detectFakeToolOutput(text, { toolsCalled = false } = {}) {
+  if (!text || toolsCalled) return false;
+  const low = text.toLowerCase();
+  // Hard rule: implementation-level tool names leaking into output without a
+  // real invocation ALWAYS means hallucination.
+  if (HARD_LEAK_MARKERS.some(m => low.includes(m))) return true;
+  // Softer markers need a second signal.
+  if (!SOFT_TOOL_MARKERS.some(m => low.includes(m))) return false;
+  return FAKE_RESULT_PATTERNS.some(p => p.test(text)) || NARRATES_CALL.test(text);
+}
+
+const MCP_REFUSAL = [
+  "I don't have direct access to Gmail, Outlook, or Zapier MCP servers from",
+  "the local llama-metal engine — external-service actions route through the",
+  "Node connector layer (Settings → Connectors), which I can't invoke from the",
+  "chat loop yet.",
+  "",
+  "What I can do right now: answer questions about your Stoa portfolio, deals,",
+  "loans, leasing, TenantCloud, or anything in the local knowledge base. Want",
+  "me to run one of those instead?",
+].join(' ').replace(/\s+/g, ' ').trim();
+
 function stripFalseSourceFooters(text, systemPrompt, { toolsCalled = false } = {}) {
   if (!text) return text;
   // If ANY live tool ran this turn (MCP/Zapier/native), every cited source is
@@ -1331,15 +1405,47 @@ app.get('/api/auth/me', (req, res) => {
 });
 
 // ── Sprint-1 auth routes (/api/auth/*, /api/admin/*) ────────────
-// Mounted before authenticateToken-protected routes so /login is reachable
-// without a bearer token. The router itself applies mw.authenticate on the
-// endpoints that need it.
+// MSSQL-backed. Only mount when STOA_DB_HOST is configured — otherwise the
+// routes' synchronous mssql connection attempts throw uncaught exceptions
+// that crash Node (and the desktop auto-respawn supervisor). Dev/desktop
+// installs fall through to the Python-neural-engine proxy at line ~1690
+// for /api/auth/login and the /api/auth/me shim above for session restore.
 try {
   const { ensureAuthSchema, runBootstrap } = require('./auth/bootstrap');
-  ensureAuthSchema().catch(e => console.warn('[auth] bootstrap skipped:', e.message));
-  const authRoutes = require('./auth/routes');
-  app.use('/api', authRoutes);
-  console.log('[auth] Sprint-1 routes mounted at /api/auth and /api/admin');
+  const _sprint1Enabled = !!(process.env.STOA_DB_HOST && process.env.STOA_DB_NAME);
+  if (_sprint1Enabled) {
+    ensureAuthSchema().catch(e => console.warn('[auth] bootstrap skipped:', e.message));
+    const authRoutes = require('./auth/routes');
+    app.use('/api', authRoutes);
+    console.log('[auth] Sprint-1 routes mounted at /api/auth and /api/admin');
+  } else {
+    console.log('[auth] Sprint-1 routes DISABLED (no STOA_DB_HOST) — using Python-proxy auth');
+    // Minimal stubs so the SPA's auto-refresh/logout calls don't 404 or
+    // hit any handler that touches MSSQL.
+    app.post('/api/auth/refresh', (req, res) => {
+      // Stateless refresh: verify whichever JWT is presented (bearer or body.refresh)
+      // and mint a fresh one. The desktop "refresh token" is just another JWT.
+      try {
+        const bodyTok = (req.body && req.body.refresh) || null;
+        const hdr = req.headers['authorization'] || '';
+        const bearer = hdr.startsWith('Bearer ') ? hdr.slice(7) : null;
+        const tok = bodyTok || bearer;
+        if (!tok) return res.status(401).json({ error: 'No refresh token' });
+        const claims = jwt.verify(tok, process.env.JWT_SECRET);
+        const payload = {
+          userId: claims.sub || claims.userId || claims.email,
+          email: claims.email,
+          role: claims.role || 'viewer',
+          tokenType: claims.tokenType || 'STOA_ACCESS',
+        };
+        const access = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
+        return res.json({ access, refresh: access, expiresInSec: 7 * 24 * 60 * 60 });
+      } catch (e) {
+        return res.status(401).json({ error: 'Invalid or expired refresh token' });
+      }
+    });
+    app.post('/api/auth/logout',  (req, res) => res.json({ ok: true }));
+  }
 
   // ── Connectors v2: SQLite bootstrap + /api/orgs, /api/connectors, /api/mcp ──
   // Default: ON. Set ALEC_CONNECTORS_V2=0 to force the legacy surface.
@@ -1705,7 +1811,15 @@ app.post('/api/auth/login', async (req, res) => {
         process.env.JWT_SECRET,
         { expiresIn: '30d' }
       );
-      return res.json({ success: true, token, tokenType: 'OWNER', user: { email: localOwnerEmail, role: 'owner' } });
+      return res.json({
+        access: token,
+        refresh: token,
+        expiresInSec: 30 * 24 * 60 * 60,
+        success: true,
+        token,
+        tokenType: 'OWNER',
+        user: { email: localOwnerEmail, role: 'owner' },
+      });
     }
 
     const data = await proxyToNeural('/auth/login', {
@@ -1746,6 +1860,11 @@ app.post('/api/auth/login', async (req, res) => {
     } catch {} // Non-critical
 
     res.json({
+      // Sprint-1 / frontend contract shape (client.js expects r.access / r.refresh)
+      access: token,
+      refresh: token, // same JWT acts as both in local-desktop mode
+      expiresInSec: 7 * 24 * 60 * 60,
+      // Legacy fields retained for callers that read them directly
       success: true,
       token,
       tokenType,
@@ -1753,7 +1872,7 @@ app.post('/api/auth/login', async (req, res) => {
       access_level: data.access_level,
       email: jwtPayload.email,
       role: jwtPayload.role,
-      user: user,
+      user: { ...(user || {}), email: jwtPayload.email, role: jwtPayload.role },
       expiresIn: '7d',
     });
   } catch (error) {
@@ -2172,8 +2291,16 @@ Rules for this turn (MANDATORY):
       responseText = "Sorry — I hit a blank on that one. Mind asking again?";
     }
 
+    // Anti-hallucination guard: catch fabricated MCP/Zapier execution before
+    // it reaches the user. Replace fake output with an honest refusal.
+    const _toolsRan = (nsToolCalls?.length || 0) > 0;
+    if (detectFakeToolOutput(responseText, { toolsCalled: _toolsRan })) {
+      console.warn('[anti-hallu] rewrote fabricated MCP output:', responseText.slice(0, 120).replace(/\n/g, ' '));
+      responseText = MCP_REFUSAL;
+    }
+
     // Strip fabricated "Source: X" footers for sources that weren't injected.
-    responseText = stripFalseSourceFooters(responseText, systemContent, { toolsCalled: (nsToolCalls?.length || 0) > 0 });
+    responseText = stripFalseSourceFooters(responseText, systemContent, { toolsCalled: _toolsRan });
 
     // Async: extract and store facts from this exchange
     extractAndStoreFacts(userText, responseText).catch(() => {});
@@ -2840,7 +2967,15 @@ Rules for this turn (MANDATORY):
     // We can't retroactively edit tokens already streamed, but we MUST store
     // the corrected version so the model's next-turn context doesn't include
     // a phantom "Source: STOA" it can later be cross-examined on.
-    const correctedFull = stripFalseSourceFooters(fullResponse, systemContent, { toolsCalled: (streamToolCalls?.length || 0) > 0 });
+    const _streamToolsRan = (streamToolCalls?.length || 0) > 0;
+    let correctedFull = fullResponse;
+    if (detectFakeToolOutput(correctedFull, { toolsCalled: _streamToolsRan })) {
+      console.warn('[anti-hallu stream] fabricated MCP output detected; rewriting history.');
+      correctedFull = MCP_REFUSAL;
+      // Flag the SPA so it can replace what it streamed with the corrected text.
+      res.write(`data: ${JSON.stringify({ replaceFull: true, corrected: MCP_REFUSAL, reason: 'fabricated_mcp_output' })}\n\n`);
+    }
+    correctedFull = stripFalseSourceFooters(correctedFull, systemContent, { toolsCalled: _streamToolsRan });
     if (correctedFull !== fullResponse) {
       res.write(`data: ${JSON.stringify({ sourceCorrection: true, note: 'One or more source footers were unverified and have been relabeled in history.' })}\n\n`);
     }
@@ -5350,6 +5485,94 @@ app.get('/api/msgraph/calendar', authenticateToken, requireFullCapabilities, asy
   try {
     const events = await msGraph.getUpcomingEvents(parseInt(req.query.days) || 7);
     res.json({ success: true, events });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+// ════════════════════════════════════════════════════════════════
+//  GMAIL  (/api/gmail/*)
+// ════════════════════════════════════════════════════════════════
+
+app.get('/api/gmail/status', authenticateToken, async (req, res) => {
+  if (!gmailSvc) return res.status(503).json({ error: 'Gmail service not available' });
+  try { res.json(await gmailSvc.status()); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/gmail/:account/unread', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!gmailSvc) return res.status(503).json({ error: 'Gmail not configured' });
+  const { account } = req.params;
+  const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+  try {
+    const emails = await gmailSvc.listUnreadEmails(account, limit);
+    res.json({ success: true, account, count: emails.length, emails });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/gmail/:account/message/:id', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!gmailSvc) return res.status(503).json({ error: 'Gmail not configured' });
+  const { account, id } = req.params;
+  try {
+    const email = await gmailSvc.getEmailById(account, id);
+    res.json({ success: true, email });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.post('/api/gmail/:account/message/:id/triage', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!gmailSvc) return res.status(503).json({ error: 'Gmail not configured' });
+  const { account, id } = req.params;
+  try {
+    const email = await gmailSvc.getEmailById(account, id);
+    const triage = await gmailSvc.triageEmail(account, email);
+    res.json({ success: true, triage });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.post('/api/gmail/:account/message/:id/archive', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!gmailSvc) return res.status(503).json({ error: 'Gmail not configured' });
+  const { account, id } = req.params;
+  try { res.json(await gmailSvc.archiveEmail(account, id)); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.post('/api/gmail/:account/message/:id/label', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!gmailSvc) return res.status(503).json({ error: 'Gmail not configured' });
+  const { account, id } = req.params;
+  const { label } = req.body;
+  if (!label) return res.status(400).json({ error: 'label required' });
+  try { res.json(await gmailSvc.labelEmail(account, id, label)); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.post('/api/gmail/:account/message/:id/reply', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!gmailSvc) return res.status(503).json({ error: 'Gmail not configured' });
+  const { account, id } = req.params;
+  const { body } = req.body;
+  if (!body) return res.status(400).json({ error: 'body required' });
+  try { res.json(await gmailSvc.replyToEmail(account, id, body)); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.post('/api/gmail/:account/inbox-zero', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!emailFiling) return res.status(503).json({ error: 'Email filing service not available' });
+  const { account } = req.params;
+  try {
+    const result = await emailFiling.runInboxZero(account);
+    res.json({ success: true, account, result });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/gmail/briefing', authenticateToken, requireFullCapabilities, (req, res) => {
+  if (!emailFiling) return res.status(503).json({ error: 'Email filing service not available' });
+  try {
+    const queue = emailFiling.getBriefingQueue();
+    res.json({ success: true, count: queue.length, items: queue });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/sharepoint/filing-rules', authenticateToken, (req, res) => {
+  try {
+    const filingRules = require('../config/sharepointFilingRules.js');
+    res.json({ success: true, rules: filingRules.listRules() });
   } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
 

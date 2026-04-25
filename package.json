@@ -43,6 +43,7 @@
     "dotenv": "^16.6.1",
     "exceljs": "^4.4.0",
     "express": "^4.19.2",
+    "googleapis": "^171.4.0",
     "jsonwebtoken": "^9.0.2",
     "mssql": "^12.2.1",
     "multer": "^1.4.5-lts.1",
@@ -70,8 +71,18 @@
     "node": ">=18.0.0"
   },
   "jest": {
-    "testMatch": ["<rootDir>/tests/**/*.test.(js|mjs)", "<rootDir>/__tests__/**/*.test.(js|mjs)"],
-    "testPathIgnorePatterns": ["/node_modules/", "/.claude/"],
-    "moduleFileExtensions": ["js", "mjs", "json"]
+    "testMatch": [
+      "<rootDir>/tests/**/*.test.(js|mjs)",
+      "<rootDir>/__tests__/**/*.test.(js|mjs)"
+    ],
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "/.claude/"
+    ],
+    "moduleFileExtensions": [
+      "js",
+      "mjs",
+      "json"
+    ]
   }
 }
