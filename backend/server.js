@@ -64,6 +64,8 @@ const scheduler    = (() => { try { return require('../services/taskScheduler.js
 const github       = (() => { try { return require('../services/githubService.js');   } catch { return null; } })();
 const vsCode       = (() => { try { return require('../services/vsCodeController.js');} catch { return null; } })();
 const msGraph      = (() => { try { return require('../services/microsoftGraphService.js'); } catch { return null; } })();
+const gmailSvc     = (() => { try { return require('../services/gmailService.js');         } catch { return null; } })();
+const emailFiling  = (() => { try { return require('../services/emailFilingService.js');   } catch { return null; } })();
 const vercelSvc    = (() => { try { return require('../services/vercelService.js');   } catch { return null; } })();
 const tenantCloud  = (() => { try { return require('../services/tenantCloudService.js'); } catch { return null; } })();
 const awsSvc       = (() => { try { return require('../services/awsService.js');      } catch { return null; } })();
@@ -5483,6 +5485,94 @@ app.get('/api/msgraph/calendar', authenticateToken, requireFullCapabilities, asy
   try {
     const events = await msGraph.getUpcomingEvents(parseInt(req.query.days) || 7);
     res.json({ success: true, events });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+// ════════════════════════════════════════════════════════════════
+//  GMAIL  (/api/gmail/*)
+// ════════════════════════════════════════════════════════════════
+
+app.get('/api/gmail/status', authenticateToken, async (req, res) => {
+  if (!gmailSvc) return res.status(503).json({ error: 'Gmail service not available' });
+  try { res.json(await gmailSvc.status()); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/gmail/:account/unread', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!gmailSvc) return res.status(503).json({ error: 'Gmail not configured' });
+  const { account } = req.params;
+  const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+  try {
+    const emails = await gmailSvc.listUnreadEmails(account, limit);
+    res.json({ success: true, account, count: emails.length, emails });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/gmail/:account/message/:id', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!gmailSvc) return res.status(503).json({ error: 'Gmail not configured' });
+  const { account, id } = req.params;
+  try {
+    const email = await gmailSvc.getEmailById(account, id);
+    res.json({ success: true, email });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.post('/api/gmail/:account/message/:id/triage', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!gmailSvc) return res.status(503).json({ error: 'Gmail not configured' });
+  const { account, id } = req.params;
+  try {
+    const email = await gmailSvc.getEmailById(account, id);
+    const triage = await gmailSvc.triageEmail(account, email);
+    res.json({ success: true, triage });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.post('/api/gmail/:account/message/:id/archive', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!gmailSvc) return res.status(503).json({ error: 'Gmail not configured' });
+  const { account, id } = req.params;
+  try { res.json(await gmailSvc.archiveEmail(account, id)); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.post('/api/gmail/:account/message/:id/label', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!gmailSvc) return res.status(503).json({ error: 'Gmail not configured' });
+  const { account, id } = req.params;
+  const { label } = req.body;
+  if (!label) return res.status(400).json({ error: 'label required' });
+  try { res.json(await gmailSvc.labelEmail(account, id, label)); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.post('/api/gmail/:account/message/:id/reply', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!gmailSvc) return res.status(503).json({ error: 'Gmail not configured' });
+  const { account, id } = req.params;
+  const { body } = req.body;
+  if (!body) return res.status(400).json({ error: 'body required' });
+  try { res.json(await gmailSvc.replyToEmail(account, id, body)); }
+  catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.post('/api/gmail/:account/inbox-zero', authenticateToken, requireFullCapabilities, async (req, res) => {
+  if (!emailFiling) return res.status(503).json({ error: 'Email filing service not available' });
+  const { account } = req.params;
+  try {
+    const result = await emailFiling.runInboxZero(account);
+    res.json({ success: true, account, result });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/gmail/briefing', authenticateToken, requireFullCapabilities, (req, res) => {
+  if (!emailFiling) return res.status(503).json({ error: 'Email filing service not available' });
+  try {
+    const queue = emailFiling.getBriefingQueue();
+    res.json({ success: true, count: queue.length, items: queue });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/sharepoint/filing-rules', authenticateToken, (req, res) => {
+  try {
+    const filingRules = require('../config/sharepointFilingRules.js');
+    res.json({ success: true, rules: filingRules.listRules() });
   } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
 

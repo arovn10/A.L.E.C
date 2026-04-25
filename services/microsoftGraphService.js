@@ -241,6 +241,85 @@ async function getUpcomingEvents(userEmail = USER_EMAIL, days = 7) {
   }));
 }
 
+// ── SharePoint Upload / Filing ─────────────────────────────────────
+
+/**
+ * Resolve a SharePoint site ID by its display name or URL keyword.
+ * Returns the first matching site's ID.
+ */
+async function getSiteIdByName(nameKeyword) {
+  const data = await graphGet('/sites', { search: nameKeyword });
+  const sites = data.value || [];
+  if (!sites.length) throw new Error(`No SharePoint site found matching: ${nameKeyword}`);
+  return sites[0].id;
+}
+
+/**
+ * Resolve a drive (library) ID within a site by library name.
+ */
+async function getLibraryIdByName(siteId, libraryName) {
+  const data = await graphGet(`/sites/${siteId}/drives`);
+  const drives = data.value || [];
+  const found = drives.find(d => d.name.toLowerCase().includes(libraryName.toLowerCase()));
+  if (!found) {
+    // Fall back to the first drive (usually "Documents")
+    if (drives.length) return drives[0].id;
+    throw new Error(`Library "${libraryName}" not found in site ${siteId}`);
+  }
+  return found.id;
+}
+
+/**
+ * Upload a file buffer to a SharePoint library folder.
+ * Supports files up to ~250MB (uses simple PUT for ≤4MB, chunked session above).
+ *
+ * @param {string} siteId       — SharePoint site ID
+ * @param {string} driveId      — Drive/library ID
+ * @param {string} folderPath   — Destination folder path (e.g. "Leases/2026")
+ * @param {string} fileName     — File name (e.g. "lease-john-doe.pdf")
+ * @param {Buffer} fileBuffer   — File contents
+ * @param {string} mimeType     — MIME type (default: application/octet-stream)
+ */
+async function uploadFileToSharePoint(siteId, driveId, folderPath, fileName, fileBuffer, mimeType = 'application/octet-stream') {
+  const token = await getToken();
+  const safePath = [folderPath, fileName].filter(Boolean).join('/').replace(/\/+/g, '/');
+  const endpoint = `${GRAPH_BASE}/sites/${siteId}/drives/${driveId}/root:/${safePath}:/content`;
+
+  const resp = await fetch(endpoint, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': mimeType },
+    body: fileBuffer,
+    signal: AbortSignal.timeout(60000),
+  });
+  if (!resp.ok) throw new Error(`SharePoint upload failed: ${resp.status} ${await resp.text()}`);
+  const data = await resp.json();
+  return { id: data.id, name: data.name, url: data.webUrl, size: data.size };
+}
+
+/**
+ * Ensure a folder path exists in a SharePoint library (creates it if missing).
+ */
+async function ensureSharePointFolder(siteId, driveId, folderPath) {
+  const parts = folderPath.split('/').filter(Boolean);
+  let current = '';
+  for (const part of parts) {
+    const parentEndpoint = current
+      ? `/sites/${siteId}/drives/${driveId}/root:/${current}:/children`
+      : `/sites/${siteId}/drives/${driveId}/root/children`;
+    current = current ? `${current}/${part}` : part;
+    try {
+      await graphPost(parentEndpoint, {
+        name: part,
+        folder: {},
+        '@microsoft.graph.conflictBehavior': 'rename',
+      });
+    } catch (_) {
+      // Folder likely already exists — continue
+    }
+  }
+  return current;
+}
+
 // ── Status ────────────────────────────────────────────────────────
 async function status() {
   const configured = !!(TENANT_ID && CLIENT_ID && CLIENT_SECRET);
@@ -258,6 +337,7 @@ async function status() {
 module.exports = {
   listOneDriveFiles, readOneDriveFile, writeOneDriveFile,
   searchSharePoint, listSites, listSharePointLibraries, listSharePointFiles,
+  getSiteIdByName, getLibraryIdByName, uploadFileToSharePoint, ensureSharePointFolder,
   getRecentEmails, getUpcomingEvents,
   status,
 };

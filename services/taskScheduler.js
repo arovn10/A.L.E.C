@@ -259,6 +259,17 @@ function registerSystemTasks() {
     return 'Export cleanup done';
   }, { description: 'Clean up old Excel exports', notifyWhenDone: false });
 
+  // Inbox Zero — every 15 minutes (both Gmail accounts)
+  schedule('inbox-zero-alec', '*/15 * * * *', async () => {
+    const emailFiling = require('./emailFilingService.js');
+    return emailFiling.runInboxZero('alec');
+  }, { description: 'Inbox Zero: rovneralec@gmail.com', notifyOnError: true });
+
+  schedule('inbox-zero-properties', '*/15 * * * *', async () => {
+    const emailFiling = require('./emailFilingService.js');
+    return emailFiling.runInboxZero('properties');
+  }, { description: 'Inbox Zero: rovnerproperties@gmail.com', notifyOnError: true });
+
   // campusrentalsllc.com uptime check — every 15 minutes
   schedule('website-uptime-check', '*/15 * * * *', async () => {
     const aws = require('./awsService.js');
